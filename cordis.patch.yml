@@ -1,0 +1,35 @@
+# dsh-spirit 组合包层：安装（dsh plugin --profile <name> add dsh-spirit）后自动挂载
+# 插件行，无需再手改 profile 的 cordis.patch.yml。
+# 覆盖配置请在 profile 自己的 cordis.patch.yml 里写顶层裸 patch（直接 id:，不要包
+# insert:，同 id 再 insert 会报 duplicate loader entry id 启动失败；键按行整体替换，不深合并）：
+#   - id: dsh-spirit
+#     name: dsh-spirit
+#     config: { enabled: true }
+- insert:
+    - id: dsh-spirit
+      name: dsh-spirit
+      # config:                      # 全部字段有默认值，按需覆盖（键名见 src/contract.ts 单源）：
+      #   enabled: true              # 部署总上限（false 即物理离场）
+      #   dataDir: ''                # 默认 $DSH_HOME/spirit
+      #   persona:
+      #     enabled: true
+      #     budgetBytes: 700         # 人格区进系统提示的字节顶
+      #   card:
+      #     maxBytes: 384            # 回忆卡总顶
+      #     recentK: 2               # 「刚刚」段最多几条
+      #     crossSessionM: 4         # 新会话首轮读上一会话几条（0 = 关闭跨会话基调）
+      #   recall:
+      #     timeoutMs: 800           # 检索段预算，超时只丢该段不拖慢对话
+      #     maxResults: 3
+      #     maxCharsPerEntry: 120
+      #     halfLifeMs: 5400000      # 条目近因半衰期（缺省 90 分钟，经验值可调）
+      #   tier:
+      #     stepCap: 1               # 单轮最多跨几格（防人格抽动）
+      #     staleAfterMs: 600000     # 越此无新条目 ⇒ 退中性档
+      #   journal:
+      #     retentionDays: 90
+      #     dryRun: true             # 清理默认干跑
+      #   capture:
+      #     userSnippet: false       # 用户原文默认不入库
+      #   drsc:
+      #     enabled: true            # 历史路依赖 DRSC；缺席即整段省略，不影响近因路

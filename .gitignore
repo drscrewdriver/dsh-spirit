@@ -1,0 +1,8 @@
+node_modules/
+dist/
+lib/
+coverage/
+*.tgz
+*.log
+.DS_Store
+.spirit-local/
