@@ -34,6 +34,9 @@ import { checkCompat } from '../scripts/compat-precheck.mjs';
 
 const logger = { warn: (_m: string) => undefined, info: (_m: string) => undefined };
 
+/** 双插件链用例里给姊妹监听器的 payload（形状与 ours 一致即可）。 */
+const payload0: unknown = { agent: { id: 'a1' } };
+
 /** 端点分发的最小依赖（三个用例只差 store，不在这里三份拷贝）。 */
 function makeDeps(over: Partial<RpcDeps> = {}): RpcDeps {
   return {
@@ -263,6 +266,53 @@ describe('task_7.4 / 7.5 请求形状与零副作用', () => {
     expect(store.count('s1')).toBe(0);
     const normal = await handlers['agent/pre-step']?.({ agent: { id: 'a1' } }, async () => original);
     expect(normal).not.toBe(original);
+  });
+
+  it('同机双注入插件：两家卡同时完整在场，每轮新增字节 = 两家之和', async () => {
+    /**
+     * 真机上拿不到这个场景：姊妹包的记录只能由 L0→L1 蒸馏产生（需真 LLM 与嵌入），
+     * mock provider 下它无东西可注入。但这条断言要守的其实是**组合性质**：
+     * 我们拿到的 `decision.messages` 必须逐条原样交回去，所以排在链上任何位置
+     * 都不会顶掉别家；而别家前置也不能把我们挤到后面去。这里把两家接成同一条链量。
+     */
+    const { handlers } = makeHost();
+    const ours = handlers['agent/pre-step'];
+    expect(ours).toBeDefined();
+    const sisterRow = createUserMessage({
+      content: [{ type: 'text', text: '<relevant-memories>\n召回：投递相关的事\n</relevant-memories>' }],
+      source: { kind: 'plugin:memory', form: 'recall' } as never,
+    });
+    // 姊妹插件的监听器：前置自己的一行（它就是 prime-memory 在 recall.ts 里的做法）
+    const sister = async (payload: unknown, next: () => Promise<Record<string, unknown>>): Promise<unknown> => {
+      const d = await next();
+      const messages = (d['messages'] as unknown[]) ?? [];
+      return { kind: 'enter', messages: [sisterRow, ...messages] };
+    };
+    const original = { kind: 'enter' as const, messages: [userMsg('投递那件事今天不动')] };
+    // 链序：姊妹先跑 → 我们后跑（我们看到的 decision 已含它那一行）
+    const chained = (await ours?.({ agent: { id: 'a1' } }, async () => sister(payload0, async () => original))) as {
+      messages: Array<{ content?: Array<{ text?: string }> }>;
+    };
+    const texts = chained.messages.flatMap((m) => (m.content ?? []).map((b) => b.text ?? ''));
+    const sisterHits = texts.filter((t) => t.includes('<relevant-memories>'));
+    const spiritHits = texts.filter((t) => t.includes('角色体验快照'));
+    // 两家各一行、都没被截断（原文完整在场）
+    expect(sisterHits).toHaveLength(1);
+    expect(sisterHits[0]).toBe('<relevant-memories>\n召回：投递相关的事\n</relevant-memories>');
+    expect(spiritHits).toHaveLength(1);
+    // 我们仍在尾部（离生成点最近），不被前置行顶位
+    expect(texts[texts.length - 1]).toContain('角色体验快照');
+    // 每轮新增字节 = 两家预算之和（不隐藏双计，也不互相挤掉）
+    const bytes = (t: string): number => Buffer.byteLength(t, 'utf8');
+    // 按块读 text 再量字节：两边消息类型不同（chained 是宽形状、original 是宿主的
+    // ContentBlock 只读数组），所以入参开成 `readonly unknown[]`，靠 `typeof` 收窄。
+    const textBytes = (messages: readonly { content?: readonly unknown[] }[]): number =>
+      messages.reduce<number>((acc, m) => acc + (m.content ?? []).reduce<number>((a, blk) => {
+        const raw = (blk as { text?: unknown }).text;
+        return a + bytes(typeof raw === 'string' ? raw : '');
+      }, 0), 0);
+    expect(textBytes(chained.messages) - textBytes(original.messages))
+      .toBe(bytes(sisterHits[0] ?? '') + bytes(spiritHits[0] ?? ''));
   });
 
   it('注入时：原消息逐条保持引用不变，只在尾部追加一条', async () => {
