@@ -30,7 +30,8 @@
     "lint": "eslint src client/src tests scripts",
     "test": "vitest run",
     "compat": "node scripts/compat-precheck.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "smoke": "node scripts/smoke.mjs",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build && npm run smoke",
     "prepack": "npm run build"
   },
   "files": [
@@ -116,6 +117,7 @@
     "esbuild": "^0.28.2",
     "eslint": "^10.9.1",
     "globals": "^17.12.0",
+    "semver": "^7.8.5",
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.69.0",
     "vitest": "^4.1.11"

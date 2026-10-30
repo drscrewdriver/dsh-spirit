@@ -23,8 +23,8 @@ function normalize(token: string): string {
   return clean.length > CUE_LIMITS.maxLen ? clean.slice(0, CUE_LIMITS.maxLen) : clean;
 }
 
-/** 文件路径 → basename（不含目录、不含扩展名也可匹配，这里保留扩展名以提高区分度）。 */
-function baseName(path: string): string {
+/** 路径 → basename（导出供 cues 与细节文案共用：归一口径只能有一份）。 */
+export function baseName(path: string): string {
   const parts = path.split(/[\\/]/u);
   return parts[parts.length - 1] ?? '';
 }

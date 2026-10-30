@@ -13,6 +13,7 @@
 
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 import * as semver from 'semver';
 
 /** 目标宿主线：与 engines.dsh 同源，改动需两边一起改（本脚本正是用来抓这件事的）。 */
@@ -53,7 +54,7 @@ export function checkCompat(pkg, manifest, hosts = TARGET_HOSTS) {
   }
 
   for (const host of hosts) {
-    let satisfied = false;
+    let satisfied;
     try {
       satisfied = semver.satisfies(host, String(enginesDsh ?? ''), { includePrerelease: true });
     } catch (err) {
@@ -78,8 +79,9 @@ export function checkCompat(pkg, manifest, hosts = TARGET_HOSTS) {
   return problems;
 }
 
-const isCli = process.argv[1] !== undefined && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/').split('/').pop() ?? '');
-if (isCli) {
+// 被当脚本直接跑时才自检（被测试 import 时不得改 process.exitCode）
+const invokedDirectly = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
   const { pkg, manifest } = readManifests();
   const problems = checkCompat(pkg, manifest);
   if (problems.length > 0) {

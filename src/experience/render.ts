@@ -31,6 +31,7 @@ import {
   type VoiceTier,
 } from '../types.js';
 import { NOTICE_WORDS } from '../words.js';
+import { baseName } from './cues.js';
 
 /** 主句表：每个事件族 × 每个反应档都必须有一条，缺格由测试判红。 */
 export const BODY_TABLE: Readonly<Record<TriggerKind, Readonly<Partial<Record<ReactionTier, string>>>>> = {
@@ -87,7 +88,8 @@ export function factBits(fact: ExperienceFact): string[] {
   const bits: string[] = [];
   if (fact.tool) bits.push(`那个 ${fact.tool} 动作`);
   if (typeof fact.exitCode === 'number' && fact.exitCode !== 0) bits.push(`返回码不是 0`);
-  const paths = (fact.pathBases ?? []).filter((p) => p !== '');
+  // 归一到 basename 再入文案：上游传全路径也不能把目录泄露进卡与库（不依赖调用方自觉）
+  const paths = (fact.pathBases ?? []).map(baseName).filter((p) => p !== '');
   if (paths.length > 0) bits.push(`${paths.slice(0, 2).join('、')}${paths.length > 2 ? ` 等 ${paths.length} 个文件` : ''}`);
   if (fact.turnSpan && fact.turnSpan[1] > fact.turnSpan[0]) bits.push('连着做了几步');
   const g = gapWord(fact.gapMs ?? 0);
