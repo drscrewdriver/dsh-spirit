@@ -6,7 +6,9 @@
  *    历史路停用。两者都不许把异常抛到会话链路上——记忆/情绪是增强能力，
  *    宿主本体必须照常工作。
  * 2. **`inject` 只声明真正硬需要的服务**：声明即等它就绪。这里只等 `systemPrompt`；
- *    `agents` / `webStartup` 走宽容读（`getService`），缺失就少一份能力而不是装不上。
+ *    可选服务（`webServer` / `agents` / `webStartup`）一律**不**进顶层 inject——
+ *    顶层声明会把没这服务的宿主线（headless/tui）整体挂死。面板路由走
+ *    `ctx.inject(['webServer'], …)` 作域注入（服务就绪才回调），其余能力走宽容读（`getService`）。
  */
 
 import type { Context } from '@deepseek-ai/cordis';

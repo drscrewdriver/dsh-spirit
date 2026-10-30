@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
@@ -71,6 +71,15 @@ check('components.host 指向的产物存在', typeof components.host === 'strin
 check('components.client 指向的产物存在', typeof components.client === 'string' && existsSync(path.join(root, components.client)), String(components.client));
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 check('两清单版本同串', manifest.version === pkg.version, `${manifest.version} vs ${pkg.version}`);
+
+// ── 4. 路由根（真机实测：拼成 `/dsh-spiritrpc` 时宿主给 404，单测全绿照不出来）──
+const contract = await import(pathToFileURL(path.join(root, 'dist', 'contract.js')).href);
+check('产物路由根 == /dsh-spirit/rpc', contract.SPIRIT_RPC_ROUTE === '/dsh-spirit/rpc', String(contract.SPIRIT_RPC_ROUTE));
+const rpcArtifact = readFileSync(path.join(root, 'dist', 'rpc.js'), 'utf8');
+// 只扫代码不扫注释：tsc 会保留文件头 JSDoc，而那里写“POST /dsh-spirit/rpc/<method>”是文档，
+// 真正不能容忍的是代码里又拼一份字面量（那才能与常量不同串）。
+const rpcCode = rpcArtifact.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/(^|\s)\/\/[^\n]*/gu, '$1');
+check('宿主半只引共享常量（没再写一份路由字面量）', !rpcCode.includes('/dsh-spirit/rpc'), 'dist/rpc.js 代码里出现了第二份字面量');
 
 if (failures.length > 0) {
   console.error(`\ndist 冒烟失败 ${failures.length} 项：`);

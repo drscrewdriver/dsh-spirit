@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { describe, expect, it } from 'vitest';
 
-import { SPIRIT_DEFAULTS, SPIRIT_OPS, type SpiritConfig } from '../src/contract.js';
+import { SPIRIT_DEFAULTS, SPIRIT_OPS, SPIRIT_RPC_ROUTE, type SpiritConfig } from '../src/contract.js';
 import { SPIRIT_RPC_METHODS, handleEndpoint, type RpcDeps } from '../src/rpc.js';
 import { Spirit } from '../src/spirit.js';
 import { SpiritStats } from '../src/stats.js';
@@ -303,6 +303,35 @@ describe('contract 面完整（五方对齐的剩余腿）', () => {
         ? [prefix]
         : Object.entries(value as Record<string, unknown>).flatMap(([k, v]) => flat(v, prefix === '' ? k : `${prefix}.${k}`));
     expect(flat(SPIRIT_DEFAULTS).sort()).toEqual([...SCHEMA_FIELD_KEYS].sort());
+  });
+});
+
+describe('task_7.9 路由根两腿对敲', () => {
+  /**
+   * 真机实测踩到的坑：`/${PREFIX.replace(/\/$/, '')}rpc` 把尾斜杠剥掉后直接粘了
+   * `rpc`，路由挂到了 `/dsh-spiritrpc`。而浏览器半 fetch 的是 `/dsh-spirit/rpc/…`，
+   * 于是单测全绿（测的是 handleEndpoint，不经 URL）但真机拿到的是**宿主 404**。
+   * 所以这一组断言只守一件事：两腿共用一个常量，且没人再写第二份字面量。
+   */
+  it('路由根就是 /dsh-spirit/rpc（拼接式回归即红）', () => {
+    expect(SPIRIT_RPC_ROUTE).toBe('/dsh-spirit/rpc');
+  });
+
+  it('两半的代码里都不存在第二份路由字面量（只允许共享常量）', () => {
+    const read = (rel: string): string =>
+      stripComments(readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8'));
+    expect(read('../client/src/rpc.ts')).toContain('SPIRIT_RPC_ROUTE');
+    for (const rel of ['../client/src/rpc.ts', '../src/rpc.ts']) {
+      expect(read(rel), rel).not.toContain('/dsh-spirit/rpc');
+    }
+  });
+
+  it('每个端点拼出的 URL 能被宿主同一条切片逻辑解回短方法名', () => {
+    for (const method of SPIRIT_RPC_METHODS) {
+      const url = `${SPIRIT_RPC_ROUTE}/${method}`;
+      expect(url.slice(SPIRIT_RPC_ROUTE.length + 1)).toBe(method);
+      expect(SPIRIT_RPC_METHODS).toContain(url.slice(SPIRIT_RPC_ROUTE.length + 1));
+    }
   });
 });
 

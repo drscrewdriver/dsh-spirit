@@ -8,6 +8,7 @@
  * "该会话还没有数据"）；只有传输层失败（网络/HTTP 非 2xx）才 reject。
  */
 import type { SpiritEndpoint, SpiritRequestMap, SpiritResponseMap } from '../../src/contract.js';
+import { SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE } from '../../src/contract.js';
 
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } };
 
@@ -15,14 +16,15 @@ export type RpcFn = <K extends SpiritEndpoint>(endpoint: K, payload?: SpiritRequ
 
 /** `dsh-spirit/session-stats` → `session-stats`（宿主半按前缀拼回）。 */
 function shortMethod(endpoint: string): string {
-  return endpoint.startsWith('dsh-spirit/') ? endpoint.slice('dsh-spirit/'.length) : endpoint;
+  return endpoint.startsWith(SPIRIT_RPC_PREFIX) ? endpoint.slice(SPIRIT_RPC_PREFIX.length) : endpoint;
 }
 
 export function makeRpc(): RpcFn {
   return (async (endpoint, payload) => {
     let response: Response;
     try {
-      response = await fetch(`/dsh-spirit/rpc/${shortMethod(endpoint)}`, {
+      // 路由根用共享常量而不是字面量：与宿主半注册的前缀不同 = 面板只能拿到宿主 404
+      response = await fetch(`${SPIRIT_RPC_ROUTE}/${shortMethod(endpoint)}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload ?? {}),

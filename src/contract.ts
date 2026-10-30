@@ -35,6 +35,14 @@ export const SPIRIT_SLOT_SECTION_NAME = 'spirit:slot';
 export const SPIRIT_SECTION_ORDER = 20;
 /** RPC/HTTP 路由前缀（`dsh-memory/*` 已被占，本包一律 `dsh-spirit/*`）。 */
 export const SPIRIT_RPC_PREFIX = 'dsh-spirit/';
+/**
+ * HTTP 路由根 —— **host 半注册的前缀与 client 半 fetch 的前缀必须是同一个常量**。
+ *
+ * 真机实测踩过的坑：这里曾写成 `/${PREFIX.replace(/\/$/, '')}rpc`，尾斜杠被剥掉后
+ * 直接粘 `rpc`，路由挂到了 `/dsh-spiritrpc`（宿主返回 404 而不是我们的信封）。
+ * 两半各写一份字面量 = 拼错只在真机暴露，所以收成单源 + `tests/gates.test.ts` 对敲。
+ */
+export const SPIRIT_RPC_ROUTE = `/${SPIRIT_RPC_PREFIX.replace(/\/$/, '')}/rpc`;
 /** 工具名前缀（同栈工具重名即 throw）。 */
 export const SPIRIT_TOOL_PREFIX = 'spirit_';
 

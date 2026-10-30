@@ -17,7 +17,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, type SpiritConfig, type SpiritExportResult, type SpiritJournalPage, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats } from './contract.js';
+import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, type SpiritConfig, type SpiritExportResult, type SpiritJournalPage, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats } from './contract.js';
 import type { Spirit } from './spirit.js';
 import type { SpiritStats } from './stats.js';
 import type { SessionModeStore } from './store/session-modes.js';
@@ -28,8 +28,7 @@ import type { ExperienceStore } from './store/experience.js';
 import type { SpiritVerdict } from './types.js';
 import { getService } from './capability.js';
 
-/** 路由前缀：`dsh-spirit/session-stats` → `/dsh-spirit/rpc/session-stats`。 */
-export const SPIRIT_RPC_ROUTE = `/${SPIRIT_RPC_PREFIX.replace(/\/$/, '')}rpc`;
+/** 端点全路径（`dsh-spirit/session-stats` ⇄ `/dsh-spirit/rpc/session-stats`）；路由根单源见 `SPIRIT_RPC_ROUTE`。 */
 const ENDPOINTS = SPIRIT_OPS.map((op) => `${SPIRIT_RPC_PREFIX}${op}`);
 const SHORT_METHODS: readonly string[] = ENDPOINTS.map((e) => e.slice(SPIRIT_RPC_PREFIX.length));
 
@@ -221,7 +220,15 @@ interface WebServerFace {
   }): (() => void) | Promise<() => void>;
 }
 
-/** 挂载（含 webServer 晚到/替换/下线的三种迁移）。 */
+/**
+ * 挂载（含 webServer 晚到/替换/下线的三种迁移）。
+ *
+ * ⚠️ 真宿主实测踩到的坑（404 而不是我们自己的 405）：**不能只靠 `ctx.get('webServer')` 探一次**——
+ * 未声明授权时属性读会抛（被getService 吞成 undefined），而 `internal/service` 只在**上线/下线/替换**时发；
+ * webServer 早已就绪的常规启动下这个事件根本不会再来，路由就永远挂不上。
+ * 正解是用 cordis 的作域注入 `ctx.inject(['webServer'], …)`：它等服务就绪后再跑回调，
+ * 又不会像顶层 `inject` 那样在没这个服务的宿主线（headless/tui）上把整个插件挂死。
+ */
 export function registerSpiritRpc(ctx: Context, deps: RpcDeps): void {
   let dispose: () => void = () => {};
   let holding = false;
@@ -262,7 +269,7 @@ export function registerSpiritRpc(ctx: Context, deps: RpcDeps): void {
     void Promise.resolve(registered).then((fn) => {
       dispose = typeof fn === 'function' ? fn : () => {};
     });
-    deps.logger.info('[spirit] 面板 API 已注册（POST /dsh-spirit/rpc/<method>）');
+    deps.logger.info(`[spirit] 面板 API 已注册（POST ${SPIRIT_RPC_ROUTE}/<method>）`);
   };
 
   const tryMount = (): void => {
@@ -271,7 +278,15 @@ export function registerSpiritRpc(ctx: Context, deps: RpcDeps): void {
     mount(webServer);
   };
 
-  // webServer 是可选服务且可能晚于本插件就绪：监听服务上线/下线
+  // 主路：作域注入。不声明顶层 inject 是为了让没这个服务的宿主线（headless/tui）
+  // 仍能装上面板之外的能力；服务就绪时回调会跑，无论它是早就绪还是晚到。
+  ctx.inject(['webServer'], (scope) => {
+    const svc = scope.get('webServer') as WebServerFace | undefined;
+    if (svc !== undefined && typeof svc.register === 'function') mount(svc);
+    else tryMount();
+  });
+
+  // 补位：服务上线/下线/替换的迁移（常规启动不会重发该事件，不能只靠它）
   ctx.on('internal/service', (name: unknown, impl: unknown) => {
     if (name !== 'webServer') return;
     if (impl === undefined) {
@@ -283,7 +298,8 @@ export function registerSpiritRpc(ctx: Context, deps: RpcDeps): void {
       holding = false;
       return;
     }
-    tryMount();
+    const svc = impl as WebServerFace;
+    if (typeof svc.register === 'function') mount(svc);
   });
   tryMount();
 
