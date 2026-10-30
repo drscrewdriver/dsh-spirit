@@ -315,6 +315,32 @@ export class ExperienceStore {
     }
   }
 
+  /**
+   * 库里最近有体验条目的会话（手记默认视图用）。
+   *
+   * 为什么不能由内存注册表回答：注册表随宿主重启清空，而手记是**库**——
+   * “看看这个角色最近经历了什么”在重启后仍须可读，否则观测面最常用的一眼会变空白。
+   * 无条目 ⇒ 空串（调用方自己决定是空态还是错态，不猜）。
+   */
+  latestSessionId(): string {
+    if (this.deps.db === null) {
+      for (let i = this.mirror.length - 1; i >= 0; i -= 1) {
+        const entry = this.mirror[i];
+        if (entry !== undefined && entry.supersededBy === undefined) return entry.sessionId;
+      }
+      return '';
+    }
+    try {
+      return this.scalar(
+        `SELECT session_id AS sid FROM experience WHERE superseded_by IS NULL ORDER BY ts_ms DESC, id DESC LIMIT 1`,
+        [],
+        'sid',
+      ) ?? '';
+    } catch {
+      return '';
+    }
+  }
+
   /** 手记分页（倒序）：读侧投影，不是真源。 */
   page(
     sessionId: string,

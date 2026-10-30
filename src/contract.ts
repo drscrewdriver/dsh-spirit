@@ -83,7 +83,8 @@ export interface SpiritSessionModeResult {
 }
 
 export interface SpiritJournalTailRequest {
-  sessionId: string;
+  /** 省略（或空串）⇒ 服务端取**库里**最近一个有条目的会话；设置页分节拿不到会话上下文就靠这条。 */
+  sessionId?: string;
   offset?: number;
   limit?: number;
   /** 默认不含被取代项（面板里一段经历只显示当前作数的那条）。 */

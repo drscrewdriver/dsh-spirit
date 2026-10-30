@@ -40,16 +40,16 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
     const token = ++seqRef.current;
     setError(null);
     try {
-      const statsResult = await rpc('session-stats', seatSessionId === '' ? {} : { sessionId: seatSessionId });
+      // 两段各自成立：统计是**内存注册表**（宿主重启后为空是常态），手记是**库**。
+      // 真宿主实测过把它们串成一条链的写法：拿不到统计就连条目都不拉，
+      // 于是“昨天发生了什么”在重启后面前是一片空白——那是本末倒置。
+      const sessionId = seatSessionId;
+      const statsResult = sessionId === '' ? await rpc('session-stats', {}) : await rpc('session-stats', { sessionId });
       if (token !== seqRef.current || !mountedRef.current) return;
-      if (!statsResult.ok) {
-        // 业务性"还没有数据"不是错误，如实显示空态即可
-        setStats(null);
-        setPage(null);
-        return;
-      }
-      setStats(statsResult.value);
-      const tail = await rpc('journal-tail', { sessionId: statsResult.value.sessionId, offset: 0, limit: 30 });
+      setStats(statsResult.ok ? statsResult.value : null);
+      const target = statsResult.ok ? statsResult.value.sessionId : sessionId;
+      // 两边都不知道会话时交给服务端按**库**选（库里有条目就读得到，与注册表无关）
+      const tail = await rpc('journal-tail', target === '' ? {} : { sessionId: target, offset: 0, limit: 30 });
       if (token !== seqRef.current || !mountedRef.current) return;
       setPage(tail.ok ? tail.value : null);
     } catch (err) {

@@ -252,6 +252,21 @@ describe('ExperienceStore', () => {
     expect(store.count('s1')).toBe(1);
   });
 
+  it('latestSessionId：库里最近一个还有效的会话（镜像同结论）', () => {
+    // 手记默认视图靠它：宿主重启后内存注册表空了，“最近经历了什么”仍须读得到
+    const store = new ExperienceStore({ db: opened(), logger });
+    expect(store.latestSessionId()).toBe('');
+    store.append(ctxA, draft);
+    store.append({ ...ctxA, id: 'e2', sessionId: 's2', turnSeq: 2, tsMs: 2_000 }, { ...draft, text: '另一个会话里记的' });
+    expect(store.latestSessionId()).toBe('s2');
+    expect(store.supersede('e2', 'e1')).toBe(true);
+    expect(store.latestSessionId()).toBe('s1');
+    const mirror = new ExperienceStore({ db: null, logger });
+    expect(mirror.latestSessionId()).toBe('');
+    mirror.append(ctxA, draft);
+    expect(mirror.latestSessionId()).toBe('s1');
+  });
+
   it('取代是软标记：旧行仍在（可回滚），但默认读不到', () => {
     const db = opened();
     const store = new ExperienceStore({ db, logger });

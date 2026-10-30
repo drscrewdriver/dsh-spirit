@@ -104,8 +104,10 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       return ok({ ...snapshot, sessionId });
     }
     case 'journal-tail': {
-      const sessionId = str(payload['sessionId']);
-      if (sessionId === '') return err('bad-request', 'sessionId 必填');
+      let sessionId = str(payload['sessionId']);
+      // 省略 ⇒ 库里的最近一个会话（不是注册表的）：重启后看手记是最常用的一眼
+      if (sessionId === '') sessionId = deps.store.latestSessionId();
+      if (sessionId === '') return err('no-session', '库里还没有任何体验条目');
       const page: SpiritJournalPage = { sessionId, rows: [], total: 0, offset: 0, limit: 0 };
       const result = deps.store.page(
         sessionId,

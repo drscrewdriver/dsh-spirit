@@ -16,6 +16,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { describe, expect, it } from 'vitest';
 
 import { SPIRIT_DEFAULTS, SPIRIT_OPS, SPIRIT_RPC_ROUTE, type SpiritConfig } from '../src/contract.js';
+import { LANE_LIVE, TRIGGER_TOOL_FAILURE } from '../src/types.js';
 import { SPIRIT_RPC_METHODS, handleEndpoint, type RpcDeps } from '../src/rpc.js';
 import { Spirit } from '../src/spirit.js';
 import { SpiritStats } from '../src/stats.js';
@@ -32,6 +33,22 @@ import { SCHEMA_FIELD_KEYS } from '../src/config.js';
 import { checkCompat } from '../scripts/compat-precheck.mjs';
 
 const logger = { warn: (_m: string) => undefined, info: (_m: string) => undefined };
+
+/** 端点分发的最小依赖（三个用例只差 store，不在这里三份拷贝）。 */
+function makeDeps(over: Partial<RpcDeps> = {}): RpcDeps {
+  return {
+    spirit: null as unknown as Spirit,
+    stats: new SpiritStats(),
+    store: new ExperienceStore({ db: null, logger }),
+    modes: { isOff: () => false, isBypass: () => false, set: () => true } as unknown as SessionModeStore,
+    personas: new PersonaStore({ dataDir: '', logger }),
+    dataDir: '',
+    cfg: () => SPIRIT_DEFAULTS,
+    drscVerdict: () => 'skipped' as const,
+    logger,
+    ...over,
+  } as unknown as RpcDeps;
+}
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(fileURLToPath(new URL(dir, import.meta.url)), { recursive: true, encoding: 'utf8' })
@@ -255,17 +272,7 @@ describe('task_7.7 包体与依赖口径', () => {
 
 describe('contract 面完整（五方对齐的剩余腿）', () => {
   it('每个声明的端点都能被分发到（不返回 unknown endpoint）', async () => {
-    const deps = {
-      spirit: null as unknown as Spirit,
-      stats: new SpiritStats(),
-      store: new ExperienceStore({ db: null, logger }),
-      modes: { isOff: () => false, isBypass: () => false, set: () => true } as unknown as SessionModeStore,
-      personas: new PersonaStore({ dataDir: '', logger }),
-      dataDir: '',
-      cfg: () => SPIRIT_DEFAULTS,
-      drscVerdict: () => 'skipped' as const,
-      logger: { warn: (_m: string) => undefined, info: (_m: string) => undefined },
-    } as unknown as RpcDeps;
+    const deps = makeDeps();
     for (const op of SPIRIT_OPS) {
       const result = await handleEndpoint(`dsh-spirit/${op}`, { sessionId: 'nope' }, deps);
       // 允许业务性 no-session / bad-request，但不能是"这个端点我根本不认识"
@@ -274,23 +281,30 @@ describe('contract 面完整（五方对齐的剩余腿）', () => {
   });
 
   it('journal-export 的路径注入面被拒，且缺省 dryRun 不写盘', async () => {
-    const deps = {
-      spirit: null as unknown as Spirit,
-      stats: new SpiritStats(),
-      store: new ExperienceStore({ db: null, logger }),
-      modes: { isOff: () => false, isBypass: () => false, set: () => true } as unknown as SessionModeStore,
-      personas: new PersonaStore({ dataDir: '', logger }),
-      dataDir: '',
-      cfg: () => SPIRIT_DEFAULTS,
-      drscVerdict: () => 'skipped' as const,
-      logger: { warn: (_m: string) => undefined, info: (_m: string) => undefined },
-    } as unknown as RpcDeps;
+    const deps = makeDeps();
     const bad = await handleEndpoint('dsh-spirit/journal-export', { sessionId: 's1', dirName: '../escape' }, deps);
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.error.code).toBe('bad-request');
     const dry = await handleEndpoint('dsh-spirit/journal-export', { sessionId: 's1' }, deps);
     expect(dry.ok).toBe(true);
     if (dry.ok) expect((dry.value as { dryRun?: boolean }).dryRun).toBe(true);
+  });
+
+  it('journal-tail 省略会话 ⇒ 退到**库里**最近一个（而不是注册表）', async () => {
+    // 真宿主实测：面板把 stats 与 tail 串成一条链时，宿主重启后手记整块变空白——
+    // 因为 stats 是内存注册表。条目在库里，默认视图就必须能从库里选会话。
+    const store = new ExperienceStore({ db: null, logger });
+    store.append(
+      { id: 'e1', sessionId: 's-old', workspaceId: 'w1', turnSeq: 1, tsMs: 1_000, personaRevision: 1 },
+      { trigger: TRIGGER_TOOL_FAILURE, notice: 'environment', reaction: 'mild', text: '手边的动作没成。', fact: {}, lane: LANE_LIVE },
+    );
+    const deps = makeDeps({ store });
+    const omitted = await handleEndpoint('dsh-spirit/journal-tail', {}, deps);
+    expect(omitted.ok).toBe(true);
+    if (omitted.ok) expect((omitted.value as { sessionId: string }).sessionId).toBe('s-old');
+    const empty = await handleEndpoint('dsh-spirit/journal-tail', {}, makeDeps({ store: new ExperienceStore({ db: null, logger }) }));
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) expect(empty.error.code).toBe('no-session');
   });
 
   it('host 白名单与契约端点逐项一致（漏一条 = 面板功能静默 404）', () => {
