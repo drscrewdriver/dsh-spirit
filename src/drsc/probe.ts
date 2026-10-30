@@ -58,6 +58,16 @@ export class DrscProbe {
     return (await this.check()).verdict === VERDICT_OK;
   }
 
+  /**
+   * 最后一次探测结论（面板读，**不打网络**）。
+   *
+   * 还没探过 ⇒ `skipped`（中性无据）。不能报 `warn`：面板会把"本插件还没走过一轮"
+   * 显示成故障；也不能报 `ok`：那是假数据。
+   */
+  lastVerdict(): SpiritVerdict {
+    return this.cached?.verdict ?? VERDICT_SKIPPED;
+  }
+
   private async run(now: number): Promise<DrscProbeResult> {
     if (!this.deps.enabled()) {
       return { verdict: VERDICT_SKIPPED, reason: '未启用或宿主未装配 collector', checkedAtMs: now };

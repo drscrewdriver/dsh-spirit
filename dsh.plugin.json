@@ -16,6 +16,7 @@
     "dsh": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.1 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4"
   },
   "components": {
-    "host": "dist/index.js"
+    "host": "dist/index.js",
+    "client": "dist/client.js"
   }
 }

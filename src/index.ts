@@ -34,6 +34,8 @@ import { Spirit } from './spirit.js';
 import { registerPersonaSection } from './hooks/persona-section.js';
 import { registerCardPreStep } from './hooks/card-pre-step.js';
 import { registerCardObserve } from './hooks/card-observe.js';
+import { registerSpiritRpc } from './rpc.js';
+import { SpiritStats } from './stats.js';
 import { isSubagentAgent, ownerSessionIdOfAgent, sessionIdOfSession, workspaceIdOfAgent } from './util/host-shape.js';
 
 export const name = SPIRIT_PLUGIN_NAME;
@@ -85,6 +87,7 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     ? new DrscProbe({ client, enabled: () => cfg().drsc.enabled && live().drscEnabled, ttlMs: () => cfg().drsc.probeCacheTtlMs })
     : undefined;
 
+  const stats = new SpiritStats();
   const spirit = new Spirit(
     {
       cfg,
@@ -96,9 +99,13 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
       logger,
       recentEntries: (sessionId, k) => store.recent(sessionId, k),
       previousEntries: (workspaceId, sessionId, m) => store.previousSessionEntries(workspaceId, sessionId, m),
+      onConfirmed: (agentId) => stats.noteConfirmed(agentId),
     },
     personas.current(),
   );
+
+  // DRSC 探测结论：面板要如实显示。探测本身有 TTL 缓存，不在每轮路径上打网络。
+  const drscVerdict = () => (probe === undefined ? ('skipped' as const) : probe.lastVerdict());
 
   ctx.on('agent/created', () => {
     // 人格可能由用户在运行期改：每轮现取，不留旧 salience
@@ -108,6 +115,7 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
 
   registerPersonaSection(ctx, { personas, cfg, caps, logger });
   registerCardObserve(ctx, { spirit, logger });
+  registerSpiritRpc(ctx, { spirit, stats, store, modes, personas, cfg, drscVerdict, logger });
   registerCardPreStep(ctx, {
     spirit,
     logger,
@@ -116,6 +124,26 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     sessionIdOf: (agent) => sessionIdOfSession((agent as { session?: unknown }).session) || String((agent as { id?: unknown }).id ?? ''),
     workspaceIdOf: workspaceIdOfAgent,
     isAborted: (payload) => (payload as { signal?: { aborted?: boolean } }).signal?.aborted === true,
+    afterOutcome: (input, outcome) => {
+      const diag = spirit.diagOf(input.agentId);
+      stats.note({
+        agentId: input.agentId,
+        sessionId: input.sessionId,
+        now: input.now,
+        outcome,
+        recallHits: diag.recallHits,
+        entryCount: diag.entryCount,
+        mood: diag.mood,
+        drscVerdict: drscVerdict(),
+        degraded: !store.persistent,
+      });
+    },
+  });
+
+  ctx.on('agent/disposed', (payload) => {
+    const id = (payload as { agent?: { id?: unknown } }).agent?.id;
+    if (typeof id === 'string') stats.release(id);
+    return undefined;
   });
 
   logger.info(

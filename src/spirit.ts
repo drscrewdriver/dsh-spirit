@@ -71,6 +71,8 @@ export interface SpiritDeps {
   recentEntries(sessionId: string, k: number): ExperienceEntry[];
   /** 取上一会话末尾条目（跨会话基调）。 */
   previousEntries(workspaceId: string, sessionId: string, m: number): ExperienceEntry[];
+  /** 卡被确认生效时的回调（统计面记分子；不在这里做业务判断）。 */
+  onConfirmed?(agentId: string): void;
 }
 
 interface AgentRuntime {
@@ -85,6 +87,9 @@ interface AgentRuntime {
 
 export class Spirit {
   private readonly runtimes = new Map<string, AgentRuntime>();
+  private readonly diag = new Map<string, { entryCount: number; recallHits: number; mood: Mood | undefined; outcome: Gate }>();
+  /** 本轮检索段实际命中数（供诊断面读）。 */
+  private readonly lastRecall = new Map<string, number>();
   /** sessionId → agentId：压缩事件只给会话，而运行态按 agent 计。 */
   private readonly sessionToAgent = new Map<string, string>();
   private readonly deps: SpiritDeps;
@@ -110,11 +115,29 @@ export class Spirit {
   }
 
   /**
-   * 处理一个 pre-step。
+   * 处理一个 pre-step（对外的唯一入口）。
    *
+   * 包一层是为了给统计面留一个**单点**：诊断量在这里统一取，而不是让每个 gate 分支
+   * 各自记得上报（漏一个分支就是面板上永久少一类数，且不会报错）。
    * 任何异常都在内部吞掉并返回 passthrough：**一次记录失败不许变成一轮对话失败**。
    */
   async onPreStep(input: PreStepInput): Promise<PreStepOutcome> {
+    const outcome = await this.runPreStep(input);
+    this.diag.set(input.agentId, {
+      entryCount: this.deps.store.count(input.sessionId),
+      recallHits: this.lastRecall.get(input.agentId) ?? 0,
+      mood: this.runtimes.get(input.agentId)?.mood,
+      outcome: outcome.reason,
+    });
+    return outcome;
+  }
+
+  /** 面板读的每轮诊断（没跑过任何一轮 ⇒ 全零形状，不编数据）。 */
+  diagOf(agentId: string): { entryCount: number; recallHits: number; mood: Mood | undefined; outcome: Gate } {
+    return this.diag.get(agentId) ?? { entryCount: 0, recallHits: 0, mood: undefined, outcome: 'no-new-user' };
+  }
+
+  private async runPreStep(input: PreStepInput): Promise<PreStepOutcome> {
     const cfg = this.eff();
     try {
       // ── 门 1/2：部署上限与主闸 ──
@@ -176,6 +199,9 @@ export class Spirit {
           },
         );
         recalled = result.excerpts;
+        this.lastRecall.set(input.agentId, result.excerpts.length);
+      } else {
+        this.lastRecall.set(input.agentId, 0);
       }
 
       const tone =
@@ -253,11 +279,12 @@ export class Spirit {
    * @returns 是否命中一个在飞卡
    */
   confirmInjected(messageId: string): boolean {
-    for (const runtime of this.runtimes.values()) {
+    for (const [agentId, runtime] of this.runtimes.entries()) {
       const fingerprint = runtime.pending.get(messageId);
       if (fingerprint === undefined) continue;
       runtime.pending.delete(messageId);
       runtime.lastFingerprint = fingerprint;
+      this.deps.onConfirmed?.(agentId);
       return true;
     }
     return false;
@@ -300,6 +327,8 @@ export class Spirit {
   /** agent 销毁时释放运行态（采集态按会话键，由 sessionId 单独释放）。 */
   release(agentId: string): void {
     this.runtimes.delete(agentId);
+    this.diag.delete(agentId);
+    this.lastRecall.delete(agentId);
     for (const [sessionId, agent] of [...this.sessionToAgent.entries()]) {
       if (agent === agentId) this.sessionToAgent.delete(sessionId);
     }

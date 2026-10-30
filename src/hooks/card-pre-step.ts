@@ -15,7 +15,7 @@ import type {} from '@deepseek-ai/dsh-agent'; // agent/pre-step 事件名声明
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 
 import { SPIRIT_SLOT_SECTION_NAME, SPIRIT_SOURCE_KIND } from '../contract.js';
-import type { Spirit } from '../spirit.js';
+import type { PreStepInput, PreStepOutcome, Spirit } from '../spirit.js';
 import { textOfMessage } from '../util/host-shape.js';
 
 export interface PreStepHookDeps {
@@ -29,6 +29,13 @@ export interface PreStepHookDeps {
   /** 本轮是否有新注入（适配器不用管：由编排层按门 6 判）；此字段保留给未来真机诊断。 */
   isAborted?: (payload: unknown) => boolean;
   now?: () => number;
+  /**
+   * 每轮结果回调（统计面写这里）。
+   *
+   * 为什么不在 hook 里直接写 stats：这个 hook 要能在无 stats 的环境下单测；
+   * 而且统计口径属于"怎么数"的业务判断，不该混进宿主适配器。
+   */
+  afterOutcome?(input: PreStepInput, outcome: PreStepOutcome): void;
 }
 
 /** 取用户来源消息的正文，当检索查询串（只取第一条，长度有顶）。 */
@@ -53,7 +60,7 @@ export function registerCardPreStep(ctx: Context, deps: PreStepHookDeps): void {
       const agent = payload.agent;
       const agentId = String(agent.id ?? '');
       const messages = decision.messages ?? [];
-      const outcome = await deps.spirit.onPreStep({
+      const preStepInput: PreStepInput = {
         agentId,
         sessionId: deps.sessionIdOf(agent),
         workspaceId: deps.workspaceIdOf(agent),
@@ -62,7 +69,9 @@ export function registerCardPreStep(ctx: Context, deps: PreStepHookDeps): void {
         newUserText: queryFrom(messages),
         messageCount: messages.length,
         now: now(),
-      });
+      };
+      const outcome = await deps.spirit.onPreStep(preStepInput);
+      deps.afterOutcome?.(preStepInput, outcome);
       if (outcome.kind !== 'injected' || outcome.text === '') return decision;
 
       const card = createUserMessage({

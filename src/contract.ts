@@ -45,11 +45,80 @@ export const SPIRIT_OPS = [
   'journal-tail',
   'journal-export',
   'persona-get',
+  'session-mode',
+  'session-mode-get',
 ] as const;
 export type SpiritOp = (typeof SPIRIT_OPS)[number];
 
 export function rpcPath(op: SpiritOp): string {
   return `${SPIRIT_RPC_PREFIX}${op}`;
+}
+
+/**
+ * 会话级开关写入面（pill 用）。
+ *
+ * ⚠️ **读另走 `session-mode-get`**：本端点"两字段都省略"的语义是**清除覆盖、回到跟随全局**，
+ * 拿它当读接口会静默把用户的会话设置抹掉（写读同形是最危险的那种 API）。
+ */
+export interface SpiritSessionModeRequest {
+  sessionId: string;
+  off?: boolean;
+  bypass?: boolean;
+}
+
+export interface SpiritSessionModeResult {
+  sessionId: string;
+  off: boolean;
+  bypass: boolean;
+  /** 是否已落盘（false = 内存态已生效但文件不可写，重启后会丢）。 */
+  persisted: boolean;
+}
+
+export interface SpiritJournalTailRequest {
+  sessionId: string;
+  offset?: number;
+  limit?: number;
+  /** 默认不含被取代项（面板里一段经历只显示当前作数的那条）。 */
+  includeSuperseded?: boolean;
+}
+
+export interface SpiritExportRequest {
+  format?: 'md' | 'jsonl';
+  /** 只收归档目录名（如 `archive`）；**不收任意路径**。 */
+  dirName?: string;
+  dryRun?: boolean;
+}
+
+/** 端点 → 请求/响应类型的查表（两端共享的契约单一事实源）。 */
+export interface SpiritRequestMap {
+  'session-stats': { sessionId?: string };
+  'journal-tail': SpiritJournalTailRequest;
+  'journal-export': SpiritExportRequest;
+  'persona-get': Record<string, never>;
+  'session-mode': SpiritSessionModeRequest;
+  'session-mode-get': { sessionId: string };
+}
+
+export interface SpiritResponseMap {
+  'session-stats': SpiritSessionStats;
+  'journal-tail': SpiritJournalPage;
+  'journal-export': SpiritExportResult;
+  'persona-get': SpiritPersonaView;
+  'session-mode': SpiritSessionModeResult;
+  'session-mode-get': SpiritSessionModeResult;
+}
+
+/** 端点字面量类型（client 与 host 白名单共用）。 */
+export type SpiritEndpoint = keyof SpiritRequestMap & string;
+
+/** 当前生效档（面板与 pill 都要读）。 */
+export interface SpiritMoodView {
+  valence: string;
+  arousal: string;
+  label: string;
+  revision: number;
+  /** 档位词以外的行为倾向（面板展开时给）。 */
+  tendency: string;
 }
 
 /** 会话信息区数据（纯内存注册表读，零文件 I/O；与 client 共享同一形状）。 */
@@ -74,6 +143,10 @@ export interface SpiritSessionStats {
   drscVerdict: SpiritVerdict;
   /** 存储降级为真时 ⇒ 不落库不检索，只走实时近因。 */
   degraded: boolean;
+  /** 当前档位（无会话运行态时为 null）。 */
+  mood: SpiritMoodView | null;
+  /** 会话级覆盖现状。 */
+  mode: { off: boolean; bypass: boolean };
 }
 
 /** 手记分页视图（读库投影；库是真源，不是文档）。 */
