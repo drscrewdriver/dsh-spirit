@@ -121,10 +121,14 @@ not render an automatic volatile form, so those keys are not on the settings pag
   same session still carries exactly one card (`snapshot` supersession), same-tier turns are not re-sent,
   and a card is re-issued after `/compact`
 - **Still unverified**: the A/B cost comparison (`cacheReadTokens` needs a real provider and long
-  sessions), and the older 0.1.x host lines
+  sessions), and web-shell rendering / compaction behaviour on the 0.1.x lines
 - The **no-webServer host line (headless) is verified**: it boots and finishes a real turn without
   crashing, the persona section and tail injection work there too, and only the panel route is absent
   (optional services come through scoped injection, never a top-level `inject`)
+- Cross-line spot checks: `0.2.1-rc.1` (a declared line) passes the same headless real turn;
+  `0.1.7-rc.2` **refuses the install by default via `peerDependencies` and rolls it back** — it only
+  installs behind an explicit `allow-version --accept-risk`. That is why `engines.dsh` lists only the
+  six verified 0.2.x lines.
 
 ## Engineering
 

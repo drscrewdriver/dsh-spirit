@@ -102,9 +102,11 @@ spirit 只调用它的 `op` 面（`status` / `session` / `search`），**从不�
   pill 三态写盘与重启读回、设置页「手记」分节渲染与导出落盘均逐项验过；
   **注入端到端已验**（用本地 mock provider 跑真回合，直接取宿主发出的请求体）：卡在消息轨末块、
   同会话跨轮只留一张（`snapshot` 取代语义）、同档不重发、`/compact` 后重新出卡、生效确认链闭合；
-  **仍未验**：旁路 A/B 的成本对照（`cacheReadTokens` 需真 provider 与长会话）、更老的宿主线（0.1.x）
+  **仍未验**：旁路 A/B 的成本对照（`cacheReadTokens` 需真 provider 与长会话）、0.1.x 上的 web 渲染与压缩行为
 - 无 webServer 的宿主线（headless）已验：不崩、人格区与尾部注入同样生效，只是面板路由不挂载
   （可选服务走作域注入，不进顶层 `inject`）
+- 跳线抽检：`0.2.1-rc.1`（已声明线）headless 真回合同样通过；`0.1.7-rc.2` 默认被 `peerDependencies`
+  门拒载并自动回滚（要拿 `allow-version --accept-risk` 才装得上）——所以声明只收已验的 0.2.x 六线
 
 ## 工程
 
