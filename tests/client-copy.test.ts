@@ -51,4 +51,17 @@ describe('client 文案', () => {
     expect(copyOf(undefined)['pill.labelOn']).toBe(zh['pill.labelOn']);
     expect(copyOf('en-US')['pill.labelOn']).toBe(DICTS.en['pill.labelOn']);
   });
+
+  it('座位标题传 thunk，不在 apply 期把语言存成字符串', () => {
+    /**
+     * 真宿主 0.2.0-rc.2 实测：client apply 跑在宿主写 `<html lang>` 之前（初始文档
+     * `lang="en"`），于是导航条出现英文「Journal」而面板内是中文。宿主契约明写
+     * “thunk 跟随当前语言”（dsh-client-ui-slots resolveSlotLabel），所以这里守的是：
+     * label 必须是函数，且 entry.ts 不得再把取词结果存在 apply 作域变量里。
+     */
+    const entry = readFileSync(join2(CLIENT_DIR, 'entry.ts'), 'utf8');
+    expect(entry).toMatch(/label:\s*\(\)\s*=>\s*currentCopy\(\)\['section\.label'\]/u);
+    expect(entry).not.toMatch(/label:\s*copy\[/u);
+    expect(entry).not.toMatch(/const copy = copyOf/u);
+  });
 });

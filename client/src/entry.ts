@@ -14,6 +14,7 @@
  */
 
 import { copyOf } from './copy.js';
+import type { CopyKey } from './copy.js';
 import { SpiritPanel } from './panel.js';
 import { SpiritPill } from './pill.js';
 import { makeRpc } from './rpc.js';
@@ -27,9 +28,17 @@ export const PILL_SEAT = 'conversation.input.left';
 /** 判定期：够宿主把座位声明出来；过了还没挂上就响亮告警（静默消失最难查）。 */
 const SEAT_PROBE_MS = 3_000;
 
+/**
+ * 当前语言取词。**每次调用现取**，不在 apply 期算一次存下来：
+ * 真宿主实测 client apply 跑在宿主写 `<html lang>` 之前（初始文档是 `lang="en"`），
+ * 存下来就会把分节标题永久冻结成英文（导航条出现「Journal」而面板内是中文）。
+ */
+function currentCopy(): Record<CopyKey, string> {
+  return copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
+}
+
 export function apply(ctx: SpiritClientCtx): void {
   const rpc = makeRpc();
-  const copy = copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
   let settingsMounted = false;
   let pillMounted = false;
 
@@ -38,7 +47,9 @@ export function apply(ctx: SpiritClientCtx): void {
       settingsMounted = true;
       try {
         return ctx.slots.register(
-          { name: SETTINGS_SEAT, id: 'dsh-spirit', order: 260, label: copy['section.label'], inject: () => ({ rpc }) },
+          // label 传 **thunk**：宿主契约明写“thunk 跟随当前语言”（resolveSlotLabel），
+          // 传字符串 = 标题冻结在注册那一刻的语言。
+          { name: SETTINGS_SEAT, id: 'dsh-spirit', order: 260, label: () => currentCopy()['section.label'], inject: () => ({ rpc }) },
           SpiritPanel,
         );
       } catch (err) {
