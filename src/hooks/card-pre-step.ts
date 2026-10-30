@@ -26,7 +26,12 @@ export interface PreStepHookDeps {
   isSubagent(agent: unknown): boolean;
   sessionIdOf(agent: unknown): string;
   workspaceIdOf(agent: unknown): string;
-  /** 本轮是否有新注入（适配器不用管：由编排层按门 6 判）；此字段保留给未来真机诊断。 */
+  /**
+   * 门 7 判据：本轮已被取消 ⇒ 不注入也不记录。
+   *
+   * 为什么开成依赖而不是就地读 `payload.signal`：取消信号的形状在不同宿主线不一样
+   * （abort signal / aborted 布尔 / 无），单测要能直接置真；缺省实现保留现读。
+   */
   isAborted?: (payload: unknown) => boolean;
   now?: () => number;
   /**
@@ -51,12 +56,15 @@ function queryFrom(messages: readonly unknown[]): string {
 
 export function registerCardPreStep(ctx: Context, deps: PreStepHookDeps): void {
   const now = deps.now ?? Date.now;
+  const isAborted = deps.isAborted
+    ?? ((payload: unknown): boolean => (payload as { signal?: { aborted?: boolean } }).signal?.aborted === true);
   ctx.on('agent/pre-step', async (payload, next) => {
     // 先 next()：不劫持其它监听器的决定，也不丢它们的注入
     const decision = await next();
     try {
       if (decision.kind !== 'enter') return decision;
-      if (payload.signal?.aborted === true) return decision; // 门 7
+      // 门 7：已被取消的一轮不注入（也不记录：那一段根本不会被模型看到）
+      if (isAborted(payload)) return decision;
       const agent = payload.agent;
       const agentId = String(agent.id ?? '');
       const messages = decision.messages ?? [];

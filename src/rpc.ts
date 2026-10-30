@@ -140,8 +140,12 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         return err('bad-request', 'dirName 只接受单个目录名');
       }
       let sessionId = str(payload['sessionId']);
+      // 三级兜底：显式传入 → 注册表当前会话 → **库里**最近一个。
+      // 只靠注册表会得到“导出失败：还没有任何会话记录可导”，而条目其实都在库里
+      //（真宿主实测：重启后看手记是主场景，导出不能先死）。
       if (sessionId === '') sessionId = deps.stats.latest()?.sessionId ?? '';
-      if (sessionId === '') return err('no-session', '还没有任何会话记录可导');
+      if (sessionId === '') sessionId = deps.store.latestSessionId();
+      if (sessionId === '') return err('no-session', '库里还没有任何体验条目可导');
       const cfg = deps.cfg();
       const format = str(payload['format'], 'jsonl') === 'md' ? 'md' : 'jsonl';
       // 默认跟随部署面的 dryRun；用户显式 dryRun:false 才落盘（唯一能写文件的端点不默认动手）

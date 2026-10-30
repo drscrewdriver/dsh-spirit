@@ -86,7 +86,9 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
   const doExport = (format: 'md' | 'jsonl') => {
     if (rpc === undefined) return;
     setExportNote(null);
-    void rpc('journal-export', { sessionId: stats?.sessionId, format, dryRun: false })
+    // 会话优先取统计行，没有统计就取**条目页**的会话：真宿主实测过只取前者，
+    // 于是重启后“导出失败：还没有任何会话记录可导”，而屏幕上明明列着三条。
+    void rpc('journal-export', { sessionId: stats?.sessionId ?? page?.sessionId ?? '', format, dryRun: false })
       .then((result) => {
         if (!result.ok) {
           setExportNote(`${copy['panel.exportFailed']}: ${result.error.message}`);

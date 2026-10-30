@@ -163,7 +163,7 @@ describe('task_7.3 / 7.3b 解耦与不越界', () => {
 
 describe('task_7.4 / 7.5 请求形状与零副作用', () => {
   /** 最小宿主桩：只收集 handler，不拉真宿主；库走内存降级（消息形状与库无关）。 */
-  function makeHost(cfg: Partial<SpiritConfig> = {}) {
+  function makeHost(cfg: Partial<SpiritConfig> = {}, hook: { isAborted?: (payload: unknown) => boolean } = {}) {
     const base = structuredClone(SPIRIT_DEFAULTS);
     const merged: SpiritConfig = { ...base, ...cfg, live: { ...base.live, ...(cfg.live ?? {}) } };
     const handlers: Record<string, (payload: unknown, next?: () => Promise<unknown>) => Promise<unknown>> = {};
@@ -200,6 +200,7 @@ describe('task_7.4 / 7.5 请求形状与零副作用', () => {
       isSubagent: () => false,
       sessionIdOf: () => 's1',
       workspaceIdOf: () => 'w1',
+      ...hook,
     });
     return { handlers, store };
   }
@@ -209,6 +210,25 @@ describe('task_7.4 / 7.5 请求形状与零副作用', () => {
     const original = { kind: 'enter' as const, messages: [userMsg('继续')] };
     const out = await handlers['agent/pre-step']?.({ agent: { id: 'a1' } }, async () => original);
     expect(out).toBe(original);
+  });
+
+  it('门 7 已被取消的一轮：原样退回 next() 的决定且不记录（注入依赖置真）', async () => {
+    const { handlers, store } = makeHost({}, { isAborted: () => true });
+    const original = { kind: 'enter' as const, messages: [userMsg('跑到一半被停了')] };
+    const out = await handlers['agent/pre-step']?.({ agent: { id: 'a1' }, signal: { aborted: true } }, async () => original);
+    expect(out).toBe(original);
+    expect(store.count('s1')).toBe(0);
+  });
+
+  it('门 7 缺省判据就是真宿主形状（payload.signal.aborted）', async () => {
+    // 不传 isAborted 时走缺省实现：那才是真宿主上跑的那条，形状写错就是门 7 形同虚设
+    const { handlers, store } = makeHost();
+    const original = { kind: 'enter' as const, messages: [userMsg('被取消的一轮')] };
+    const cancelled = await handlers['agent/pre-step']?.({ agent: { id: 'a1' }, signal: { aborted: true } }, async () => original);
+    expect(cancelled).toBe(original);
+    expect(store.count('s1')).toBe(0);
+    const normal = await handlers['agent/pre-step']?.({ agent: { id: 'a1' } }, async () => original);
+    expect(normal).not.toBe(original);
   });
 
   it('注入时：原消息逐条保持引用不变，只在尾部追加一条', async () => {
