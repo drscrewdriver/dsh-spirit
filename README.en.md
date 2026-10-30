@@ -77,6 +77,11 @@ only the live recency lane runs — no errors, nothing invented. spirit calls on
 - **Append-only store**: a correction inserts a new row and marks the old one via `superseded_by`;
   there is **no DELETE anywhere** (a grep assertion enforces it in CI). Cleanup defaults to dry-run
   and only archives — it deletes nothing.
+- **A turn's experience settles at `turn/end`**, not at the next turn: the previous version took the
+  signal accumulator in the *next* pre-step, which silently dropped **the last turn of every session**
+  (a single-turn task recorded nothing at all — that is exactly how a live host exposed it). Now
+  `turn/end` flushes immediately and pre-step remains only as a fallback for missed events (a settled
+  turn yields empty signals, so nothing is recorded twice).
 - **"Was the card actually shown" is read from the session log**: an injected row counts as live
   only once it lands in the log; compaction and clear reset that credential, otherwise "compact once
   and the character has no feelings" happens silently.
@@ -87,11 +92,30 @@ only the live recency lane runs — no errors, nothing invented. spirit calls on
 
 `Mood · record-only` is not "off": it keeps recording and deriving and only stops the injection —
 that is the control group A/B needs. Same store, same tiers; the only difference is whether the card
-enters context. Objective things to watch:
+enters context. How to run it:
+
+```bash
+# 1) one session normal (injecting), another set to "record only, no injection"
+#    (or deployment-side `live.bypass: true`)
+# 2) afterwards, produce the comparison report offline (durable logs + own store; no host needed)
+npm run ab -- --home "$DSH_HOME"          # human table
+npm run ab -- --home "$DSH_HOME" --json   # machine-readable
+```
+
+Groups come from **evidence**, not from what the experimenter remembers: a session with a
+`plugin:spirit` card row is the injected arm; a session with store entries but no card row is the
+bypass arm. Objective things to watch:
 
 - `cacheReadTokens` (tail append vs writing volatile text into the system prompt: derived ~150:1)
 - injected / bypassed turns and confirmed-injections counters (shown in the Journal section)
-- user correction rate, reply length
+- per-turn injection volume (card bytes), how many cards carry a "recalled" section (the durable
+  proxy for recall hits), and journal entry counts
+- user correction rate: the report only counts **correction candidates** (a cue-word proxy) — the
+  final judgement stays manual, because runtime verdicts never read free text and offline analysis
+  does not waive that rule
+
+⚠ `cacheReadTokens` is what the host recorded **for that provider**: numbers from a local mock
+provider prove the pipeline runs (this repo measured it that way), they are not a real cache cost.
 
 ## Configuration
 
@@ -120,8 +144,10 @@ not render an automatic volatile form, so those keys are not on the settings pag
   actually sends is the evidence): the card is the last block of the message track, a second turn in the
   same session still carries exactly one card (`snapshot` supersession), same-tier turns are not re-sent,
   and a card is re-issued after `/compact`
-- **Still unverified**: the A/B cost comparison (`cacheReadTokens` needs a real provider and long
-  sessions), and web-shell rendering / compaction behaviour on the 0.1.x lines
+- **Still unverified**: what the A/B comparison *concludes* — `npm run ab` produces the two-arm report
+  from durable logs (and was run against a real host with both arms present), but reading
+  `cacheReadTokens` as a cost number needs a real provider and long sessions, not a mock; also still
+  unverified: web-shell rendering and compaction behaviour on the 0.1.x lines
 - The **no-webServer host line (headless) is verified**: it boots and finishes a real turn without
   crashing, the persona section and tail injection work there too, and only the panel route is absent
   (optional services come through scoped injection, never a top-level `inject`)

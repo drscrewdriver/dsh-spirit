@@ -32,7 +32,8 @@
     "compat": "node scripts/compat-precheck.mjs",
     "smoke": "node scripts/smoke.mjs",
     "check": "npm run typecheck && npm run lint && npm run test && npm run build && npm run smoke",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "ab": "node scripts/ab-report.mjs"
   },
   "files": [
     "dist",

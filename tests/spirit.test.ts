@@ -318,3 +318,62 @@ describe('card-observe：确认必须排在业务过滤之前', () => {
     expect(h.spirit.moodOf('a1')).toBeUndefined();
   });
 });
+
+describe('turn/end 即时结算（会话最后一轮不许丢）', () => {
+  /** 走真接线：事件进 observeEvent，结算由 turn/end 触发。 */
+  function feedFailure(h: Harness): void {
+    h.spirit.observeEvent('s1', { type: 'tool/call', data: { callId: 'c1', name: 'read' } }, 900);
+    h.spirit.observeEvent('s1', { type: 'tool/result', data: { message: { toolCallId: 'c1', isError: true } } }, 950);
+  }
+
+  it('单轮会话：turn/end 一到就落库（不再靠“还有下一轮”）', async () => {
+    const h = harness();
+    await h.spirit.onPreStep(input({ messageCount: 1, now: 1_000 }));
+    feedFailure(h);
+    // 关键断言：这里**没有**第二次 pre-step，也没有任何“下一轮”
+    h.spirit.observeEvent('s1', { type: 'turn/end', data: { turn: 1 } }, 1_200);
+    expect(h.store.count('s1')).toBe(1);
+  });
+
+  it('结算后下一轮 pre-step 不重复记（兜底路取到空信号）', async () => {
+    const h = harness();
+    await h.spirit.onPreStep(input({ now: 1_000 }));
+    feedFailure(h);
+    h.spirit.observeEvent('s1', { type: 'turn/end', data: { turn: 1 } }, 1_200);
+    expect(h.store.count('s1')).toBe(1);
+    await h.spirit.onPreStep(input({ now: 2_000, newUserText: '然呢' }));
+    expect(h.store.count('s1'), 'turn/end 已结算的轮不得被兜底路再记一次').toBe(1);
+  });
+
+  it('纯工具轮（本轮无新用户消息）⇒ turn/end 也不记', () => {
+    // 门 6 的采集侧镜像：没认养过这一轮就没有记账上下文，结算直接 no-op。
+    const h = harness();
+    feedFailure(h);
+    h.spirit.observeEvent('s1', { type: 'turn/end', data: { turn: 1 } }, 1_200);
+    expect(h.store.count('s1')).toBe(0);
+  });
+
+  it('旁路下 turn/end 照常落库（对照组靠的就是这堆条目）', async () => {
+    const h = harness({ cfg: cfgWith({}, { bypass: true }) });
+    await h.spirit.onPreStep(input({ now: 1_000 }));
+    feedFailure(h);
+    h.spirit.observeEvent('s1', { type: 'turn/end', data: { turn: 1 } }, 1_200);
+    expect(h.store.count('s1')).toBe(1);
+  });
+
+  it('中性轮（无可记信号）⇒ turn/end 不产出条目', async () => {
+    const h = harness();
+    await h.spirit.onPreStep(input({ now: 1_000 }));
+    h.spirit.observeEvent('s1', { type: 'turn/end', data: { turn: 1 } }, 1_200);
+    expect(h.store.count('s1')).toBe(0);
+  });
+
+  it('重复的 turn/end 只结算一次（上下文已消费）', async () => {
+    const h = harness();
+    await h.spirit.onPreStep(input({ now: 1_000 }));
+    feedFailure(h);
+    h.spirit.observeEvent('s1', { type: 'turn/end', data: { turn: 1 } }, 1_200);
+    h.spirit.observeEvent('s1', { type: 'turn/end', data: { turn: 1 } }, 1_300);
+    expect(h.store.count('s1')).toBe(1);
+  });
+});

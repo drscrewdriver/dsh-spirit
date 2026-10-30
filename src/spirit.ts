@@ -99,6 +99,13 @@ export class Spirit {
   private readonly lastRecall = new Map<string, number>();
   /** sessionId → agentId：压缩事件只给会话，而运行态按 agent 计。 */
   private readonly sessionToAgent = new Map<string, string>();
+  /**
+   * 本轮的记账上下文（sessionId 为键）：`turn/end` 到达时拿它落一条体验。
+   *
+   * 为什么需要它：信号累加器在 `turn/end` 时已经齐了，但 `workspaceId` 与本轮新用户文本
+   * 只在 pre-step 的 payload 里——不在这里存下，结算时就只能拿到空字段。
+   */
+  private readonly turnCtx = new Map<string, { workspaceId: string; newUserText: string }>();
   private readonly deps: SpiritDeps;
 
   /**
@@ -157,6 +164,12 @@ export class Spirit {
       // 旁路两个入口：全局开关（live.bypass，面板与评测用）与会话级覆盖。**两个都得读**：
       // 只读会话级会让设置页那个全局开关成为装饰品（改了不生效，最难查的一类报告）。
       const bypass = cfg.live.bypass || this.deps.modes.isBypass(input.ownerId);
+      // 存下本轮的记账上下文：真记录发生在 `turn/end`（见 flushTurn），而那时只剩 session。
+      // **只在新用户轮存**：一个轮里有多个 step，后续 step 的 messageCount=0、newUserText 为空，
+      // 若不问条件就写，会把本轮真正的用户文本冲掉（影响 quote 采集），也会让纯工具轮被记上。
+      if (input.messageCount > 0) {
+        this.turnCtx.set(input.sessionId, { workspaceId: input.workspaceId, newUserText: input.newUserText });
+      }
       // 卡总闸：关了就与旁路同处理（照常记录与派生，不出卡）
       if (!cfg.live.cardEnabled) {
         this.recordOnce(input);
@@ -180,6 +193,8 @@ export class Spirit {
         runtime.lastFingerprint = undefined;
       }
       const signals = this.deps.watcher.takeSignals(input.sessionId, input.now);
+      // 这是**兜底路**：正常时序下 `turn/end` 已经结算并清空累加器，这里取到空信号⇒不重复记；
+      // 只有 `turn/end` 漏发（真宿主存在这条线）时，上一轮的信号才在这里落库。
       this.record(signals, input, runtime);
       if (bypass) {
         // 旁路：记录与派生都做，只是不出卡——这是归因实验的对照组
@@ -257,10 +272,10 @@ export class Spirit {
     this.record(signals, input, { pending: new Map<string, string>(), firstTurnDone: true });
   }
 
-  /** 编译并落一条体验条目（不记则静默跳过；表缺格等异常走 warn）。 */
+  /** 记录所需的最小轮上下文（pre-step 的 input 本身就满足这个形状）。 */
   private record(
     signals: ReturnType<SpiritDeps['watcher']['takeSignals']>,
-    input: PreStepInput,
+    input: { sessionId: string; workspaceId: string; now: number; newUserText: string },
     runtime: AgentRuntime,
   ): void {
     const compiled = compileTurn(signals, this.persona, { gapThresholdMs: this.deps.cfg().capture.gapThresholdMs });
@@ -335,6 +350,30 @@ export class Spirit {
    */
   observeEvent(sessionId: string, event: Parameters<TurnWatcher['observe']>[1], now: number): void {
     this.deps.watcher.observe(sessionId, event, now);
+    // 一轮结束就是它的体验已经齐了——在这里结算，而不是等下一轮 pre-step。
+    if (event.type === 'turn/end') this.flushTurn(sessionId, now);
+  }
+
+  /**
+   * 本轮结算：`turn/end` 一到就把这一轮的信号编译成体验条目。
+   *
+   * 为什么不能只靠下一轮 pre-step（改动前的做法）：那会把**会话的最后一轮**永远丢掉——
+   * 而 headless 一次任务就是一轮 ⇒ 整条记录轨在那条线上一条都不落（真机实测：跑完几个会话，
+   * 库里运行时写入的条目数==0）。“记录过程的点滴”不许靠“还有下一轮”才成立。
+   */
+  flushTurn(sessionId: string, now: number): void {
+    const ctx = this.turnCtx.get(sessionId);
+    if (ctx === undefined) return;
+    this.turnCtx.delete(sessionId);
+    const signals = this.deps.watcher.takeSignals(sessionId, now);
+    const agentId = this.sessionToAgent.get(sessionId);
+    const runtime = this.runtimes.get(agentId ?? '') ?? { pending: new Map<string, string>(), firstTurnDone: true };
+    try {
+      this.record(signals, { sessionId, workspaceId: ctx.workspaceId, now, newUserText: ctx.newUserText }, runtime);
+    } catch (err) {
+      // 结算失败不许影响会话本身（全链 fail-open）；下一轮的兜底路还会再试
+      this.deps.logger.warn(`[spirit] turn/end 结算异常（本轮未记）：${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**
@@ -363,7 +402,11 @@ export class Spirit {
     this.diag.delete(agentId);
     this.lastRecall.delete(agentId);
     for (const [sessionId, agent] of [...this.sessionToAgent.entries()]) {
-      if (agent === agentId) this.sessionToAgent.delete(sessionId);
+      if (agent === agentId) {
+        this.sessionToAgent.delete(sessionId);
+        // 记账上下文与会话同生命周期：不删就会在长宿主里积下无限条目
+        this.turnCtx.delete(sessionId);
+      }
     }
   }
 
