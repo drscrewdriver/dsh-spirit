@@ -85,6 +85,8 @@ interface AgentRuntime {
 
 export class Spirit {
   private readonly runtimes = new Map<string, AgentRuntime>();
+  /** sessionId → agentId：压缩事件只给会话，而运行态按 agent 计。 */
+  private readonly sessionToAgent = new Map<string, string>();
   private readonly deps: SpiritDeps;
 
   /**
@@ -135,6 +137,7 @@ export class Spirit {
       if (input.messageCount === 0) return { kind: 'passthrough', reason: 'no-new-user' };
 
       const runtime: AgentRuntime = this.runtimes.get(input.agentId) ?? { pending: new Map<string, string>(), firstTurnDone: false };
+      this.sessionToAgent.set(input.sessionId, input.agentId);
       const signals = this.deps.watcher.takeSignals(input.sessionId, input.now);
       this.record(signals, input, runtime);
       if (bypass) {
@@ -275,9 +278,31 @@ export class Spirit {
     this.deps.watcher.observe(sessionId, event, now);
   }
 
+  /**
+   * 重置"已发过卡"的凭据（压缩/清空之后必须）。
+   *
+   * 不做这件事的后果很具体：卡行被摘要取代后已从模型上下文消失，但指纹还在，
+   * 于是 `unchanged` 门会永久阻止重发 —— 表现为"压缩一次，角色就再也没情绪了"，
+   * 而且不报错。姊妹包同理不信事件只信表面：这里**两个信号都接**
+   *（`compaction/end` 与 `agent/created{source:'compact'|'clear'}`），因为它们各自都会漏。
+   */
+  resetCardState(key: string, why: 'compact' | 'clear'): void {
+    const agentId = this.sessionToAgent.get(key) ?? key;
+    const runtime = this.runtimes.get(agentId);
+    if (runtime === undefined) return;
+    runtime.lastFingerprint = undefined;
+    runtime.pending.clear();
+    runtime.firstTurnDone = why === 'clear';
+    if (why === 'clear') runtime.mood = undefined;
+    this.deps.logger.info(`[spirit] ${why} 后重置发卡凭据（下轮会重发）`);
+  }
+
   /** agent 销毁时释放运行态（采集态按会话键，由 sessionId 单独释放）。 */
   release(agentId: string): void {
     this.runtimes.delete(agentId);
+    for (const [sessionId, agent] of [...this.sessionToAgent.entries()]) {
+      if (agent === agentId) this.sessionToAgent.delete(sessionId);
+    }
   }
 
   /** 会话销毁/不再参与时释放采集累加态。 */

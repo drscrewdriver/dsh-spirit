@@ -181,6 +181,32 @@ describe('重发判据与两段式生效', () => {
     expect((await h.spirit.onPreStep(input({ now: 1_003 }))).kind).toBe('injected');
   });
 
+  it('压缩/清空后重置发卡凭据 ⇒ 下轮重新出卡（不重置就是"角色再也没情绪"且无声）', async () => {
+    const h = harness();
+    const handlers: Record<string, (a: unknown, b?: unknown) => void> = {};
+    const ctx = {
+      on: (name: string, handler: (a: unknown, b?: unknown) => void) => {
+        handlers[name] = handler;
+      },
+    } as unknown as Parameters<typeof registerCardObserve>[0];
+    registerCardObserve(ctx, { spirit: h.spirit, logger });
+
+    const first = await h.spirit.onPreStep(input());
+    if (first.kind !== 'injected') throw new Error('首轮应发卡');
+    h.spirit.noteInjected('a1', 'c1', first.fingerprint);
+    handlers['session/event']?.({ id: 's1' }, { type: 'user/message', data: { id: 'c1', source: { kind: 'plugin:spirit' } } });
+    // 已确认生效 ⇒ 同一状态不该重发
+    expect((await h.spirit.onPreStep(input({ now: 2_000 }))).reason).toBe('unchanged');
+    // 压缩把卡行从表面抽走 ⇒ 凭据作废
+    handlers['session/event']?.({ id: 's1' }, { type: 'compaction/end', data: {} });
+    expect((await h.spirit.onPreStep(input({ now: 3_000 }))).kind).toBe('injected');
+    // 用户清空同样重置
+    handlers['agent/created']?.({ source: 'clear', agent: { id: 'a1', session: { id: 's1' } } });
+    h.spirit.noteInjected('a1', 'c2', 'fp-2');
+    handlers['session/event']?.({ id: 's1' }, { type: 'user/message', data: { id: 'c2', source: { kind: 'plugin:spirit' } } });
+    expect((await h.spirit.onPreStep(input({ now: 4_000 }))).kind).toBe('injected');
+  });
+
   it('agent/disposed 释放运行态；关闭后不再喂采集器', () => {
     const h = harness({ cfg: cfgWith({ enabled: false }) });
     expect(h.spirit.shouldObserve()).toBe(false);
