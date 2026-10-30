@@ -73,13 +73,25 @@ export async function recallHistory(deps: HistoryDeps, input: HistoryInput): Pro
   const sourceRefs: string[] = [];
   let lane: HistoryLane = 'none';
 
+  /**
+   * 同句只留一次。真机实采到的形状：两个会话各有一条 `tool_failure` 条目，
+   * 而同一触发器编译出的**文案相同** ⇒ 卡里连着两行一模一样的「想起：…」。
+   * 不去重不只是难看：它白占卡片预算（把本来能进来的另一段挤掉），且读起来像故障。
+   */
+  const seen = new Set<string>();
+  const pushExcerpt = (text: string, ref: string): void => {
+    if (seen.has(text)) return;
+    seen.add(text);
+    excerpts.push(text);
+    sourceRefs.push(ref);
+  };
+
   const local = deps.store.searchLocal(input.query, { sessionId: input.sessionId, limit: input.limit });
   for (const entry of local) {
     if (excerpts.length >= input.limit) break;
     if (exclude.has(entry.text)) continue;
     if (isOwnCardText(entry.text)) continue; // 自家卡行不当历史记回来
-    excerpts.push(entry.text);
-    sourceRefs.push(entry.sourceRef ?? `spirit:${entry.id}`);
+    pushExcerpt(entry.text, entry.sourceRef ?? `spirit:${entry.id}`);
     lane = 'local';
   }
 
@@ -103,9 +115,9 @@ export async function recallHistory(deps: HistoryDeps, input: HistoryInput): Pro
         for (const candidate of candidates) {
           if (excerpts.length >= input.limit) break;
           if (candidate === undefined || exclude.has(candidate.excerpt)) continue;
-          excerpts.push(candidate.excerpt);
-          sourceRefs.push(candidate.sourceRef);
-          added += 1;
+          const before = excerpts.length;
+          pushExcerpt(candidate.excerpt, candidate.sourceRef);
+          if (excerpts.length > before) added += 1;
         }
         if (added > 0) lane = lane === 'local' ? 'local+drsc' : 'drsc';
       }

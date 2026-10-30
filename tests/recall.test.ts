@@ -215,20 +215,25 @@ describe('SessionModeStore', () => {
 
 describe('历史路（真实库 + 假 DRSC）', () => {
   let dir = '';
-  let handle: DatabaseSync | undefined;
+  /** 开过的句柄全部记下来：只存最后一个会让第二个库泄漏，Windows 下 rmSync 直接 EBUSY。 */
+  const handles: DatabaseSync[] = [];
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'spirit-hist-'));
   });
   afterEach(() => {
-    handle?.close();
-    handle = undefined;
+    while (handles.length > 0) {
+      const h = handles.pop();
+      try {
+        h?.close();
+      } catch { /* 已关 */ }
+    }
     rmSync(dir, { recursive: true, force: true });
   });
 
   function store(): ExperienceStore {
     const opened = openSpiritDb(dir);
     if (!opened.ok) throw new Error('库应可打开');
-    handle = opened.db;
+    handles.push(opened.db);
     return new ExperienceStore({ db: opened.db, logger });
   }
 
@@ -264,6 +269,37 @@ describe('历史路（真实库 + 假 DRSC）', () => {
     const off = await recallHistory({ store: s, client, probe: deadProbe }, { query: '投递', limit: 3, maxCharsPerEntry: 120, timeoutMs: 500, now: 10 });
     expect(off.excerpts).toEqual([]);
     expect(off.laneUsed).toBe('none');
+  });
+
+  it('同句只留一次：两条同文案条目与“自家+DRSC 同句”都不重复进卡', async () => {
+    /**
+     * 真机实采到的形状：两个会话各一条 `tool_failure`，而同一触发器编译出的文案相同
+     * ⇒ 卡里连着两行一模一样的「想起：…」。不去重不只难看：它白占卡片预算，
+     * 会把本来能进来的另一段挤掉，还读起来像故障。
+     */
+    const s = store();
+    for (const [id, sid] of [['d1', 's1'], ['d2', 's2'], ['d3', 's3']] as const) {
+      s.append({ id, sessionId: sid, workspaceId: 'w1', turnSeq: 1, tsMs: 5, personaRevision: 1 }, {
+        trigger: 'tool_failure', notice: 'environment', reaction: 'mild', text: '手边的动作没成。', lane: 'live', fact: { tool: 'read' },
+      });
+    }
+    // 两腿汇合处也要去重：DRSC 拉回同一句时不能把它当第二段再发。
+    // 与上面共库（`store()` 每次开的是同一个文件），所以这句用**不同的工具名**，
+    // 否则 'read' 这个 cue 会把两组查询串在一起。
+    s.append({ id: 'd9', sessionId: 'sx', workspaceId: 'w1', turnSeq: 1, tsMs: 6, personaRevision: 1 }, {
+      trigger: 'user_interruption', notice: 'self_mistake', reaction: 'strong', text: '先把投递的事放一放', lane: 'live', fact: { tool: 'edit' },
+    });
+    const local = await recallHistory({ store: s }, { query: 'read', limit: 3, maxCharsPerEntry: 120, timeoutMs: 500, now: 10 });
+    expect(local.excerpts, '三条同文案条目只该留一行（真机卡里出过两行一样的）').toEqual(['手边的动作没成。']);
+    const fetchImpl = (async () => ({ ok: true, json: async () => ({ ok: true, hits: [
+      { session_id: 's0', seq: 9, kind: 'user/message', rank: 0, snippet: '先把投递的事放一放', time: 1, on_surface: 1, turn: 2 },
+      { session_id: 's0', seq: 11, kind: 'user/message', rank: 1, snippet: '另一句没见过的', time: 3, on_surface: 1, turn: 3 },
+    ] }) })) as unknown as typeof fetch;
+    const client = new DrscClient({ fetchImpl });
+    const probe = new DrscProbe({ client, enabled: () => true, ttlMs: () => 15_000 });
+    const merged = await recallHistory({ store: s, client, probe }, { query: '投递', limit: 3, maxCharsPerEntry: 120, timeoutMs: 500, now: 10 ** 12 });
+    expect(merged.excerpts).toEqual(['先把投递的事放一放', '另一句没见过的']);
+    expect(merged.laneUsed).toBe('local+drsc');
   });
 
   it('exclude 让同句不重复出现在两段', async () => {
