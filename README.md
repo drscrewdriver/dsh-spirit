@@ -105,8 +105,10 @@ spirit 只调用它的 `op` 面（`status` / `session` / `search`），**从不�
   **仍未验**：旁路 A/B 的成本对照（`cacheReadTokens` 需真 provider 与长会话）、0.1.x 上的 web 渲染与压缩行为
 - 无 webServer 的宿主线（headless）已验：不崩、人格区与尾部注入同样生效，只是面板路由不挂载
   （可选服务走作域注入，不进顶层 `inject`）
+- 卡在哪看：宿主把注入行归为**「上下文」**那一类（与 runtime-context 快照、skill 目录同标签），
+  对话视图默认不显示它，只在**轨迹**视图可见——既不冒充用户发言，也不在 Chat 里喧宾夺主
 - 跳线抽检：`0.2.1-rc.1`（已声明线）headless 真回合同样通过；`0.1.7-rc.2` 默认被 `peerDependencies`
-  门拒载并自动回滚（要拿 `allow-version --accept-risk` 才装得上）——所以声明只收已验的 0.2.x 六线
+  门拒载并自动回滚（需要用 `allow-version --accept-risk` 才装得上）——所以声明只收已验的 0.2.x 六线
 
 ## 工程
 

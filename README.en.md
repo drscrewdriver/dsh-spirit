@@ -125,6 +125,9 @@ not render an automatic volatile form, so those keys are not on the settings pag
 - The **no-webServer host line (headless) is verified**: it boots and finishes a real turn without
   crashing, the persona section and tail injection work there too, and only the panel route is absent
   (optional services come through scoped injection, never a top-level `inject`)
+- Where the card shows up: the host classifies the injected row as **context** (the same label as the
+  runtime-context snapshot and the skill catalog). The chat view does not show it by default; it is only
+  visible in the trace view — so it neither poses as a user turn nor clutters the chat
 - Cross-line spot checks: `0.2.1-rc.1` (a declared line) passes the same headless real turn;
   `0.1.7-rc.2` **refuses the install by default via `peerDependencies` and rolls it back** — it only
   installs behind an explicit `allow-version --accept-risk`. That is why `engines.dsh` lists only the
