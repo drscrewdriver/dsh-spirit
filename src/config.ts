@@ -65,6 +65,8 @@ function liveSettingsSchema(): VolatileRef<SpiritLiveSettings> {
     tierStepCap: num('tier.stepCap', d.tierStepCap),
     staleAfterMs: num('tier.staleAfterMs', d.staleAfterMs),
     drscEnabled: bool(d.drscEnabled),
+    recallMaxResults: num('recall.maxResults', d.recallMaxResults),
+    retentionDays: num('journal.retentionDays', d.retentionDays),
   });
   const maybe = node as unknown as { volatile?: () => unknown };
   return (typeof maybe.volatile === 'function' ? maybe.volatile() : node) as VolatileRef<SpiritLiveSettings>;
@@ -150,6 +152,8 @@ export const SCHEMA_FIELD_KEYS: readonly string[] = [
   'live.tierStepCap',
   'live.staleAfterMs',
   'live.drscEnabled',
+  'live.recallMaxResults',
+  'live.retentionDays',
 ];
 
 /** 数值键区间表覆盖检查用的键集（`num()` 引用的键必须都在 SPIRIT_RANGES 里）。 */
@@ -200,6 +204,8 @@ export function resolveLive(raw: unknown): SpiritLiveSettings {
     tierStepCap: int('tierStepCap', d.tierStepCap),
     staleAfterMs: int('staleAfterMs', d.staleAfterMs),
     drscEnabled: flag('drscEnabled', d.drscEnabled),
+    recallMaxResults: int('recallMaxResults', d.recallMaxResults),
+    retentionDays: int('retentionDays', d.retentionDays),
   };
 }
 
@@ -224,9 +230,10 @@ export function effectiveCfg(cfg: SpiritConfig, live?: SpiritLiveSettings): Spir
       recentK: live.recentK,
       crossSessionM: live.crossSessionM,
     },
-    recall: { ...cfg.recall, timeoutMs: live.recallTimeoutMs, halfLifeMs: live.halfLifeMs },
-    tier: { ...cfg.tier, stepCap: live.tierStepCap, staleAfterMs: live.staleAfterMs },
     drsc: { ...cfg.drsc, enabled: cfg.drsc.enabled && live.drscEnabled },
+    recall: { ...cfg.recall, timeoutMs: live.recallTimeoutMs, halfLifeMs: live.halfLifeMs, maxResults: live.recallMaxResults },
+    tier: { ...cfg.tier, stepCap: live.tierStepCap, staleAfterMs: live.staleAfterMs },
+    journal: { ...cfg.journal, retentionDays: live.retentionDays },
     live,
   };
 }

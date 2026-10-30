@@ -126,6 +126,7 @@ export class SpiritStats {
       injectedTurns: row.injectedTurns,
       bypassedTurns: row.bypassedTurns,
       offTurns: row.offTurns,
+      confirmedTurns: row.confirmedTurns,
       lastRecallHits: row.lastRecallHits,
       updatedAt: row.updatedAt,
       drscVerdict: row.drscVerdict,

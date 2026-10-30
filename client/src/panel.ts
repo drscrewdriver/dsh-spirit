@@ -77,6 +77,30 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
     };
   }, [load, stats?.injectedTurns, stats?.bypassedTurns]);
 
+  const [exportNote, setExportNote] = useState<string | null>(null);
+
+  /**
+   * 导出。**显式 dryRun:false** 才落盘：部署面 `journal.dryRun` 缺省为 true，
+   * 不显式传就会永远只得到"干跑"，按钮看起来像坏了。
+   */
+  const doExport = (format: 'md' | 'jsonl') => {
+    if (rpc === undefined) return;
+    setExportNote(null);
+    void rpc('journal-export', { sessionId: stats?.sessionId, format, dryRun: false })
+      .then((result) => {
+        if (!result.ok) {
+          setExportNote(`${copy['panel.exportFailed']}: ${result.error.message}`);
+          return;
+        }
+        setExportNote(
+          result.value.dryRun
+            ? copy['panel.exportDry']
+            : `${copy['panel.exported']}: ${result.value.dirName}/${result.value.fileName} (${result.value.written})`,
+        );
+      })
+      .catch(() => setExportNote(copy['panel.exportFailed']));
+  };
+
   const items = page?.rows ?? [];
   return createElement(
     'section',
@@ -96,26 +120,44 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
           createElement('span', { style: mutedStyle }, ` · ${copy['panel.entries']} ${stats.entryCount} · ${copy['panel.injected']} ${stats.injectedTurns} · ${copy['panel.bypassed']} ${stats.bypassedTurns}`),
         ),
         stats.degraded ? createElement('p', { style: mutedStyle }, copy['panel.degraded']) : null,
+        // 注入数与确认数分开显示：两者不相等就说明卡没真落进上下文，看着“生效”其实没生效
+        createElement(
+          'p',
+          { style: mutedStyle },
+          `${copy['panel.injected']} ${stats.injectedTurns} → ${stats.confirmedTurns} · ${stats.lastRecallHits} · ${copy['panel.confirmedHint']}`,
+        ),
         createElement('p', { style: mutedStyle }, `${copy['panel.drsc']}：${copy[DRSC_VERDICT_KEYS[stats.drscVerdict]]}`),
       ),
     items.length === 0
       ? null
       : createElement(
-        'ul',
-        { style: listStyle },
-        items.map((item) =>
-          createElement(
-            'li',
-            { key: item.id, style: itemStyle },
-            createElement('div', null, item.text),
-            createElement(
-              'div',
-              { style: mutedStyle },
-              `${copy['panel.turn']} ${item.turnSeq} · ${copy['panel.lane']} ${item.lane === 'drsc' ? copy['panel.laneDrsc'] : copy['panel.laneLive']}`,
+        'div',
+        null,
+        createElement('h4', { style: { ...hStyle, marginTop: 12 } }, copy['panel.recent']),
+        createElement(
+          'ul',
+          { style: listStyle },
+            items.map((item) =>
+              createElement(
+                'li',
+                { key: item.id, style: itemStyle },
+                createElement('div', null, item.text),
+                createElement(
+                  'div',
+                  { style: mutedStyle },
+                  `${copy['panel.turn']} ${item.turnSeq} · ${copy['panel.lane']} ${item.lane === 'drsc' ? copy['panel.laneDrsc'] : copy['panel.laneLive']}`,
+                ),
+              ),
             ),
           ),
         ),
-      ),
-    createElement('button', { type: 'button', style: mutedStyle, onClick: () => void load() }, copy['panel.retry']),
+    createElement(
+      'div',
+      { style: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 } },
+      createElement('button', { type: 'button', style: mutedStyle, onClick: () => void load() }, copy['panel.retry']),
+      createElement('button', { type: 'button', style: mutedStyle, onClick: () => doExport('md') }, copy['panel.exportMd']),
+      createElement('button', { type: 'button', style: mutedStyle, onClick: () => doExport('jsonl') }, copy['panel.exportJsonl']),
+      exportNote !== null ? createElement('span', { style: mutedStyle }, exportNote) : null,
+    ),
   );
 }

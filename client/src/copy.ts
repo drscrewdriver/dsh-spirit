@@ -40,6 +40,11 @@ export const zh = {
   'panel.loadFailed': '读取失败',
   'panel.retry': '重试',
   'panel.notFact': '非事实记录',
+  'panel.exportMd': '导出为 markdown',
+  'panel.exportJsonl': '导出为 JSONL',
+  'panel.exported': '已导出',
+  'panel.exportDry': '导出为干跑（未写文件）',
+  'panel.exportFailed': '导出失败',
 } as const;
 
 export type CopyKey = keyof typeof zh;
@@ -75,6 +80,11 @@ export const en: Record<CopyKey, string> = {
   'panel.loadFailed': 'Load failed',
   'panel.retry': 'Retry',
   'panel.notFact': 'not a fact record',
+  'panel.exportMd': 'Export as markdown',
+  'panel.exportJsonl': 'Export as JSONL',
+  'panel.exported': 'Exported',
+  'panel.exportDry': 'Dry run (no file written)',
+  'panel.exportFailed': 'Export failed',
 };
 
 export const DICTS: Record<'zh' | 'en', Record<CopyKey, string>> = { zh, en };

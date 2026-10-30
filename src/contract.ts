@@ -84,7 +84,9 @@ export interface SpiritJournalTailRequest {
 
 export interface SpiritExportRequest {
   format?: 'md' | 'jsonl';
-  /** 只收归档目录名（如 `archive`）；**不收任意路径**。 */
+  /** 导哪个会话；省略则用服务端知道的最近一个。 */
+  sessionId?: string;
+  /** 只收导出子目录名（如 `export`）；**不收任意路径**。 */
   dirName?: string;
   dryRun?: boolean;
 }
@@ -136,6 +138,8 @@ export interface SpiritSessionStats {
   injectedTurns: number;
   bypassedTurns: number;
   offTurns: number;
+  /** 注入后在会话日志里真看到同一行的次数（A/B 报告的唯一硬口）。 */
+  confirmedTurns: number;
   /** 检索段命中条数（本轮）。 */
   lastRecallHits: number;
   updatedAt: number;
@@ -172,7 +176,10 @@ export interface SpiritJournalPage {
 /** 导出结果（只收目录名与分页参数，**不收任意路径**）。 */
 export interface SpiritExportResult {
   dirName: string;
+  /** 实际写到（或干跑将写到）的文件名。 */
+  fileName: string;
   format: 'md' | 'jsonl';
+  sessionId: string;
   written: number;
   dryRun: boolean;
 }
@@ -242,7 +249,7 @@ export interface SpiritConfig {
     gapThresholdMs: number;
   };
   drsc: {
-    /** 历史路总开关；未安装/关闭 ⇒ 整段省略，不影响近因路。 */
+    /** 历史路总开关；未装 ⇒ 整段省略，不影响近因路。 */
     enabled: boolean;
     /** 显式基址；留空走宿主 trustedHosts → `http://127.0.0.1:8080`。 */
     baseUrl: string;
@@ -274,6 +281,10 @@ export interface SpiritLiveSettings {
   tierStepCap: number;
   staleAfterMs: number;
   drscEnabled: boolean;
+  /** 检索段最多进卡几条（原只在部署面可调，面板调不了——补进 volatile）。 */
+  recallMaxResults: number;
+  /** 保留天数（同样补进 volatile；0 = 永久）。 */
+  retentionDays: number;
 }
 
 /**
@@ -287,14 +298,18 @@ export interface SpiritLiveSettings {
  * - `tier.staleAfterMs=600_000`（10 分钟）：重启恢复时宁可退中性，也不把旧感觉当现在。
  * - `journal.dryRun=true`：唯一不可逆动作默认不执行。
  */
+/** live 节与静态节共用的两个默认值（不写第二份字面量）。 */
+const SPIRIT_DEFAULTS_RECALL_MAX = 3;
+const SPIRIT_DEFAULTS_RETENTION_DAYS = 90;
+
 export const SPIRIT_DEFAULTS: SpiritConfig = {
   enabled: true,
   dataDir: '',
   persona: { enabled: true, budgetBytes: 700 },
   card: { maxBytes: 384, recentK: 2, crossSessionM: 4 },
-  recall: { timeoutMs: 800, maxResults: 3, maxCharsPerEntry: 120, halfLifeMs: 5_400_000 },
+  recall: { timeoutMs: 800, maxResults: SPIRIT_DEFAULTS_RECALL_MAX, maxCharsPerEntry: 120, halfLifeMs: 5_400_000 },
   tier: { stepCap: 1, staleAfterMs: 600_000 },
-  journal: { retentionDays: 90, dryRun: true },
+  journal: { retentionDays: SPIRIT_DEFAULTS_RETENTION_DAYS, dryRun: true },
   capture: { userSnippet: false, maxQuoteChars: 160, gapThresholdMs: 180_000 },
   drsc: { enabled: true, baseUrl: '', probeCacheTtlMs: 15_000, timeoutMs: 5_000 },
   live: {
@@ -310,6 +325,8 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
     tierStepCap: 1,
     staleAfterMs: 600_000,
     drscEnabled: true,
+    recallMaxResults: SPIRIT_DEFAULTS_RECALL_MAX,
+    retentionDays: SPIRIT_DEFAULTS_RETENTION_DAYS,
   },
 };
 

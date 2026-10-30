@@ -23,6 +23,7 @@ import type { SpiritStats } from './stats.js';
 import type { SessionModeStore } from './store/session-modes.js';
 import type { PersonaStore } from './persona/store.js';
 import { composePersonaText } from './persona/render.js';
+import { exportSessionEntries } from './store/journal-retention.js';
 import type { ExperienceStore } from './store/experience.js';
 import type { SpiritVerdict } from './types.js';
 import { getService } from './capability.js';
@@ -70,6 +71,8 @@ export interface RpcDeps {
   store: ExperienceStore;
   modes: SessionModeStore;
   personas: PersonaStore;
+  /** 导出件写到哪（数据目录本身）；由 index 传入，不从配置重算。 */
+  dataDir: string;
   cfg: () => SpiritConfig;
   /** DRSC 探测结论（面板要如实显示 skipped/warn，不当故障也不当正常）。 */
   drscVerdict: () => SpiritVerdict;
@@ -130,16 +133,38 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       } satisfies SpiritJournalPage);
     }
     case 'journal-export': {
-      // 只认归档目录名：任何路径分隔符或绝对路径都拒（这条端点是"能不能往任意目录写"的口子）
-      const dirName = str(payload['dirName'], 'archive');
-      if (dirName.includes('/') || dirName.includes('\\') || dirName.includes('..')) {
+      // 只认单个目录名：任何路径分隔符与绝对路径都拒（这条端点是"能不能往任意目录写"的口子）
+      const dirName = str(payload['dirName'], 'export');
+      if (dirName.includes('/') || dirName.includes('\\') || dirName.includes('..') || dirName.includes('\0')) {
         return err('bad-request', 'dirName 只接受单个目录名');
       }
+      let sessionId = str(payload['sessionId']);
+      if (sessionId === '') sessionId = deps.stats.latest()?.sessionId ?? '';
+      if (sessionId === '') return err('no-session', '还没有任何会话记录可导');
       const cfg = deps.cfg();
       const format = str(payload['format'], 'jsonl') === 'md' ? 'md' : 'jsonl';
-      const dryRun = payload['dryRun'] !== true ? cfg.journal.dryRun : true;
-      const result: SpiritExportResult = { dirName, format, written: 0, dryRun };
-      return ok(result);
+      // 默认跟随部署面的 dryRun；用户显式 dryRun:false 才落盘（唯一能写文件的端点不默认动手）
+      const dryRun = payload['dryRun'] === true ? true : payload['dryRun'] === false ? false : cfg.journal.dryRun;
+      const rows = deps.store.page(sessionId, 0, 500, false).rows.map((entry) => ({
+        tsMs: entry.tsMs,
+        turnSeq: entry.turnSeq,
+        trigger: entry.trigger,
+        notice: entry.notice,
+        reaction: entry.reaction,
+        text: entry.text,
+        lane: entry.lane,
+        sourceRef: entry.sourceRef ?? null,
+      }));
+      const result = exportSessionEntries({
+        dataDir: deps.dataDir,
+        dirName,
+        sessionId,
+        format,
+        rows,
+        dryRun,
+        now: Date.now(),
+      });
+      return ok({ ...result, sessionId } satisfies SpiritExportResult);
     }
     case 'persona-get': {
       const card = deps.personas.current();

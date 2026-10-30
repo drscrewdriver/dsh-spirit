@@ -28,10 +28,25 @@ const pillStyle: CSSProperties = {
   color: 'var(--dsw-text-color, inherit)',
   background: 'var(--dsw-bg-color-secondary, transparent)',
 };
-
-function nextMode(mode: Mode): Mode {
-  return mode === 'on' ? 'bypass' : mode === 'bypass' ? 'off' : 'on';
-}
+const menuStyle: CSSProperties = {
+  display: 'inline-flex',
+  flexDirection: 'column',
+  gap: 2,
+  padding: 6,
+  marginLeft: 6,
+  borderRadius: 8,
+  border: '1px solid var(--dsw-border-color, rgba(128,128,128,0.35))',
+  background: 'var(--dsw-bg-color-secondary, transparent)',
+};
+const itemStyle = (active: boolean): CSSProperties => ({
+  border: 'none',
+  background: 'transparent',
+  cursor: 'pointer',
+  fontSize: 12,
+  textAlign: 'left',
+  fontWeight: active ? 700 : 400,
+  color: 'var(--dsw-text-color, inherit)',
+});
 
 export function SpiritPill(props: { rpc?: RpcFn } & SeatProps) {
   const rpc = props.rpc;
@@ -39,6 +54,7 @@ export function SpiritPill(props: { rpc?: RpcFn } & SeatProps) {
   const copy = copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
   const [mode, setMode] = useState<Mode>('on');
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   const seqRef = useRef(0);
 
   const load = useCallback(() => {
@@ -60,14 +76,17 @@ export function SpiritPill(props: { rpc?: RpcFn } & SeatProps) {
     load();
   }, [load]);
 
-  const toggle = () => {
-    if (rpc === undefined || sessionId === '') return;
-    const target = nextMode(mode);
+  const apply = (target: Mode) => {
+    if (rpc === undefined || sessionId === '' || target === mode) {
+      setOpen(false);
+      return;
+    }
     const token = ++seqRef.current;
     setError(null);
     const previous = mode;
-    // 乐观更新 + 失败回滚：点击没反应比闪一下再回来更让人以为坏了
+    // 乐观更新 + 失败回滚：点了没反应比闪一下再回来更让人以为坏了
     setMode(target);
+    setOpen(false);
     rpc('session-mode', { sessionId, off: target === 'off', bypass: target === 'bypass' })
       .then((result) => {
         if (token !== seqRef.current) return;
@@ -96,9 +115,30 @@ export function SpiritPill(props: { rpc?: RpcFn } & SeatProps) {
         type: 'button',
         style: pillStyle,
         title: error === null ? copy['pill.title'] : `${copy['pill.title']}：${error}`,
-        onClick: toggle,
+        onClick: () => setOpen((v) => !v),
       },
       label,
     ),
+    /**
+     * 三态菜单而不是一个循环按钮：盲切时用户看不出下一次点过去哪里，
+     * 而"只记录不注入"与"完全不参与"是两个意图完全不同的开关，不该靠循环试。
+     */
+    open
+      ? createElement(
+        'span',
+        { style: menuStyle },
+        ...([
+          ['on', copy['pill.menuOn']],
+          ['bypass', copy['pill.menuBypass']],
+          ['off', copy['pill.menuOff']],
+        ] as Array<[Mode, string]>).map(([value, text]) =>
+          createElement(
+            'button',
+            { key: value, type: 'button', style: itemStyle(value === mode), onClick: () => apply(value) },
+            text,
+          ),
+        ),
+      )
+      : null,
   );
 }

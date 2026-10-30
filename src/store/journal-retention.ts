@@ -11,6 +11,7 @@
  * 真删留到 v0.2，且必须带快照与显式授权才能开。
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { DatabaseSync, SQLOutputValue } from 'node:sqlite';
@@ -93,7 +94,89 @@ export function planRetention(deps: {
   };
 }
 
-/** 归档结果。 */
+/** 导出目录默认名（只允许这样一个子目录名，不是一个路径）。 */
+export const EXPORT_DIR_NAME = 'export';
+
+export interface ExportResult {
+  dirName: string;
+  fileName: string;
+  format: 'md' | 'jsonl';
+  written: number;
+  dryRun: boolean;
+}
+
+/** 导出行需要的最小字段集（不要求整条 ExperienceEntry，面板投影也能导）。 */
+export interface ExportRow {
+  tsMs: number;
+  turnSeq: number;
+  trigger: string;
+  notice: string;
+  reaction: string;
+  text: string;
+  lane: string;
+  sourceRef?: string | null;
+}
+
+function mdOf(rows: readonly ExportRow[]): string {
+  const lines = ['# 角色体验手记', '', '> 这些是角色自己的体验记录，不是客观事实清单。', ''];
+  for (const row of [...rows].sort((a, b) => a.tsMs - b.tsMs)) {
+    lines.push(`- （第 ${row.turnSeq} 轮）${row.text}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function jsonlOf(rows: readonly ExportRow[]): string {
+  return [...rows].sort((a, b) => a.tsMs - b.tsMs).map((row) => `${JSON.stringify(row)}\n`).join('');
+}
+
+/**
+ * 导出一个会话的手记。
+ *
+ * 两个故意的设计：
+ * - **文件名由会话 id 的哈希前缀 + 时戳组成**：sessionId 可能含路径分隔符或 `..`，
+ *   直接拼上去就是写任意路径的口子（与 plan 里"只收目录名不收路径"是同一条防线）。
+ * - **已存在就不覆盖**：导出是给人拿去看的产物，覆盖上次导出等于掉数据。
+ */
+export function exportSessionEntries(deps: {
+  dataDir: string;
+  dirName: string;
+  sessionId: string;
+  format: 'md' | 'jsonl';
+  rows: readonly ExportRow[];
+  dryRun: boolean;
+  now: number;
+}): ExportResult {
+  const ext = deps.format === 'md' ? 'md' : 'jsonl';
+  // 会话 id 不进文件名：只取它的双子字异或后的短摘要，避开路径注入面
+  let hash = 5381;
+  for (let i = 0; i < deps.sessionId.length; i += 1) hash = ((hash * 33) ^ deps.sessionId.charCodeAt(i)) >>> 0;
+  const fileName = `spirit-${hash.toString(16)}-${new Date(deps.now).toISOString().slice(0, 10)}.${ext}`;
+  const base: ExportResult = { dirName: deps.dirName, fileName, format: deps.format, written: deps.rows.length, dryRun: deps.dryRun };
+  if (deps.dryRun) return base;
+  const dir = join(deps.dataDir, deps.dirName);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const target = join(dir, fileName);
+  if (existsSync(target)) {
+    // 同一会话同一天第二次导出：加序号而不是覆盖
+    for (let n = 1; n < 100; n += 1) {
+      const alt = join(deps.dataDir, deps.dirName, fileName.replace(/\.(md|jsonl)$/u, `-${n}.` + ext));
+      if (!existsSync(alt)) {
+        writeFileSync(alt, deps.format === 'md' ? mdOf(deps.rows) : jsonlOf(deps.rows), 'utf8');
+        return { ...base, fileName: `${fileName.replace(/\.(md|jsonl)$/u, `-${n}.` + ext)}` };
+      }
+    }
+    return { ...base, written: 0 };
+  }
+  writeFileSync(target, deps.format === 'md' ? mdOf(deps.rows) : jsonlOf(deps.rows), 'utf8');
+  return base;
+}
+
+/** 读回一个导出件（测试与审计用）。 */
+export function readExport(path: string): string {
+  return readFileSync(path, 'utf8');
+}
+
+/** 保留与归档结果。 */
 export interface ArchiveResult {
   dryRun: boolean;
   files: string[];

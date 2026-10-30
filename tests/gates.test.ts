@@ -261,6 +261,7 @@ describe('contract 面完整（五方对齐的剩余腿）', () => {
       store: new ExperienceStore({ db: null, logger }),
       modes: { isOff: () => false, isBypass: () => false, set: () => true } as unknown as SessionModeStore,
       personas: new PersonaStore({ dataDir: '', logger }),
+      dataDir: '',
       cfg: () => SPIRIT_DEFAULTS,
       drscVerdict: () => 'skipped' as const,
       logger: { warn: (_m: string) => undefined, info: (_m: string) => undefined },
@@ -270,6 +271,26 @@ describe('contract 面完整（五方对齐的剩余腿）', () => {
       // 允许业务性 no-session / bad-request，但不能是"这个端点我根本不认识"
       if (!result.ok) expect(result.error.code, op).not.toBe('not-found');
     }
+  });
+
+  it('journal-export 的路径注入面被拒，且缺省 dryRun 不写盘', async () => {
+    const deps = {
+      spirit: null as unknown as Spirit,
+      stats: new SpiritStats(),
+      store: new ExperienceStore({ db: null, logger }),
+      modes: { isOff: () => false, isBypass: () => false, set: () => true } as unknown as SessionModeStore,
+      personas: new PersonaStore({ dataDir: '', logger }),
+      dataDir: '',
+      cfg: () => SPIRIT_DEFAULTS,
+      drscVerdict: () => 'skipped' as const,
+      logger: { warn: (_m: string) => undefined, info: (_m: string) => undefined },
+    } as unknown as RpcDeps;
+    const bad = await handleEndpoint('dsh-spirit/journal-export', { sessionId: 's1', dirName: '../escape' }, deps);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.error.code).toBe('bad-request');
+    const dry = await handleEndpoint('dsh-spirit/journal-export', { sessionId: 's1' }, deps);
+    expect(dry.ok).toBe(true);
+    if (dry.ok) expect((dry.value as { dryRun?: boolean }).dryRun).toBe(true);
   });
 
   it('host 白名单与契约端点逐项一致（漏一条 = 面板功能静默 404）', () => {

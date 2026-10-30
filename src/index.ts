@@ -115,7 +115,7 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
 
   registerPersonaSection(ctx, { personas, cfg, caps, logger });
   registerCardObserve(ctx, { spirit, logger });
-  registerSpiritRpc(ctx, { spirit, stats, store, modes, personas, cfg, drscVerdict, logger });
+  registerSpiritRpc(ctx, { spirit, stats, store, modes, personas, dataDir, cfg, drscVerdict, logger });
   registerCardPreStep(ctx, {
     spirit,
     logger,
