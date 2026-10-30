@@ -16,7 +16,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 
 import { SPIRIT_SLOT_SECTION_NAME, SPIRIT_SOURCE_KIND } from '../contract.js';
 import type { PreStepInput, PreStepOutcome, Spirit } from '../spirit.js';
-import { textOfMessage } from '../util/host-shape.js';
+import { readSurfaceNodes, textOfMessage } from '../util/host-shape.js';
 
 export interface PreStepHookDeps {
   spirit: Spirit;
@@ -68,6 +68,8 @@ export function registerCardPreStep(ctx: Context, deps: PreStepHookDeps): void {
         isSubagent: deps.isSubagent(agent),
         newUserText: queryFrom(messages),
         messageCount: messages.length,
+        // 每轮对一次表面：压缩不发事件的宿主线确实存在，只靠事件会永久静默
+        surfaceNodes: readSurfaceNodes((agent as { session?: unknown }).session),
         now: now(),
       };
       const outcome = await deps.spirit.onPreStep(preStepInput);

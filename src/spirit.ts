@@ -36,6 +36,11 @@ export interface PreStepInput {
   newUserText: string;
   /** 宿主本轮批准进入的原始消息数组。 */
   messageCount: number;
+  /**
+   * 当前模型可见表面的节点集（`session.surface.nodes`）。省略 = 拿不到 ⇒ 只做未知处理，
+   * 绝不把"读不到"当"不在"（那会把一次形状不识别误判成"卡被推走了"，进而不该重发时重发）。
+   */
+  surfaceNodes?: ReadonlySet<unknown>;
   now: number;
 }
 
@@ -79,6 +84,8 @@ interface AgentRuntime {
   mood?: Mood;
   /** **已确认生效**的卡内容指纹（宿主把它落进日志才算生效）。 */
   lastFingerprint?: string;
+  /** 已生效卡行在会话日志里的 seq（用来回到表面核它还在不在）。 */
+  lastCardSeq?: number;
   /** 在飞卡：messageId → 待提交指纹。未确认就写 lastFingerprint 会造成"卡没进去、但以为发过了"。 */
   pending: Map<string, string>;
   /** 本会话是否已走过一轮（决定要不要给跨会话基调）。 */
@@ -161,6 +168,17 @@ export class Spirit {
 
       const runtime: AgentRuntime = this.runtimes.get(input.agentId) ?? { pending: new Map<string, string>(), firstTurnDone: false };
       this.sessionToAgent.set(input.sessionId, input.agentId);
+      // 事件会漏（压缩不发事件的那条线是真存在的），所以每轮先对一次表面：
+      // 已生效的卡行不在模型可见集里 ⇒ 凭据作废，否则 `unchanged` 门会"永久静默"。
+      if (
+        runtime.lastCardSeq !== undefined
+        && input.surfaceNodes !== undefined
+        && !input.surfaceNodes.has(runtime.lastCardSeq)
+      ) {
+        this.deps.logger.info('[spirit] 卡行已不在模型可见表面上（压缩或改写所致），下轮会重发');
+        runtime.lastCardSeq = undefined;
+        runtime.lastFingerprint = undefined;
+      }
       const signals = this.deps.watcher.takeSignals(input.sessionId, input.now);
       this.record(signals, input, runtime);
       if (bypass) {
@@ -276,14 +294,16 @@ export class Spirit {
   /**
    * 两段式生效：看到自家注入行真进了会话日志，才把指纹当"已发"。
    *
+   * @param seq 该行进日志时的 seq；存下来才能下一轮回到表面核它还在不在
    * @returns 是否命中一个在飞卡
    */
-  confirmInjected(messageId: string): boolean {
+  confirmInjected(messageId: string, seq?: number): boolean {
     for (const [agentId, runtime] of this.runtimes.entries()) {
       const fingerprint = runtime.pending.get(messageId);
       if (fingerprint === undefined) continue;
       runtime.pending.delete(messageId);
       runtime.lastFingerprint = fingerprint;
+      if (typeof seq === 'number' && Number.isFinite(seq)) runtime.lastCardSeq = seq;
       this.deps.onConfirmed?.(agentId);
       return true;
     }
@@ -318,6 +338,7 @@ export class Spirit {
     const runtime = this.runtimes.get(agentId);
     if (runtime === undefined) return;
     runtime.lastFingerprint = undefined;
+    runtime.lastCardSeq = undefined;
     runtime.pending.clear();
     runtime.firstTurnDone = why === 'clear';
     if (why === 'clear') runtime.mood = undefined;

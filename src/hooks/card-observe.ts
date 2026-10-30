@@ -28,17 +28,19 @@ export function registerCardObserve(ctx: Context, deps: ObserveHookDeps): void {
   const now = deps.now ?? Date.now;
   ctx.on('session/event', (session, event) => {
     try {
-      const raw = event as { type?: unknown; data?: unknown } | null | undefined;
+      const raw = event as { type?: unknown; seq?: unknown; data?: unknown } | null | undefined;
       const type = typeof raw?.type === 'string' ? raw.type : '';
       if (type === '') return;
       const data = (raw?.data ?? {}) as { id?: unknown; source?: { kind?: unknown } };
+      const seq = typeof raw?.seq === 'number' ? raw.seq : undefined;
       const sessionId = sessionIdOfSession(session);
 
       // ── 第一段：必须先于任何业务过滤的两个对账动作 ──
       // 1) 生效确认：自家行 kind 不是 user，先按 user 过滤就会永不确认，
       //    表现为"同一档反复重发"或"再也不发卡"两种相反的错觉。
       if (type === 'user/message' && data.source?.kind === SPIRIT_SOURCE_KIND && typeof data.id === 'string') {
-        deps.spirit.confirmInjected(data.id);
+        // seq 一并传下去：它是"下一轮回到表面核卡还在不在"的唯一凭据
+        deps.spirit.confirmInjected(data.id, seq);
       }
       // 2) 压缩重置：不重置则卡被摘要掉后 `unchanged` 门永久阻止重发
       //    （不报错，只是"压缩一次后角色再也没情绪"）。

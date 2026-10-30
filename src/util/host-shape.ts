@@ -58,3 +58,23 @@ export function isSubagentAgent(agent: unknown): boolean {
   const parent = record?.meta?.parentSession;
   return typeof parent === 'string' && parent !== '';
 }
+
+/**
+ * 读会话的**当前模型可见表面**（`session.surface.nodes`）。
+ *
+ * 为什么不能只信事件：`compaction/end` 并不可靠（CCI 类 compat 摘要路径根本不发这个事件），
+ * 漏一次就永久错且无法补算。事件只能当快路径，**表面才是事实**：它直接回答
+ * “我那张卡还在不在上下文里”。
+ *
+ * 拿不到就返回 `undefined` —— **当未知处理**，绝不把"读不到"当"不在"（那会把一次
+ * 形状不识别误判成"卡被推走了"，变成不该重发时反复重发）。
+ */
+export function readSurfaceNodes(session: unknown): ReadonlySet<unknown> | undefined {
+  if (typeof session !== 'object' || session === null) return undefined;
+  const surface = (session as { surface?: unknown }).surface;
+  if (typeof surface !== 'object' || surface === null) return undefined;
+  const nodes = (surface as { nodes?: unknown }).nodes;
+  if (nodes instanceof Set) return nodes as ReadonlySet<unknown>;
+  if (Array.isArray(nodes)) return new Set(nodes as readonly unknown[]);
+  return undefined;
+}

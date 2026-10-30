@@ -207,6 +207,26 @@ describe('重发判据与两段式生效', () => {
     expect((await h.spirit.onPreStep(input({ now: 4_000 }))).kind).toBe('injected');
   });
 
+  it('卡行被从模型表面上抽走 ⇒ 凭据作废、下轮重发（事件会漏，表面才是事实）', async () => {
+    const h = harness();
+    const first = await h.spirit.onPreStep(input());
+    if (first.kind !== 'injected') throw new Error('首轮应发卡');
+    h.spirit.noteInjected('a1', 'c1', first.fingerprint);
+    expect(h.spirit.confirmInjected('c1', 42)).toBe(true);
+
+    // 还在表面上：同一状态不该重发
+    expect((await h.spirit.onPreStep(input({ now: 1_010, surfaceNodes: new Set([42, 43]) }))).reason).toBe('unchanged');
+    // 不在表面上（被摘要掉了）：必须重发，不报错的静默就是"角色再也没情绪"
+    expect((await h.spirit.onPreStep(input({ now: 1_020, surfaceNodes: new Set([43]) }))).kind).toBe('injected');
+    // 拿不到表面 ⇒ 未知处理：不得因此反复重发
+    const second = await h.spirit.onPreStep(input({ now: 1_030 }));
+    expect(second.kind).toBe('injected');
+    if (second.kind !== 'injected') return;
+    h.spirit.noteInjected('a1', 'c2', second.fingerprint);
+    h.spirit.confirmInjected('c2', 44);
+    expect((await h.spirit.onPreStep(input({ now: 1_040 }))).reason).toBe('unchanged');
+  });
+
   it('agent/disposed 释放运行态；关闭后不再喂采集器', () => {
     const h = harness({ cfg: cfgWith({ enabled: false }) });
     expect(h.spirit.shouldObserve()).toBe(false);

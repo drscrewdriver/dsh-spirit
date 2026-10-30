@@ -81,7 +81,7 @@ export function probeCapabilities(ctx: unknown): HostCapabilities {
   };
 }
 
-/** 判定会话事件形状（宿主自 0.2.0-rc.1 起 `Session.events` 有缺失面，不是所有线都有数组）。 */
+/** 判定会话事件形状（宿主自 0.2.0-rc.1 起 `Session.events` 有缺失面，不是所有线都有数组）。*/
 export function detectSessionEventsShape(session: unknown): SessionEventsShape {
   if (typeof session !== 'object' || session === null) return 'none';
   const record = session as Record<string, unknown>;

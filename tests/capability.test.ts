@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { detectSessionEventsShape, getService, probeCapabilities, readSessionEvents } from '../src/capability.js';
+import { readSurfaceNodes } from '../src/util/host-shape.js';
 
 /** 模拟 cordis 代理：**未声明 inject** 时属性读直接抛，不是给个 undefined。 */
 function throwingCtx(names: string[]): Record<string, unknown> {
@@ -70,5 +71,27 @@ describe('会话事件双面形状', () => {
     // 返回非数组也退空，不把垃圾形状留给调用方
     expect(readSessionEvents({ snapshotEvents: () => 42 })).toEqual([]);
     expect(readSessionEvents(undefined)).toEqual([]);
+  });
+});
+
+describe('readSurfaceNodes（卡还在不在模型侧的唯一事实）', () => {
+  it('Set 直用、数组转集合', () => {
+    const set = new Set([1, 2, 3]);
+    expect(readSurfaceNodes({ surface: { nodes: set } })).toBe(set);
+    const fromArray = readSurfaceNodes({ surface: { nodes: [7, 8] } });
+    expect(fromArray?.has(7)).toBe(true);
+    expect(fromArray?.has(9)).toBe(false);
+  });
+
+  it('形状拿不到一律返回 undefined（当未知，不当"不在"）', () => {
+    for (const shape of [undefined, null, {}, { surface: null }, { surface: {} }, { surface: { nodes: null } }, { surface: { nodes: 5 } }]) {
+      expect(readSurfaceNodes(shape), JSON.stringify(shape ?? null)).toBeUndefined();
+    }
+  });
+
+  it('空集合是真实信号（表面上一个节点都没有），不能被当成未知', () => {
+    const empty = readSurfaceNodes({ surface: { nodes: [] } });
+    expect(empty).toBeDefined();
+    expect(empty?.size).toBe(0);
   });
 });
