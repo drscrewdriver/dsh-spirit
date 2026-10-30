@@ -19,6 +19,10 @@ import { composePersonaText, personaTextFits } from '../src/persona/render.js';
 import { PersonaStore } from '../src/persona/store.js';
 import { pickNotice, pickReaction, shouldRecord, COVERED_TRIGGERS, salienceOf } from '../src/experience/select.js';
 import { byteLen } from '../src/util/text.js';
+import { registerPersonaSection } from '../src/hooks/persona-section.js';
+import { effectiveCfg, readLiveRef } from '../src/config.js';
+import { SPIRIT_DEFAULTS, type SpiritConfig } from '../src/contract.js';
+import type { HostCapabilities } from '../src/capability.js';
 
 const logs: { info: string[]; warn: string[] } = { info: [], warn: [] };
 const logger = { info: (m: string) => logs.info.push(m), warn: (m: string) => logs.warn.push(m) };
@@ -118,6 +122,55 @@ describe('人格区文本（同态与预算）', () => {
   it('默认人格（无 values/boundaries）只剩两行', () => {
     const text = composePersonaText(DEFAULT_PERSONA, 700);
     expect(text.split('\n')).toHaveLength(2);
+  });
+});
+
+describe('人格区注册（真宿主配置形状）', () => {
+  /** 装一个只声明 section 的假 agent，返回宿主真叫到时拿到的文本。 */
+  function textThroughHook(liveRef: unknown): string {
+    const handlers: Record<string, (payload: unknown) => undefined> = {};
+    const ctx = {
+      on: (name: string, handler: (payload: unknown) => undefined) => {
+        handlers[name] = handler;
+      },
+      effect: () => undefined,
+    } as unknown as Parameters<typeof registerPersonaSection>[0];
+    let captured: (() => string) | undefined;
+    registerPersonaSection(ctx, {
+      personas: new PersonaStore({ dataDir: '', logger }),
+      eff: () => effectiveCfg({ ...SPIRIT_DEFAULTS } as SpiritConfig, readLiveRef(liveRef)),
+      caps: { systemPromptSection: true } as HostCapabilities,
+      logger,
+    });
+    handlers['agent/created']?.({
+      agent: {
+        ctx: {
+          systemPrompt: {
+            section: (def: { text: () => string }) => {
+              captured = def.text;
+              return () => undefined;
+            },
+          },
+        },
+      },
+    });
+    return captured?.() ?? '';
+  }
+
+  it('config.live 是 VolatileRef（真宿主形状）时人格区仍非空', () => {
+    /**
+     * 真机 0.2.0-rc.2 回归：原始 `config.live` 是个 ref，`config.live.personaEnabled`
+     * 永远 `undefined` ⇒ hook 把人格区判空，表现只是“系统提示里静默没人格”。
+     * 本例按真形状（`{ get(): Live }`）装配，而不是一份自己好看的普通对象。
+     */
+    const ref = { get: () => ({ ...SPIRIT_DEFAULTS.live }) };
+    const text = textThroughHook(ref);
+    expect(text).toContain('[角色]');
+    expect(text).toContain('[语气]');
+  });
+
+  it('live.personaEnabled=false ⇒ 人格区为空（开关真生效，不是装饰品）', () => {
+    expect(textThroughHook({ get: () => ({ ...SPIRIT_DEFAULTS.live, personaEnabled: false }) })).toBe('');
   });
 });
 

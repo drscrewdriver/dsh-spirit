@@ -24,7 +24,16 @@ import type { PersonaCard } from '../types.js';
 
 export interface PersonaSectionDeps {
   personas: PersonaStore;
-  cfg: () => SpiritConfig;
+  /**
+   * ⚠️ 必须是**已合并 live 兜底的生效配置**（`effectiveCfg(config, readLiveRef(config.live))`），
+   * 不是原始 `config`。
+   *
+   * 真宿主 0.2.0-rc.2 实测：原始 `config.live` 是个 VolatileRef，`config.live.personaEnabled`
+   * 永远 `undefined` ⇒ 人格区被判空。而它外在表现就是“那个开关没开”，一点不像 bug：
+   * 系统提示里没我们的人格区、卡却照常注入（卡走的是 `eff()` 解析后的视图）。
+   * 所以这里宁可不把 `cfg` 递进来，只递已解析的 `eff`。
+   */
+  eff: () => SpiritConfig;
   caps: HostCapabilities;
   logger: { warn(message: string): void; info(message: string): void };
 }
@@ -47,7 +56,7 @@ export function registerPersonaSection(ctx: Context, deps: PersonaSectionDeps): 
     let cacheText = '';
     let cachePersona: PersonaCard | undefined;
     const text = (): string => {
-      const cfg = deps.cfg();
+      const cfg = deps.eff();
       if (!cfg.enabled || !cfg.persona.enabled || !cfg.live.personaEnabled) return '';
       const persona = deps.personas.current();
       if (cachePersona !== undefined && cacheKey === persona.revision && cacheText !== '') return cacheText;

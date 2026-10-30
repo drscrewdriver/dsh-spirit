@@ -22,7 +22,7 @@ import {
   type SpiritConfig,
   type SpiritLiveSettings,
 } from './contract.js';
-import { readLiveRef, resolveDataDir, spiritSchema, type ConfigSchema } from './config.js';
+import { effectiveCfg, readLiveRef, resolveDataDir, spiritSchema, type ConfigSchema } from './config.js';
 import { probeCapabilities, readTrustedHosts } from './capability.js';
 import { openSpiritDb } from './db/open.js';
 import { decideDegrade } from './db/degrade.js';
@@ -57,6 +57,8 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   const caps = probeCapabilities(ctx);
   const cfg = (): SpiritConfig => config;
   const live = (): SpiritLiveSettings => readLiveRef(config.live);
+  /** 已合并 live 兜底的生效视图（任何读开关的地方都只能拿这个，不能拿 `cfg()`）。 */
+  const eff = (): SpiritConfig => effectiveCfg(config, live());
 
   const dataDir = resolveDataDir(config);
   const opened = openSpiritDb(dataDir);
@@ -115,7 +117,7 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     return undefined;
   });
 
-  registerPersonaSection(ctx, { personas, cfg, caps, logger });
+  registerPersonaSection(ctx, { personas, eff, caps, logger });
   registerCardObserve(ctx, { spirit, logger });
   registerSpiritRpc(ctx, { spirit, stats, store, modes, personas, dataDir, cfg, drscVerdict, logger });
   registerCardPreStep(ctx, {

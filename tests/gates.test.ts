@@ -123,6 +123,19 @@ describe('task_7.2 语义诚实闸', () => {
     expect(card.text).toContain('不是医学或心理判断');
   });
 
+  it('人格区 hook 只能拿已解析的生效配置（真机：裸读 config.live 恒 undefined）', () => {
+    /**
+     * 同一类错第三次出现（前两次：没读 live.bypass / live.cardEnabled）。
+     * 文本规则分不开“合法的 cfg.live.x”（来自 eff()）与“非法的 cfg.live.x”（来自原始 config），
+     * 所以这里守的是**依赖形状**：hook 不得再收到 `cfg`，只能收到 `eff`。
+     */
+    const code = stripComments(readFileSync(fileURLToPath(new URL('../src/hooks/persona-section.ts', import.meta.url)), 'utf8'));
+    expect(code).not.toMatch(/deps\.cfg\s*\(/u);
+    expect(code).toMatch(/deps\.eff\s*\(\)/u);
+    const entry = stripComments(readFileSync(fileURLToPath(new URL('../src/index.ts', import.meta.url)), 'utf8'));
+    expect(entry).toMatch(/registerPersonaSection\(ctx,\s*\{[^}]*eff[,}]/u);
+  });
+
   it('spirit 自己产的细节绝不携带目录路径（只留 basename）', () => {
     // 卡体可以引用 DRSC 脱敏片段（那段本来就在上下文里），真正必须守住的是
     // **本插件自己写进 cues / fact 的细节不带目录**——那才是持久化层的意外泄露面。
