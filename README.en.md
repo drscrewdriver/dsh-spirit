@@ -87,6 +87,11 @@ only the live recency lane runs — no errors, nothing invented. spirit calls on
   and the character has no feelings" happens silently.
 - **A broken store does not mean no feelings**: if `node:sqlite` is unavailable, entries fall back to
   an in-memory mirror — this turn's state is still injected, history and cross-session tone stop.
+- **Off really means zero bytes**: the host was measured on two arms — installed with
+  `enabled: false` versus not installed at all — pairing request bodies by kind. spirit contributes
+  0 bytes (no injected row, no persona section, identical `system`). The only 40 B difference comes
+  from the host's own "installed plugins" manifest, which it sends regardless of whether a plugin is
+  enabled — so the honest claim is "zero plugin-side bytes", not "byte-identical to an uninstall".
 
 ## Deciding whether it helps
 
