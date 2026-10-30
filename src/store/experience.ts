@@ -149,6 +149,30 @@ export class ExperienceStore {
     return typeof value === 'string' ? value : undefined;
   }
 
+  /**
+   * 单事务写入：条目行 + 它的 cues。
+   *
+   * 两件分开写会坏在很安静的位置：崩在中间就得到"有 cue 无条目"的孤儿行（检索能命中
+   * 一个不存在的经历）。实测还顺带发现成本：逐条自提交时 2 万条要 92 秒。
+   */
+  private runInTransaction(write: () => void): void {
+    const db = this.deps.db;
+    if (db === null) return;
+    db.exec('BEGIN');
+    try {
+      write();
+      db.exec('COMMIT');
+    } catch (err) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        /* 回滚失败不掩盖原错 */
+      }
+      throw err;
+    }
+  }
+
+  /** 内存镜像写入（有顶：无顶就是无界增长）。 */
   private pushMirror(entry: ExperienceEntry): void {
     this.mirror.push(entry);
     if (this.mirror.length > MEMORY_MIRROR_LIMIT) this.mirror.shift();
@@ -178,23 +202,25 @@ export class ExperienceStore {
       return entry;
     }
     try {
-      this.run(INSERT_SQL, [
-        entry.id,
-        entry.sessionId,
-        entry.workspaceId,
-        entry.turnSeq,
-        entry.tsMs,
-        entry.trigger,
-        entry.notice,
-        entry.reaction,
-        entry.text,
-        JSON.stringify(entry.fact),
-        entry.lane,
-        entry.sourceRef ?? null,
-        entry.personaRevision,
-        entry.updatedAt,
-      ]);
-      for (const cue of cues) this.run(INSERT_CUE_SQL, [entry.id, cue]);
+      this.runInTransaction(() => {
+        this.run(INSERT_SQL, [
+          entry.id,
+          entry.sessionId,
+          entry.workspaceId,
+          entry.turnSeq,
+          entry.tsMs,
+          entry.trigger,
+          entry.notice,
+          entry.reaction,
+          entry.text,
+          JSON.stringify(entry.fact),
+          entry.lane,
+          entry.sourceRef ?? null,
+          entry.personaRevision,
+          entry.updatedAt,
+        ]);
+        for (const cue of cues) this.run(INSERT_CUE_SQL, [entry.id, cue]);
+      });
     } catch (err) {
       // 抛穿就等于让一次记录失败变成一轮对话失败
       this.deps.logger.warn(`[spirit] 条目写入失败，本次退内存镜像：${err instanceof Error ? err.message : String(err)}`);
