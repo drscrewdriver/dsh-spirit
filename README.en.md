@@ -17,7 +17,10 @@ It does not record work facts or objective facts — it records experience.
 All three can coexist and never read or write each other's stores. spirit has **no dependency on
 prime-memory**: its injected rows are attributed `plugin:spirit`, while prime-memory's capture only
 accepts `kind:'user'`, so experience records never get distilled into "facts" (an echo chamber) —
-and spirit never reads `~/.dsh/memory`.
+and spirit never reads `~/.dsh/memory`. This is measured, not assumed: with both plugins installed
+and real turns running, the sister package logs `L0 跳过非用户来源消息(source.kind=plugin:spirit)`
+and its store contains no card signature — while genuine user statements *are* captured, so the
+absence is not "it never ran".
 
 ## Why journal entries, not "a diary per day"
 

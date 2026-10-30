@@ -17,6 +17,8 @@
 三者可同机共存且互不读写对方的库。spirit 与 prime-memory 之间**没有任何依赖关系**：
 spirit 注入行署名为 `plugin:spirit`，而 prime-memory 的捕获只收 `kind:'user'`，
 所以体验记录不会被蒸馏成"事实"（回声室），反之 spirit 也不读 `~/.dsh/memory`。
+这条不靠推定：两家同装跑真回合后，姊妹包日志会打出 `L0 跳过非用户来源消息(source.kind=plugin:spirit)`，
+而它的存储里搜不到卡签名（同时用户真偏好确实被收下，排除"它没干活"）。
 
 ## 为什么"记录点滴"而不是"每天一本日记"
 
