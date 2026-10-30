@@ -82,16 +82,25 @@ export const NOTICE_KINDS = [
 
 export type NoticeKind = (typeof NOTICE_KINDS)[number];
 
-/** 反应强度档位（枚举，非数值）。 */
-export const REACTION_TIERS = ['none', 'mild', 'strong'] as const;
+/** 反应强度档位（枚举，非数值）。命名单例先行定义、再组成取值域，代码里引用单例即不写新字面量。 */
+export const REACTION_NONE = 'none' as const;
+export const REACTION_MILD = 'mild' as const;
+export const REACTION_STRONG = 'strong' as const;
+export const REACTION_TIERS = [REACTION_NONE, REACTION_MILD, REACTION_STRONG] as const;
 export type ReactionTier = (typeof REACTION_TIERS)[number];
 
 /** 效价档位（枚举，非数值）。 */
-export const VALENCE_TIERS = ['neg', 'mid', 'plus'] as const;
+export const VALENCE_NEG = 'neg' as const;
+export const VALENCE_MID = 'mid' as const;
+export const VALENCE_PLUS = 'plus' as const;
+export const VALENCE_TIERS = [VALENCE_NEG, VALENCE_MID, VALENCE_PLUS] as const;
 export type ValenceTier = (typeof VALENCE_TIERS)[number];
 
 /** 唤起档位（枚举，非数值）。 */
-export const AROUSAL_TIERS = ['low', 'normal', 'high'] as const;
+export const AROUSAL_LOW = 'low' as const;
+export const AROUSAL_NORMAL = 'normal' as const;
+export const AROUSAL_HIGH = 'high' as const;
+export const AROUSAL_TIERS = [AROUSAL_LOW, AROUSAL_NORMAL, AROUSAL_HIGH] as const;
 export type ArousalTier = (typeof AROUSAL_TIERS)[number];
 
 /** 语气档（查表文案的第三个键）。 */
@@ -108,14 +117,20 @@ export const SALIENCE_WEIGHTS = [0, 1, 2] as const;
 export type SalienceWeight = (typeof SALIENCE_WEIGHTS)[number];
 
 /** 条目来源路：实时钩子 vs DRSC 历史投影。 */
-export const LANES = ['live', 'drsc'] as const;
+export const LANE_LIVE = 'live' as const;
+export const LANE_DRSC = 'drsc' as const;
+export const LANES = [LANE_LIVE, LANE_DRSC] as const;
 export type Lane = (typeof LANES)[number];
 
 /**
  * 探测/自检判定四值。`skipped` 是**中性无据**（如 DRSC 未安装），
  * 绝不写成 `warn`——把"无法判定"当"异常"会让用户看到一串假故障。
  */
-export const SPIRIT_VERDICTS = ['ok', 'warn', 'fail', 'skipped'] as const;
+export const VERDICT_OK = 'ok' as const;
+export const VERDICT_WARN = 'warn' as const;
+export const VERDICT_FAIL = 'fail' as const;
+export const VERDICT_SKIPPED = 'skipped' as const;
+export const SPIRIT_VERDICTS = [VERDICT_OK, VERDICT_WARN, VERDICT_FAIL, VERDICT_SKIPPED] as const;
 export type SpiritVerdict = (typeof SPIRIT_VERDICTS)[number];
 
 // ─────────────────────────────────────────────────────────── 形状
