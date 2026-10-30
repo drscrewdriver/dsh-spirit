@@ -62,11 +62,26 @@
 - `ENOENT` 判定看 `err.name` 而非 `err.code`（把"文件不存在"报成"不可读"，一个不存在的故障）
 - 迁移方向判定两分支文案写反；`planMigration` 高于/低于线走向错
 
+### 真机（0.2.0-rc.2 web）照出来的四个缺陷
+
+- **路由根拼错**：`SPIRIT_RPC_ROUTE` 拼成 `/dsh-spiritrpc`，而浏览器半请求 `/dsh-spirit/rpc/…`
+  ⇒ 面板拿到的全是宿主 404。现收成 `contract.ts` 单源，两半共引，另加三道闸 + 两项 dist 冒烟
+- **可选服务获取方式错**：`ctx.get('webServer')` 在未声明顶层 inject 时被吞，而 `internal/service`
+  常规启动不重发 ⇒ 路由永不注册。主路改 `ctx.inject(['webServer'], …)` 作域注入
+- **座位标题冻结在默认语言**：client apply 早于宿主写 `<html lang>`，label 传字符串 ⇒ 导航条永久
+  英文。改传 thunk（宿主契约：thunk 跟随当前语言）
+- **手记与导出依赖内存注册表**：宿主重启后注册表空 ⇒ 手记整块空白、导出报“没有会话可导”，
+  而条目全在库里。现按库兜底选会话（`latestSessionId()`），空态文案也不再自相矛盾
+- 同时补上“本轮已取消”那道门此前缺的用例
+
 ### 边界
 
 - `engines.dsh` 只声明 **0.2.x 六线**（`form:'snapshot'`、producer-owned kind、`systemPrompt.section`
   在 0.1.7 之前不存在）。本地宿主树实测：兼容裁决读的是 `peerDependencies`，README 明写
   "不是 `engines.dsh`"——所以两者同写并逐线预检。
 - 保留期清理**只归档导出、不删行**（真删需要快照 + 校验 + 回灌三件套，留待 v0.2 且需显式授权）
-- 本地 195+ 项单测与 dist 冒烟已过；**真机宿主冒烟与 A/B 数据**待在实机 DSH 环境完成
+- 本地 240+ 项单测、dist 冒烟与**真机 web 冒烟**已过（宿主半装载 / 六端点 / pill 写读 / 分节渲染 / 导出落盘）；
+  **注入行端到端与 A/B 数据**需模型凭据跑真回合，本轮未做
+- 0.2.0-rc.2 的 web 壳子**不渲染 volatile 自动表单**（没有任何 client 包读 `autoGenerate`）
+  ⇒ `live.*` 热改走部署面，不在设置页上
 - 不做：长期情绪检索、图谱、矛盾裁决、人设自动演化、压缩后端接管

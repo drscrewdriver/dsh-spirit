@@ -86,6 +86,23 @@ First usable release: **a first-person experience entry store plus dual-lane ins
   "unreadable" — a failure that does not exist
 - migration direction checks had their two messages swapped
 
+### Real-host defects (found on a live 0.2.0-rc.2 web install)
+
+- **wrong route root**: `SPIRIT_RPC_ROUTE` built `/dsh-spiritrpc` while the browser half fetched
+  `/dsh-spirit/rpc/…` ⇒ the panel only ever saw the host's 404. The root is now a single shared
+  constant, with three gate assertions plus two dist-smoke checks behind it
+- **wrong optional-service lookup**: `ctx.get('webServer')` returns undefined without a top-level
+  inject declaration, and `internal/service` does not re-fire on a normal start ⇒ the route was never
+  registered. The main path is now scoped injection, `ctx.inject(['webServer'], …)`
+- **seat label frozen in the default language**: client apply runs before the host writes
+  `<html lang>`, so a string label pinned the nav entry to English. Labels are thunks now
+  (host contract: thunks follow the active locale)
+- **journal and export hung off the in-memory registry**: after a host restart the registry is empty,
+  so the section went blank and export said "no session to export" while every row sat in the store.
+  Both now fall back to the newest session in the library, and the empty-state copy no longer
+  contradicts the rows below it
+- also closed the missing test cases for the "turn already cancelled" gate
+
 ### Limits
 
 - `engines.dsh` declares **only the six verified 0.2.x lines** (`form:'snapshot'`, producer-owned
@@ -94,7 +111,10 @@ First usable release: **a first-person experience entry store plus dual-lane ins
   `engines.dsh`" — so both are declared and pre-checked per line.
 - Retention **archives only; it deletes no rows** (real deletion needs snapshot + verification +
   restore, deferred to v0.2 behind explicit consent).
-- Local unit tests and dist smoke pass; **real-host smoke and A/B data remain to be collected on a
-  live DSH install**.
+- Local unit tests, dist smoke and a **real-host web smoke pass** (host half loads, six endpoints,
+  pill write/read across a restart, section renders, export lands on disk); **end-to-end injection and
+  A/B numbers still need model credentials** to run real turns.
+- The 0.2.0-rc.2 web shell **renders no automatic volatile form** (no client package reads
+  `autoGenerate`) ⇒ `live.*` keys are hot-edited through the deployment layer, not the settings page.
 - Out of scope: long-range emotion retrieval, knowledge graph, conflict adjudication, persona
   self-evolution, taking over the compaction backend.

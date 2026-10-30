@@ -100,13 +100,21 @@ contract; do not rename). Common knobs: `card.maxBytes`, `card.recentK`, `card.c
 Data directory: `$DSH_HOME/spirit` (`spirit.db`, `persona.json`, `persona-history.jsonl`,
 `session-modes.json`, `archive/`).
 
+Hot reload: the `live.*` node is marked `.volatile()`, so editing `cordis.patch.yml` takes effect
+without a restart; per-session switches live on the input-bar pill. (The 0.2.0-rc.2 web shell does
+not render an automatic volatile form, so those keys are not on the settings page.)
+
 ## Known limits (v0.1)
 
 - No long-range emotion retrieval, knowledge graph, conflict adjudication or persona self-evolution
   (that is memory-engine and dsh-soul territory)
 - Neutral turns are not recorded by default (`salience.neutral = 0`), otherwise the store degrades
   into a per-turn transcript
-- Real-host smoke and A/B data are still pending on a live DSH install
+- Real-host web smoke passed (host 0.2.0-rc.2, isolated `DSH_HOME`): host half loads, all six panel
+  endpoints answer (including the 403/404/405 fences), the pill writes and re-reads its per-session
+  mode across a restart, and the Journal section renders and exports to disk
+- **Still unverified**: end-to-end injection and A/B numbers (need model credentials to run real
+  turns), the DRSC probes (need the collector installed), and the tui / older host lines
 
 ## Engineering
 

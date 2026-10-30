@@ -89,11 +89,16 @@ spirit 只调用它的 `op` 面（`status` / `session` / `search`），**从不�
 
 数据目录：`$DSH_HOME/spirit`（`spirit.db` / `persona.json` / `persona-history.jsonl` / `session-modes.json` / `archive/`）。
 
+热改路径：`live.*` 节标了 `.volatile()`，改 `cordis.patch.yml` 不重启即生效；会话级开关走输入栏 pill。
+（0.2.0-rc.2 的 web 壳子不渲染 volatile 自动表单，所以这些键不在设置页上。）
+
 ## 已知边界（v0.1）
 
 - 不做长期情绪检索、图谱、矛盾裁决、人设自动演化（那是记忆引擎与 soul 的地盘）
 - 中性轮默认不记（`salience.neutral = 0`），否则库会退化成逐轮流水账
-- 真机宿主冒烟与 A/B 数据留待实机环境完成
+- 真机 web 冒烟已过（宿主 0.2.0-rc.2，隔离 `DSH_HOME`）：宿主半装载、面板六端点（含 403/404/405 三面防线）、
+  pill 三态写盘与重启读回、设置页「手记」分节渲染与导出落盘均逐项验过；
+  **仍未验**：注入行端到端与 A/B 数据（需模型凭据跑真回合）、DRSC 探针（需同装第二家）、tui 与老宿主线
 
 ## 工程
 
