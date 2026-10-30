@@ -75,6 +75,12 @@ export interface RpcDeps {
   cfg: () => SpiritConfig;
   /** DRSC 探测结论（面板要如实显示 skipped/warn，不当故障也不当正常）。 */
   drscVerdict: () => SpiritVerdict;
+  /**
+   * 拿到 webServer 时回调它的监听端口（拿不到形状 ⇒ undefined）。
+   * 为什么递出去：collector 的 API 挂在同一个 webServer 上，而 `dsh web` 的端口是挑的；
+   * 历史路缺省基址必须跟着这个端口，否则非 8080 部署上它永远 warn（真宿主实测）。
+   */
+  onWebServerReady?: (port: number | undefined) => void;
   logger: { warn(message: string): void; info(message: string): void };
 }
 
@@ -219,6 +225,8 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
 }
 
 interface WebServerFace {
+  /** 监听端口（宿主产物上存在；老线拿不到就当未知）。 */
+  port?: number;
   register(route: {
     kind: 'prefix';
     path: string;
@@ -242,6 +250,8 @@ export function registerSpiritRpc(ctx: Context, deps: RpcDeps): void {
   const mount = (webServer: WebServerFace): void => {
     if (holding) return;
     holding = true;
+    const port = typeof webServer.port === 'number' && Number.isFinite(webServer.port) ? webServer.port : undefined;
+    deps.onWebServerReady?.(port);
     const registered = webServer.register({
       kind: 'prefix',
       path: SPIRIT_RPC_ROUTE,

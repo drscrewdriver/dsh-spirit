@@ -80,11 +80,17 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     },
   });
 
+  /**
+   * 宿主 webServer 端口（面板路由挂载时回填）。DRSC 缺省基址靠它：collector 的 API
+   * 与面板同源同端口，而 `dsh web` 端口是挑的（真宿主本次在 3080）。
+   */
+  let webPort: number | undefined;
   const client = config.drsc.enabled
     ? new DrscClient({
         baseUrl: config.drsc.baseUrl,
         timeoutMs: config.drsc.timeoutMs,
         trustedHosts: () => readTrustedHosts(ctx),
+        localPort: () => webPort,
       })
     : undefined;
   const probe = client
@@ -119,7 +125,7 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
 
   registerPersonaSection(ctx, { personas, eff, caps, logger });
   registerCardObserve(ctx, { spirit, logger });
-  registerSpiritRpc(ctx, { spirit, stats, store, modes, personas, dataDir, cfg, drscVerdict, logger });
+  registerSpiritRpc(ctx, { spirit, stats, store, modes, personas, dataDir, cfg, drscVerdict, logger, onWebServerReady: (port) => { webPort = port; } });
   registerCardPreStep(ctx, {
     spirit,
     logger,

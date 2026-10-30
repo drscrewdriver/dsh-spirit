@@ -13,7 +13,7 @@
  * ⚠️ `session:null` 的含义是"collector 里没有这个会话"——**这是新会话首轮的常态，不是错误**：
  * "没有内容"与"没拿到"必须分开，前者空段省略，后者才走 DrscClientError。
  *
- * 同源基址：显式 baseUrl > 首个 trustedHosts 条目（补 http://）> `http://127.0.0.1:8080`。
+ * 同源基址：显式 baseUrl > 首个 trustedHosts 条目（补 http://）> 宿主 webServer 端口 > `http://127.0.0.1:8080`。
  * Host 头回显首个 trustedHosts 条目：collector 的信任门是精确匹配，条目省略端口而 URL 带端口会失配。
  * trustedHosts 惰性读取（`webStartup` 可能晚于本插件就绪），每次请求现算，不缓存陈旧值。
  */
@@ -34,11 +34,24 @@ export class DrscClientError extends Error {
   }
 }
 
-export function resolveDrscBaseUrl(explicit: string | undefined, trustedHosts?: readonly string[]): string {
+/**
+ * 基址优先级：显式 baseUrl > 首个 trustedHosts > **宿主自己的 webServer 端口** > `127.0.0.1:8080`。
+ *
+ * 第三档是真宿主实测补上的：collector 的 API 就挂在宿主同一个 webServer 上，
+ * 而 `dsh web` 的端口是挑的（本次跑在 3080）。只靠 trustedHosts + 8080 缺省，
+ * 在非 8080 部署上历史路会**永远 warn**（面板显示成故障，其实只是打错了门）。
+ */
+export function resolveDrscBaseUrl(
+  explicit: string | undefined,
+  trustedHosts?: readonly string[],
+  localPort?: number | undefined,
+): string {
   const trimmed = explicit?.trim() ?? '';
-  const pick = trimmed !== '' ? trimmed : trustedHosts?.find((entry) => entry.trim() !== '')?.trim();
-  if (pick === undefined || pick === '') return 'http://127.0.0.1:8080';
-  return /^https?:\/\//u.test(pick) ? pick : `http://${pick}`;
+  if (trimmed !== '') return trimmed;
+  const pick = trustedHosts?.find((entry) => entry.trim() !== '')?.trim();
+  if (pick !== undefined && pick !== '') return /^https?:\/\//u.test(pick) ? pick : `http://${pick}`;
+  if (typeof localPort === 'number' && Number.isFinite(localPort) && localPort > 0) return `http://127.0.0.1:${Math.floor(localPort)}`;
+  return 'http://127.0.0.1:8080';
 }
 
 /** `op=session` 的一行（segments 明细）。 */
@@ -134,6 +147,11 @@ export interface DrscClientOptions {
   baseUrl?: string;
   /** trustedHosts 惰性读取，每次请求现取。 */
   trustedHosts?: () => readonly string[] | undefined;
+  /**
+   * 宿主 webServer 监听端口（惰性：服务可能晚于本插件就绪，拿到前返回 undefined）。
+   * 只在显式基址与 trustedHosts 都没给时用——它把“collector 与面板同服务器”这个事实说清楚。
+   */
+  localPort?: () => number | undefined;
   /** 注入面（单测）；缺省全局 fetch。 */
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -150,7 +168,7 @@ export class DrscClient {
 
   private base(): { url: string; hostHeader?: string } {
     const trusted = this.options.trustedHosts?.() ?? [];
-    const baseUrl = resolveDrscBaseUrl(this.options.baseUrl, trusted).replace(/\/+$/u, '');
+    const baseUrl = resolveDrscBaseUrl(this.options.baseUrl, trusted, this.options.localPort?.()).replace(/\/+$/u, '');
     const first = trusted.find((entry) => entry.trim() !== '')?.trim();
     return { url: `${baseUrl}${DRSC_API_PATH}`, ...(first !== undefined ? { hostHeader: first } : {}) };
   }

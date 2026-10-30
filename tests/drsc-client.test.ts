@@ -24,6 +24,32 @@ describe('基址解析', () => {
     expect(resolveDrscBaseUrl('', ['  ', 'x:1'])).toBe('http://x:1');
   });
 
+  it('宿主 webServer 端口是第三档（真宿主跑在 3080，缺省 8080 会让历史路永远 warn）', () => {
+    expect(resolveDrscBaseUrl('', undefined, 3080)).toBe('http://127.0.0.1:3080');
+    expect(resolveDrscBaseUrl('', [], 3080)).toBe('http://127.0.0.1:3080');
+    // 但前两级仍优先：不能拿端口盖掉用户显式配的基址
+    expect(resolveDrscBaseUrl('http://10.0.0.9:8080', ['x:1'], 3080)).toBe('http://10.0.0.9:8080');
+    expect(resolveDrscBaseUrl('', ['host.test:1234'], 3080)).toBe('http://host.test:1234');
+    // 拿不到端口（服务晚到/老线无此形状）仍退 8080，不拼出 :undefined
+    expect(resolveDrscBaseUrl('', undefined, undefined)).toBe('http://127.0.0.1:8080');
+    expect(resolveDrscBaseUrl('', undefined, 0)).toBe('http://127.0.0.1:8080');
+  });
+
+  it('localPort 惰性读：端口晚到时同一个 client 改打新地址', async () => {
+    // 用容器而不是 `let`：eslint 的 prefer-const 会把“声明后只赋一次”的 let 报成应改 const，
+    // 而本例要的就是“先读一次（还没端口）再赋一次”这个时序。
+    const host = { port: undefined as number | undefined };
+    const { fetchImpl, calls } = recorder(() => jsonOk({ ok: true, session: null, rows: [] }));
+    const client = new DrscClient({ fetchImpl, localPort: () => host.port });
+    await client.sessionTail('s1', 1);
+    host.port = 3080;
+    await client.sessionTail('s1', 1);
+    expect(calls[0]?.url).toContain('127.0.0.1:8080');
+    expect(calls[1]?.url).toContain('127.0.0.1:3080');
+    // 走端口兜底时不自定 Host 头（fetch 会按 URL 权威带正确端口；collector 的信任门是精确匹配）
+    expect(calls[1]?.headers['host']).toBeUndefined();
+  });
+
   it('Host 头回显首个 trustedHosts 原串（信任门是精确匹配，改端口就失配）', async () => {
     const { fetchImpl, calls } = recorder(() => jsonOk({ ok: true, session: null, rows: [] }));
     const client = new DrscClient({ fetchImpl, trustedHosts: () => ['10.0.0.5:8080'] });
