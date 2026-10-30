@@ -372,4 +372,4 @@ export const SPIRIT_PERSONA_FILE_VERSION = 1;
 /** `session-modes.json` 文件形状版本。 */
 export const SPIRIT_MODES_FILE_VERSION = 1;
 /** 插件版本（与 package.json / dsh.plugin.json 同串，由门禁核对）。 */
-export const SPIRIT_VERSION = '0.1.0';
+export const SPIRIT_VERSION = '0.1.1';

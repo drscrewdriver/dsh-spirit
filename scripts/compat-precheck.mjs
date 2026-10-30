@@ -24,6 +24,7 @@ export const TARGET_HOSTS = [
   '0.2.1-rc.2',
   '0.2.1-rc.3',
   '0.2.1-rc.4',
+  '0.2.1-rc.5',
 ];
 
 /** 只有已实测的 0.2.x 线可以承诺；老线缺 producer-owned kind 与 systemPrompt.section。 */
