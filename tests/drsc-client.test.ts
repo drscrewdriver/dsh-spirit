@@ -159,6 +159,25 @@ describe('包络解读', () => {
     await expect(new DrscClient({ fetchImpl }).sessionTail('s', 5)).rejects.toThrow(/session parameter required/u);
   });
 
+  it('session 行按真宿主同装实采形状映射（多余字段忽略，行里没 source 就不猜署名）', async () => {
+    // seq 45 那一行是从真 collector 的 `op=session` 响应里抄下来的原字段集
+    const { fetchImpl } = recorder(() => jsonOk({
+      ok: true,
+      session: { session_id: 's', turn_count: 3, segment_tokens: 3229 },
+      rows: [{
+        session_id: 's', seq: 45, turn: 3, step: 1, kind: 'user/message', role: 'user',
+        time: 1_793_331_339_035, text: '（角色体验快照）…', tokens: 53, search_text: '',
+        on_surface: 1, compressed: 0, surface_text: null, surface_tokens: null, replaced_by: null,
+      }],
+    }));
+    const rows = await new DrscClient({ fetchImpl }).sessionTail('s', 3);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({
+      seq: 45, turn: 3, step: 1, kind: 'user/message', role: 'user',
+      time: 1_793_331_339_035, text: '（角色体验快照）…', onSurface: 1,
+    });
+  });
+
   it('listSessions 的 total 与行都读出来，limit 被钳在 1..500', async () => {
     const { fetchImpl, calls } = recorder(() =>
       jsonOk({ ok: true, total: 40, rows: [{ session_id: 'a', title: 'T', cwd: '/w', event_count: 5, turn_count: 2, last_time_ms: 1 }] }),

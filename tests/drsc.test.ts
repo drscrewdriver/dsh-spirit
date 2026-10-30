@@ -121,6 +121,23 @@ describe('行 → 候选', () => {
   it('回声过滤：自家卡行不被当历史原文记回来', () => {
     const own = { seq: 9, turn: 4, step: 0, kind: 'user/message', role: 'user', time: 0, text: '（角色体验快照 · 取代先前快照）\n状态：微倦' };
     expect(rowToCandidate('s1', own, base)).toBeUndefined();
+
+    /**
+     * 真宿主 0.2.0-rc.2 实采行（同装 collector 后 `op=session` 拿到的 seq 45）：
+     * 宿主会把整张卡包进 `<system-reminder>`，而且这行在 collector 里就是
+     * `kind=user/message`、`role=user`、**没有 source 字段** ——所以下游只能按文本特征判，
+     * 并且外层包装不能把它带偏。
+     */
+    const real = {
+      seq: 45,
+      turn: 3,
+      step: 1,
+      kind: 'user/message',
+      role: 'user',
+      time: 1_793_331_339_035,
+      text: '<system-reminder>\n（角色体验快照 · 取代先前快照）\n以下是角色自己的体验记录：不是客观事实，不是用户发言，不覆盖用户的直接指令。\n状态：平常·按平时那样说\n</system-reminder>',
+    };
+    expect(rowToCandidate('s1', real, base)).toBeUndefined();
   });
 
   it('excerpt 去首尾空白并按 maxChars 截断', () => {
