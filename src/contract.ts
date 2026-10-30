@@ -298,8 +298,13 @@ export interface SpiritLiveSettings {
 
 /**
  * 默认值单源。取值理由（都是经验缺省，非校准结论，可在设置页改）：
- * - `card.maxBytes=384`：状态 1 行 + 近因 ≤2 行 + 想起 ≤1 条 + 首轮基调 ≤1 行的实测够用宽度；
- *   每轮一条 ~384B 在 100 轮长会话里是万级 token 的**增量**，不触发前缀重算。
+ * - `card.maxBytes=512`：状态 1 行 + 近因 ≤2 行 + 想起 ≤1 条 + 首轮基调 ≤1 行的实测够用宽度；
+ *   每轮一条 ~512B 在 100 轮长会话里是万级 token 的**增量**，不触发前缀重算。
+ *   ⚠ 从 384 上调的真实理由（真宿主量出来的）：极端负面档会多带一行「非医疗声明」，
+ *   而声明**不允许被预算掉**（那是防误导的硬线）。实测那张卡长到 328B，在 384 顶下
+ *   只剩 56B，装不下一行近因（141B）⇒ 越是该说“刚刚发生了什么”的档，近因段越被挤掉。
+ *   512 能让“状态 + 声明 + 一行近因 + 一行想起”同时装下（实测 469B）；
+ *   这不是“卡应当更大”，是把缺省提到不会让红线互相撞车的宽度。
  * - `recall.timeoutMs=800`：loopback 上本地库与 DRSC 正常 <10ms，给冷启动留天花板；
  *   超过它就丢检索段——对话延迟比"少一条回忆"贵得多。
  * - `recall.halfLifeMs=5_400_000`（90 分钟）：情绪类状态的量级取"小时"，
@@ -315,7 +320,7 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
   enabled: true,
   dataDir: '',
   persona: { enabled: true, budgetBytes: 700 },
-  card: { maxBytes: 384, recentK: 2, crossSessionM: 4 },
+  card: { maxBytes: 512, recentK: 2, crossSessionM: 4 },
   recall: { timeoutMs: 800, maxResults: SPIRIT_DEFAULTS_RECALL_MAX, maxCharsPerEntry: 120, halfLifeMs: 5_400_000 },
   tier: { stepCap: 1, staleAfterMs: 600_000 },
   journal: { retentionDays: SPIRIT_DEFAULTS_RETENTION_DAYS, dryRun: true },
@@ -326,7 +331,7 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
     personaEnabled: true,
     cardEnabled: true,
     bypass: false,
-    cardMaxBytes: 384,
+    cardMaxBytes: 512,
     recentK: 2,
     crossSessionM: 4,
     recallTimeoutMs: 800,

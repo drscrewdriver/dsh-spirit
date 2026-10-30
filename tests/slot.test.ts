@@ -18,6 +18,7 @@ import {
   type TriggerKind,
 } from '../src/types.js';
 import { byteLen } from '../src/util/text.js';
+import { SPIRIT_DEFAULTS } from '../src/contract.js';
 
 const MOOD_CFG = { halfLifeMs: 5_400_000, stepCap: 1, staleAfterMs: 600_000 };
 
@@ -153,6 +154,43 @@ describe('回忆卡装配', () => {
     expect(text).toContain('不覆盖用户的直接指令');
     expect(isOwnCardText(text)).toBe(true);
     expect(isOwnCardText('用户说：角色体验快照')).toBe(false); // 只有真签名算
+  });
+
+  it('极端负面档在**缺省预算**下同时装下：声明 + 近因 + 想起（红线不许互相撞掉）', () => {
+    /**
+     * 真宿主量出来的事：soft 档多一行「非医疗声明」，而声明不允许被预算掉（防误导的硬线）。
+     * 旧缺省 384 下那张卡长到 328B，只剩 56B ⇒ 一行近因（141B）直接被丢：
+     * 越是该说“刚刚发生了什么”的档，反而越没有“刚刚”。
+     * 本例守的是修后的不变式：缺省宽度下四段共存，不必在两条红线之间选一个。
+     */
+    const cell = MOOD_GRID[VALENCE_NEG][AROUSAL_HIGH];
+    expect(cell.soft, '这格必须是带声明的极端档').toBe(true);
+    const softMood: Mood = { valence: VALENCE_NEG, arousal: AROUSAL_HIGH, label: cell.label, revision: 7, updatedAt: 0 };
+    // 近因句用真宿主上实际出现的那一句（包括“我出了错：”前缀）：本例争的是字节，
+    // 拿短句测会算少 60B 而假绿。
+    const realRecent = '我出了错：手边的动作没成，我记着这一下。';
+    const card = renderCard({
+      mood: softMood,
+      recent: [realRecent],
+      recalled: ['上次你说先把投递放一放。'],
+      tone: '上次我们收尾在：事情收到一个段落。',
+      maxBytes: SPIRIT_DEFAULTS.card.maxBytes,
+      maxCharsPerEntry: SPIRIT_DEFAULTS.recall.maxCharsPerEntry,
+    });
+    expect(card.bytes).toBeLessThanOrEqual(SPIRIT_DEFAULTS.card.maxBytes);
+    expect(card.text).toContain(NON_MEDICAL_NOTE);
+    expect(card.used).toEqual({ status: 1, recent: 1, recalled: 1, tone: 1 });
+    expect(card.dropped, '缺省预算下不该丢任何一段').toBe(0);
+    // 而旧缺省 384 确实会丢近因——把这根“为什么改”的销子也钉住，防止有人改回去
+    const old = renderCard({
+      mood: softMood,
+      recent: [realRecent],
+      recalled: ['上次你说先把投递放一放。'],
+      maxBytes: 384,
+      maxCharsPerEntry: 120,
+    });
+    expect(old.text, '旧顶下声明仍在（它不许被丢）').toContain(NON_MEDICAL_NOTE);
+    expect(old.used.recent, '384 顶下 soft 档的近因段会被丢（这就是上调缺省的理由）').toBe(0);
   });
 
   it('永不超预算；不够时先丢开场、再丢想起、再丢刚刚，状态段最后走', () => {

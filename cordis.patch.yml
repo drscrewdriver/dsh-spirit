@@ -15,7 +15,7 @@
       #     enabled: true
       #     budgetBytes: 700         # 人格区进系统提示的字节顶
       #   card:
-      #     maxBytes: 384            # 回忆卡总顶
+      #     maxBytes: 512            # 回忆卡总顶（不能再小：极端档的「非医疗声明」不许被预算掉）
       #     recentK: 2               # 「刚刚」段最多几条
       #     crossSessionM: 4         # 新会话首轮读上一会话几条（0 = 关闭跨会话基调）
       #   recall:

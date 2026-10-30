@@ -103,6 +103,37 @@ First usable release: **a first-person experience entry store plus dual-lane ins
   contradicts the rows below it
 - also closed the missing test cases for the "turn already cancelled" gate
 
+### Real-host round two (headless line + a local mock provider)
+
+- **the last turn of a session was never recorded**: recording happened in the *next* turn's
+  pre-step, which reads the previous turn's accumulator. A headless task is exactly one turn, so
+  the whole experience track wrote **nothing** on a live host (every "journal" row previously
+  visible had been seeded by a probe). A turn now settles at `turn/end`, and pre-step stays only
+  as the fallback for missed events (a settled turn yields empty signals, so nothing is recorded
+  twice). Lesson: **green unit tests plus a plugin that loads is not proof that the writer runs**
+- **duplicated recall lines**: the same trigger compiles the same sentence, and `recallHistory`
+  only deduplicated against the recent section, so a live card carried two identical
+  "recalled:" lines (wasted budget, read like a glitch). Both lanes now dedupe at the merge point:
+  2 lines → 1, card bytes 374 → 304
+- **the default card width collided with a red line**: the extreme negative tier adds a
+  "not a medical or psychological judgement" note, and that note must never be budget-dropped.
+  The measured card reached 328 B, leaving 56 B under `card.maxBytes=384` — not enough for one
+  recent line (141 B), so precisely the tiers that should say "what just happened" lost it.
+  The default is now **512**; re-verified on the host, where the note and the recent line coexist
+  in a 398 B card (the old 384 cap could not hold it at all)
+- `capture.userSnippet` / `maxQuoteChars` had been dead keys (now implemented as a code-point
+  truncated `fact.quote`), and `extractCues` allowed four words of the user's own text into the
+  retrieval keys — which the recall section would have fed back into the prompt
+
+### New surface
+
+- `npm run ab` (`scripts/ab-report.mjs`): offline attribution. Reads the host's durable logs
+  (multi-frame zstd) plus the read-only own store and groups sessions **by evidence** — a
+  `plugin:spirit` card row means the injected arm, store entries without a card row mean the
+  bypass arm — reporting turns, reply characters, `inputTokens` / `cacheReadTokens`, hit ratio,
+  card rows and bytes, cards carrying a recalled line, journal entries and correction candidates.
+  It is also where the cross-session tone and history recall were first captured on a live host
+
 ### Limits
 
 - `engines.dsh` declares **only the six verified 0.2.x lines** (`form:'snapshot'`, producer-owned
