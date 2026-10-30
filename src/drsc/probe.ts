@@ -21,8 +21,9 @@ export interface DrscProbeResult {
   verdict: SpiritVerdict;
   /** 判定依据（一句人话，供面板与日志；不含敏感内容）。 */
   reason?: string;
-  lastSyncMs?: number;
   sessionCount?: number;
+  /** 已投影 segment 数（0 = 装了但还没内容，不是故障）。 */
+  segmentCount?: number;
   checkedAtMs: number;
 }
 
@@ -74,10 +75,15 @@ export class DrscProbe {
     }
     try {
       const status = await this.deps.client.status();
+      // 上次同步失败是有据可疑（collector 在但投影链坏了），不是 ok；
+      // 但**读不到** last_sync.ok 不算失败——未知不当异常（否则又是一屏假故障）。
+      if (status.lastSyncOk === false) {
+        return { verdict: VERDICT_WARN, reason: 'collector 上次同步失败', checkedAtMs: now };
+      }
       return {
         verdict: VERDICT_OK,
-        lastSyncMs: status.lastSyncMs,
         sessionCount: status.sessionCount,
+        segmentCount: status.segmentCount,
         checkedAtMs: now,
       };
     } catch (err) {

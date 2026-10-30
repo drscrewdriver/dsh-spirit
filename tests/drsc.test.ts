@@ -33,6 +33,21 @@ describe('DrscProbe 判定四值', () => {
     expect(await probe.usable()).toBe(true);
   });
 
+  it('last_sync.ok=false ⇒ warn（collector 在但投影链坏了），未知不算失败', async () => {
+    const failing = new DrscProbe({
+      client: clientReturning(async () => ({ ok: true, sessions: 3, last_sync: { ok: false, busy: false } })),
+      enabled: () => true,
+      ttlMs: () => 15_000,
+    });
+    const result = await failing.check();
+    expect(result.verdict).toBe(VERDICT_WARN);
+    expect(result.reason).toContain('同步失败');
+    expect(await failing.usable()).toBe(false);
+    // 没带 last_sync 的旧版/异形响应：未知 ⇒ 仍然是 ok（把未知当异常就是一屏假故障）
+    const unknown = new DrscProbe({ client: clientReturning(async () => ({ ok: true, sessions: 1 })), enabled: () => true, ttlMs: () => 15_000 });
+    expect((await unknown.check()).verdict).toBe(VERDICT_OK);
+  });
+
   it('探测路径永不产出 fail：不可达 ⇒ warn（有据可疑），不抛穿', async () => {
     const probe = new DrscProbe({ client: clientThrowing(new DrscClientError('collector 不可达')), enabled: () => true, ttlMs: () => 15_000 });
     const result = await probe.check();

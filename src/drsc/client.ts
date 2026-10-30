@@ -80,12 +80,26 @@ export interface DrscSessionSummary {
   lastTimeMs: number;
 }
 
-/** `op=status` 的解读结果：只提本插件真正会用的字段。 */
+/**
+ * `op=status` 的解读结果。
+ *
+ * 字段名以**真宿主同装时的实探响应为准**（findings 的 DRSC 探针）：
+ * `{ok, sessions, segments, replaces, schema_version, generations, cache,
+ *   last_sync:{ok,busy,totalDiscovered,updated,skipped,failures,durationMs}, syncing}`
+ * —— 注意 `last_sync` 是个**结果对象**且整个响应里**没有任何时间戳字段**，
+ * 所以新鲜度只能报“在不在同步 / 上次同步成没成”，不能报“多久之前”。
+ */
 export interface DrscStatusView {
-  /** 上次同步完成时间（毫秒）；拿不到就 undefined，不当 0 用。 */
-  lastSyncMs?: number;
   /** 已投影的会话数（>0 说明它真的在工作）。 */
   sessionCount?: number;
+  /** 已投影的 segment 数（0 = 装了但还没内容，不是故障）。 */
+  segmentCount?: number;
+  /** collector 自己的投影 schema 版本（如 `"5"`）。 */
+  schemaVersion?: string;
+  /** 正在同步（`syncing` 或 `last_sync.busy`）。 */
+  syncing: boolean;
+  /** 上次同步是否成功（`last_sync.ok`）；读不到 ⇒ undefined（**未知**，不当 false 用）。 */
+  lastSyncOk?: boolean;
   /** 原始包络，供诊断面板展开看（不参与逻辑判断）。 */
   raw: Readonly<Record<string, unknown>>;
 }
@@ -152,7 +166,18 @@ export class DrscClient {
     } catch (err) {
       throw new DrscClientError(`collector 不可达(${query})`, { cause: err });
     }
-    if (!response.ok) throw new DrscClientError(`collector HTTP ${response.status}(${query})`);
+    if (!response.ok) {
+      // collector 的错误是 400 + `{ok:false,error:"…"}`（error 是**字符串**），
+      // 不拆体就会把“session parameter required”这类真因报成光溜的 HTTP 400。
+      let detail = '';
+      try {
+        const bad: unknown = await response.json();
+        if (typeof bad === 'object' && bad !== null) detail = String((bad as { error?: unknown }).error ?? '');
+      } catch {
+        /* 非 JSON 就不带细节 */
+      }
+      throw new DrscClientError(`collector HTTP ${response.status}${detail === '' ? '' : `(${detail})`}(${query})`);
+    }
     let body: unknown;
     try {
       body = await response.json();
@@ -167,12 +192,18 @@ export class DrscClient {
     return body as Record<string, unknown>;
   }
 
-  /** 可用性与同步新鲜度探测。 */
+  /** 可用性与同步状态探测。 */
   async status(): Promise<DrscStatusView> {
     const body = await this.getJson('?op=status');
+    const sync = typeof body['last_sync'] === 'object' && body['last_sync'] !== null
+      ? body['last_sync'] as Record<string, unknown>
+      : undefined;
     return {
-      lastSyncMs: pickNum(body, 'last_sync_ms', 'lastSyncMs', 'synced_at_ms', 'syncedAtMs'),
-      sessionCount: pickNum(body, 'session_count', 'sessionCount', 'sessions'),
+      sessionCount: pickNum(body, 'sessions', 'session_count', 'sessionCount'),
+      segmentCount: pickNum(body, 'segments', 'segment_count', 'segmentCount'),
+      schemaVersion: typeof body['schema_version'] === 'string' ? body['schema_version'] : undefined,
+      syncing: body['syncing'] === true || sync?.['busy'] === true,
+      ...(sync === undefined || typeof sync['ok'] !== 'boolean' ? {} : { lastSyncOk: sync['ok'] }),
       raw: body,
     };
   }

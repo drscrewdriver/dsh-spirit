@@ -91,12 +91,46 @@ describe('包络解读', () => {
     expect(rows[2]?.onSurface).toBeUndefined();
   });
 
-  it('status 只取本仓真会用的字段，原始包络留在 raw 里供面板展开', async () => {
-    const { fetchImpl } = recorder(() => jsonOk({ ok: true, session_count: 12, last_sync_ms: 999, extra: 'x' }));
+  it('status 按真宿主同装实探的包络解读（字段名不靠猜）', async () => {
+    /**
+     * 这份 fixture 是 2026-10-30 在 0.2.0-rc.2 web 上同装 collector 0.2.3 实探所得。
+     * 之前这里写的是 `last_sync_ms` —— 真响应里**根本没有这个字段**，`last_sync` 是个结果对象，
+     * 且整个 status 里没有任何时间戳。拿假 fixture 测客户端等于没测。
+     */
+    const real = {
+      ok: true,
+      sessions: 1,
+      segments: 0,
+      replaces: 0,
+      schema_version: '5',
+      generations: [{ generation: 4, n: 1 }],
+      cache: { summaries: 1, surface_ledger: { entries: 1, hits: 0, misses: 1 } },
+      last_sync: { ok: true, busy: false, totalDiscovered: 1, updated: 0, skipped: 1, durationMs: 1 },
+      syncing: false,
+    };
+    const { fetchImpl } = recorder(() => jsonOk(real));
     const status = await new DrscClient({ fetchImpl }).status();
-    expect(status.sessionCount).toBe(12);
-    expect(status.lastSyncMs).toBe(999);
-    expect(status.raw['extra']).toBe('x');
+    expect(status.sessionCount).toBe(1);
+    expect(status.segmentCount).toBe(0);
+    expect(status.schemaVersion).toBe('5');
+    expect(status.syncing).toBe(false);
+    expect(status.lastSyncOk).toBe(true);
+    expect(status.raw['replaces']).toBe(0);
+  });
+
+  it('last_sync 缺席或形状不认识 ⇒ lastSyncOk 是 undefined（未知），不是 false', async () => {
+    const { fetchImpl } = recorder(() => jsonOk({ ok: true, sessions: 2 }));
+    const status = await new DrscClient({ fetchImpl }).status();
+    expect(status.lastSyncOk).toBeUndefined();
+    expect(status.syncing).toBe(false);
+  });
+
+  it('非 2xx 也带出 collector 的错误文案（真探：400 + `{ok:false,error:"…"}`，error 是字符串）', async () => {
+    const { fetchImpl } = recorder(() => ({
+      ok: false,
+      json: async () => ({ ok: false, error: 'session parameter required' }),
+    }));
+    await expect(new DrscClient({ fetchImpl }).sessionTail('s', 5)).rejects.toThrow(/session parameter required/u);
   });
 
   it('listSessions 的 total 与行都读出来，limit 被钳在 1..500', async () => {
