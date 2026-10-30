@@ -9,7 +9,7 @@
  * 而且注入后的人格漂移看起来完全像"角色自己的反应"，事后无从追责。
  *
  * 判定顺序即优先级（先命中先取），顺序固定不可随意调换：
- * 纠正 > 失败 > 恢复 > 收尾 > 长间隔 > 中性。把 `recovery` 排在 `tool_failure` 之前
+ * 插话 > 失败 > 恢复 > 收尾 > 长间隔 > 中性。把 `recovery` 排在 `tool_failure` 之前
  * 会让"刚恢复"的那轮被记成"又坏了"，归因方向正好相反。
  */
 
@@ -19,7 +19,7 @@ import {
   TRIGGER_RECOVERY,
   TRIGGER_TASK_CLOSE,
   TRIGGER_TOOL_FAILURE,
-  TRIGGER_USER_CORRECTION,
+  TRIGGER_USER_INTERRUPT,
   type TriggerKind,
   type TurnSignals,
 } from '../types.js';
@@ -31,7 +31,7 @@ export interface EventConfig {
 
 /** 优先级表（顺序即语义，改动需同时改上面的注释）。 */
 const PRIORITY: readonly TriggerKind[] = [
-  TRIGGER_USER_CORRECTION,
+  TRIGGER_USER_INTERRUPT,
   TRIGGER_TOOL_FAILURE,
   TRIGGER_RECOVERY,
   TRIGGER_TASK_CLOSE,
@@ -41,7 +41,7 @@ const PRIORITY: readonly TriggerKind[] = [
 
 /** 单个信号 → 命中的事件族（都不命中就是中性轮）。 */
 export function classifyTrigger(signals: TurnSignals, cfg: EventConfig): TriggerKind {
-  if (signals.userCorrection) return TRIGGER_USER_CORRECTION;
+  if (signals.userInterruption) return TRIGGER_USER_INTERRUPT;
   if (signals.toolFailures > 0) return TRIGGER_TOOL_FAILURE;
   if (signals.recovered) return TRIGGER_RECOVERY;
   if (signals.taskClosed) return TRIGGER_TASK_CLOSE;

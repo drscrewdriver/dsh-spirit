@@ -39,9 +39,9 @@ describe('人格卡校验与收窄', () => {
     const { persona } = sanitizePersona({
       name: '测试',
       voice: 'warm',
-      salience: { user_correction: 9, tool_failure: '2', recovery: null, task_close: 1, long_gap: -3, neutral: 1.7 },
+      salience: { user_interruption: 9, tool_failure: '2', recovery: null, task_close: 1, long_gap: -3, neutral: 1.7 },
     });
-    expect(salienceOf(persona, 'user_correction')).toBe(2);
+    expect(salienceOf(persona, 'user_interruption')).toBe(2);
     expect(salienceOf(persona, 'tool_failure')).toBe(2);
     expect(salienceOf(persona, 'recovery')).toBe(0);
     expect(salienceOf(persona, 'task_close')).toBe(1);
@@ -202,8 +202,8 @@ describe('记录选择器', () => {
   });
 
   it('反应强度按规则：2 且非中性才 strong；0 是 none', () => {
-    const persona: PersonaCard = { ...DEFAULT_PERSONA, salience: { ...DEFAULT_PERSONA.salience, neutral: 2, user_correction: 2, task_close: 1 } };
-    expect(pickReaction('user_correction', persona)).toBe('strong');
+    const persona: PersonaCard = { ...DEFAULT_PERSONA, salience: { ...DEFAULT_PERSONA.salience, neutral: 2, user_interruption: 2, task_close: 1 } };
+    expect(pickReaction('user_interruption', persona)).toBe('strong');
     expect(pickReaction('task_close', persona)).toBe('mild');
     // 没事发生却记"很在意"= 看起来情绪失控且无依据
     expect(pickReaction('neutral', persona)).toBe('mild');

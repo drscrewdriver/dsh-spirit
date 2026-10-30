@@ -48,7 +48,7 @@ function signals(over: Partial<TurnSignals> = {}): TurnSignals {
     toolCalls: 0,
     toolFailures: 0,
     recovered: false,
-    userCorrection: false,
+    userInterruption: false,
     gapMs: 0,
     taskClosed: false,
     facts: {},
@@ -70,9 +70,9 @@ const draft = {
 };
 
 describe('事件分类（优先级与边界）', () => {
-  it('优先级顺序即语义：纠正 > 失败 > 恢复 > 收尾 > 长间隔 > 中性', () => {
+  it('优先级顺序即语义：插话 > 失败 > 恢复 > 收尾 > 长间隔 > 中性', () => {
     expect([...TRIGGER_PRIORITY]).toEqual([
-      'user_correction',
+      'user_interruption',
       'tool_failure',
       'recovery',
       'task_close',
@@ -81,8 +81,8 @@ describe('事件分类（优先级与边界）', () => {
     ]);
     // 同时命中时取高优先级；恢复排在失败之后，"刚恢复"不会被记成"又坏了"
     expect(
-      classifyTrigger(signals({ userCorrection: true, toolFailures: 2, recovered: true }), cfg),
-    ).toBe('user_correction');
+      classifyTrigger(signals({ userInterruption: true, toolFailures: 2, recovered: true }), cfg),
+    ).toBe('user_interruption');
     expect(classifyTrigger(signals({ toolFailures: 1, recovered: true }), cfg)).toBe('tool_failure');
     expect(classifyTrigger(signals({ recovered: true, taskClosed: true }), cfg)).toBe('recovery');
     expect(classifyTrigger(signals({ gapMs: 500_000 }), cfg)).toBe('long_gap');

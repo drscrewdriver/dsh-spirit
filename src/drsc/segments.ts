@@ -18,6 +18,7 @@
  */
 
 import { LANE_DRSC, type Lane } from '../types.js';
+import { decayWeight } from '../util/decay.js';
 import type { DrscSearchHit, DrscSessionRow } from './client.js';
 
 /** 一条「想起」候选（进卡的原料，不是库内条目）。 */
@@ -45,17 +46,9 @@ export function roleOfKind(kind: string): 'user' | 'assistant' | undefined {
 }
 
 /**
- * 近因权重：`max(0.5, 0.5^(Δms / halfLifeMs))`。
- *
- * 有地板是有意的：衰减只该让**相近相关度之间**新鲜者优先，而不该让"相关但久远"的
- * 回忆彻底沉底——人会想起很久以前的事，只要它真的相关。
- * `halfLifeMs <= 0` ⇒ 返回 1（关闭衰减，不改名次）。
+ * 近因权重：实现单源在 `util/decay.ts`（这里只转发，避免两个时间尺度上漂出两套公式）。
  */
-export function decayWeight(timeMs: number, now: number, halfLifeMs: number): number {
-  if (!(halfLifeMs > 0)) return 1;
-  const delta = Math.max(0, now - timeMs);
-  return Math.max(0.5, Math.pow(0.5, delta / halfLifeMs));
-}
+export { decayWeight } from '../util/decay.js';
 
 export interface ToCandidateOptions {
   now: number;

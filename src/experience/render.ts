@@ -20,7 +20,7 @@ import {
   TRIGGER_RECOVERY,
   TRIGGER_TASK_CLOSE,
   TRIGGER_TOOL_FAILURE,
-  TRIGGER_USER_CORRECTION,
+  TRIGGER_USER_INTERRUPT,
   VOICE_PLAIN,
   VOICE_TERSE,
   VOICE_WARM,
@@ -34,9 +34,9 @@ import { NOTICE_WORDS } from '../words.js';
 
 /** 主句表：每个事件族 × 每个反应档都必须有一条，缺格由测试判红。 */
 export const BODY_TABLE: Readonly<Record<TriggerKind, Readonly<Partial<Record<ReactionTier, string>>>>> = {
-  [TRIGGER_USER_CORRECTION]: {
-    [REACTION_MILD]: '被你指出一处不对，我把它接了过去',
-    [REACTION_STRONG]: '被你指出一处不对，我停下来重看了一遍才继续',
+  [TRIGGER_USER_INTERRUPT]: {
+    [REACTION_MILD]: '你中途插了一句话，我先把手上的动作放下',
+    [REACTION_STRONG]: '你中途插了一句话，我立刻停下来先听你说',
   },
   [TRIGGER_TOOL_FAILURE]: {
     [REACTION_MILD]: '手边的动作没成，我记着这一下',

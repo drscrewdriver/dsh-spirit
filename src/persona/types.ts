@@ -8,7 +8,7 @@
  */
 
 import { clampInt, clampTier } from '../util/tier.js';
-import { NOTICE_KINDS, VOICE_TIERS, TRIGGER_KINDS, NOTICE_BEING_IGNORED, NOTICE_SELF_MISTAKE, NOTICE_TASK_STALL, NOTICE_USER_STATE, TRIGGER_LONG_GAP, TRIGGER_NEUTRAL, TRIGGER_RECOVERY, TRIGGER_TASK_CLOSE, TRIGGER_TOOL_FAILURE, TRIGGER_USER_CORRECTION, type NoticeKind, type PersonaCard, type SalienceWeight, type TriggerKind, type VoiceTier } from '../types.js';
+import { NOTICE_KINDS, VOICE_TIERS, TRIGGER_KINDS, NOTICE_BEING_IGNORED, NOTICE_SELF_MISTAKE, NOTICE_TASK_STALL, NOTICE_USER_STATE, TRIGGER_LONG_GAP, TRIGGER_NEUTRAL, TRIGGER_RECOVERY, TRIGGER_TASK_CLOSE, TRIGGER_TOOL_FAILURE, TRIGGER_USER_INTERRUPT, type NoticeKind, type PersonaCard, type SalienceWeight, type TriggerKind, type VoiceTier } from '../types.js';
 
 /** 字段规模上限：人格文件是人手写的，超长就是写错了，不是要支持的特性。 */
 export const PERSONA_LIMITS = { values: 8, boundaries: 8, nameChars: 40, itemChars: 120 } as const;
@@ -25,7 +25,7 @@ export const DEFAULT_PERSONA: PersonaCard = {
   name: '未命名角色',
   voice: 'plain',
   salience: {
-    [TRIGGER_USER_CORRECTION]: 2,
+    [TRIGGER_USER_INTERRUPT]: 2,
     [TRIGGER_TOOL_FAILURE]: 1,
     [TRIGGER_RECOVERY]: 2,
     [TRIGGER_TASK_CLOSE]: 1,

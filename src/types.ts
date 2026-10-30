@@ -41,15 +41,24 @@ declare module '@deepseek-ai/dsh-llm' {
  * ⚠️ 红线：新增成员必须能由宿主事件/工具返回值机械判定。**禁止**加入需要读
  * assistant 文本或工具输出内容才能识别的类别——那会把对话内容（含网页抓取、
  * 文件正文）变成情绪诱导面，外部文本就能操纵角色状态。
+ *
+ * 逐成员含义（已按“可机械判定”重写，与早期设计稿不同）：
+ * - `user_interruption`：上一轮未结束就有新的用户消息插进来。**不是**“用户指出了不对”——
+ *   那个判定必须读用户文本，正是上面禁止的形状；早先注释写了“宿主可判”是错的
+ * - `tool_failure`：本轮有工具调用失败
+ * - `recovery`：上轮失败的那个工具，本轮同名调用成功
+ * - `task_close`：`todo/write` 快照非空且全部完成（之前并非已全完成）
+ * - `long_gap`：轮间隔超过 `capture.gapThresholdMs`
+ * - `neutral`：以上都不成立
  */
-export const TRIGGER_USER_CORRECTION = 'user_correction' as const;
+export const TRIGGER_USER_INTERRUPT = 'user_interruption' as const;
 export const TRIGGER_TOOL_FAILURE = 'tool_failure' as const;
 export const TRIGGER_RECOVERY = 'recovery' as const;
 export const TRIGGER_TASK_CLOSE = 'task_close' as const;
 export const TRIGGER_LONG_GAP = 'long_gap' as const;
 export const TRIGGER_NEUTRAL = 'neutral' as const;
 export const TRIGGER_KINDS = [
-  TRIGGER_USER_CORRECTION,
+  TRIGGER_USER_INTERRUPT,
   TRIGGER_TOOL_FAILURE,
   TRIGGER_RECOVERY,
   TRIGGER_TASK_CLOSE,
@@ -222,7 +231,7 @@ export interface TurnSignals {
   /** 上轮有失败、本轮同类成功。 */
   recovered: boolean;
   /** 用户纠正（宿主可判形状，见 experience/events.ts）。 */
-  userCorrection: boolean;
+  userInterruption: boolean;
   /** 距上一轮末的间隔 ms。 */
   gapMs: number;
   /** 本轮是否有结项形态（任务收尾）。 */
