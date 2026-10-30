@@ -121,7 +121,10 @@ not render an automatic volatile form, so those keys are not on the settings pag
   same session still carries exactly one card (`snapshot` supersession), same-tier turns are not re-sent,
   and a card is re-issued after `/compact`
 - **Still unverified**: the A/B cost comparison (`cacheReadTokens` needs a real provider and long
-  sessions), and the tui / older host lines
+  sessions), and the older 0.1.x host lines
+- The **no-webServer host line (headless) is verified**: it boots and finishes a real turn without
+  crashing, the persona section and tail injection work there too, and only the panel route is absent
+  (optional services come through scoped injection, never a top-level `inject`)
 
 ## Engineering
 
