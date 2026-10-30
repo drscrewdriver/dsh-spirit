@@ -113,8 +113,12 @@ not render an automatic volatile form, so those keys are not on the settings pag
 - Real-host web smoke passed (host 0.2.0-rc.2, isolated `DSH_HOME`): host half loads, all six panel
   endpoints answer (including the 403/404/405 fences), the pill writes and re-reads its per-session
   mode across a restart, and the Journal section renders and exports to disk
-- **Still unverified**: end-to-end injection and A/B numbers (need model credentials to run real
-  turns), the DRSC probes (need the collector installed), and the tui / older host lines
+- **End-to-end injection verified** against a local mock provider (real turns; the request body the host
+  actually sends is the evidence): the card is the last block of the message track, a second turn in the
+  same session still carries exactly one card (`snapshot` supersession), same-tier turns are not re-sent,
+  and a card is re-issued after `/compact`
+- **Still unverified**: the A/B cost comparison (`cacheReadTokens` needs a real provider and long
+  sessions), and the tui / older host lines
 
 ## Engineering
 

@@ -112,8 +112,14 @@ First usable release: **a first-person experience entry store plus dual-lane ins
 - Retention **archives only; it deletes no rows** (real deletion needs snapshot + verification +
   restore, deferred to v0.2 behind explicit consent).
 - Local unit tests, dist smoke and a **real-host web smoke pass** (host half loads, six endpoints,
-  pill write/read across a restart, section renders, export lands on disk); **end-to-end injection and
-  A/B numbers still need model credentials** to run real turns.
+  pill write/read across a restart, section renders, export lands on disk). **End-to-end injection is now
+  verified** against a local mock provider: the card is the last block of the message track, a second turn
+  in the same session still carries exactly one card (`snapshot` supersession), same-tier turns are not
+  re-sent, and a card is re-issued after `/compact`. **A/B cost numbers** still need a real provider and
+  long sessions; mock figures are not passed off as a result.
+- Two more silent defects surfaced on-host: the persona section was **always empty** because the hook read
+  `config.live` raw (that is a `VolatileRef`), and the history lane's base URL did not follow the host's
+  own port (`drscVerdict` was permanently `warn` off port 8080). Both fixed, with gates.
 - The 0.2.0-rc.2 web shell **renders no automatic volatile form** (no client package reads
   `autoGenerate`) ⇒ `live.*` keys are hot-edited through the deployment layer, not the settings page.
 - Out of scope: long-range emotion retrieval, knowledge graph, conflict adjudication, persona
