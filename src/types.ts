@@ -42,19 +42,19 @@ declare module '@deepseek-ai/dsh-llm' {
  * assistant 文本或工具输出内容才能识别的类别——那会把对话内容（含网页抓取、
  * 文件正文）变成情绪诱导面，外部文本就能操纵角色状态。
  */
+export const TRIGGER_USER_CORRECTION = 'user_correction' as const;
+export const TRIGGER_TOOL_FAILURE = 'tool_failure' as const;
+export const TRIGGER_RECOVERY = 'recovery' as const;
+export const TRIGGER_TASK_CLOSE = 'task_close' as const;
+export const TRIGGER_LONG_GAP = 'long_gap' as const;
+export const TRIGGER_NEUTRAL = 'neutral' as const;
 export const TRIGGER_KINDS = [
-  /** 用户本轮纠正/否定了角色上一轮的做法（宿主可判：用户消息为对上一条 assistant 的否定性指涉）。 */
-  'user_correction',
-  /** 有工具调用失败。 */
-  'tool_failure',
-  /** 上一轮失败、本轮同类调用成功（出错后恢复）。 */
-  'recovery',
-  /** 任务收尾（本轮无待办且出现结项形态）。 */
-  'task_close',
-  /** 轮间隔超过 `gapThresholdMs`（等待/被晾的体验来源）。 */
-  'long_gap',
-  /** 中性轮：以上都不成立。 */
-  'neutral',
+  TRIGGER_USER_CORRECTION,
+  TRIGGER_TOOL_FAILURE,
+  TRIGGER_RECOVERY,
+  TRIGGER_TASK_CLOSE,
+  TRIGGER_LONG_GAP,
+  TRIGGER_NEUTRAL,
 ] as const;
 
 export type TriggerKind = (typeof TRIGGER_KINDS)[number];
@@ -63,21 +63,21 @@ export type TriggerKind = (typeof TRIGGER_KINDS)[number];
  * 关注点族（notice）：同一事件里角色**注意到的是哪一面**。
  * 由人格的 `focus` / `salience` 选择，是"人格决定记什么"的落点。
  */
+export const NOTICE_SELF_MISTAKE = 'self_mistake' as const;
+export const NOTICE_USER_STATE = 'user_state' as const;
+export const NOTICE_TASK_PROGRESS = 'task_progress' as const;
+export const NOTICE_TASK_STALL = 'task_stall' as const;
+export const NOTICE_BEING_IGNORED = 'being_ignored' as const;
+export const NOTICE_BEING_ACKNOWLEDGED = 'being_acknowledged' as const;
+export const NOTICE_ENVIRONMENT = 'environment' as const;
 export const NOTICE_KINDS = [
-  /** 自己出了错。 */
-  'self_mistake',
-  /** 用户那边的状态（耐心、认可、沉默）。 */
-  'user_state',
-  /** 事情在推进。 */
-  'task_progress',
-  /** 事情卡住了。 */
-  'task_stall',
-  /** 自己没被搭理。 */
-  'being_ignored',
-  /** 自己被告知。 */
-  'being_acknowledged',
-  /** 环境/工具本身不顺。 */
-  'environment',
+  NOTICE_SELF_MISTAKE,
+  NOTICE_USER_STATE,
+  NOTICE_TASK_PROGRESS,
+  NOTICE_TASK_STALL,
+  NOTICE_BEING_IGNORED,
+  NOTICE_BEING_ACKNOWLEDGED,
+  NOTICE_ENVIRONMENT,
 ] as const;
 
 export type NoticeKind = (typeof NOTICE_KINDS)[number];
@@ -104,7 +104,10 @@ export const AROUSAL_TIERS = [AROUSAL_LOW, AROUSAL_NORMAL, AROUSAL_HIGH] as cons
 export type ArousalTier = (typeof AROUSAL_TIERS)[number];
 
 /** 语气档（查表文案的第三个键）。 */
-export const VOICE_TIERS = ['plain', 'terse', 'warm'] as const;
+export const VOICE_PLAIN = 'plain' as const;
+export const VOICE_TERSE = 'terse' as const;
+export const VOICE_WARM = 'warm' as const;
+export const VOICE_TIERS = [VOICE_PLAIN, VOICE_TERSE, VOICE_WARM] as const;
 export type VoiceTier = (typeof VOICE_TIERS)[number];
 
 /**

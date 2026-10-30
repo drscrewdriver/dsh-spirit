@@ -9,7 +9,7 @@
  *    是最坏的失败方式（一个 json 坏掉不该让插件起不来）。
  */
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** 落盘信封：版本号与数据同文件，跨代载入可据此判定要不要迁移或拒读。 */
@@ -46,6 +46,24 @@ export function writeJsonAtomic<T>(path: string, value: T): void {
 
 export function writeEnvelopedJson<T>(path: string, version: number, data: T): void {
   writeJsonAtomic<FileEnvelope<T>>(path, { version, data });
+}
+
+/**
+ * 追加一行（append-only 的唯一写口：条目库与人设历史都靠它）。
+ *
+ * 只用 `'a'` 打开——**不提供覆写路径**。"可回滚优先"不该只是注释里的约定，
+ * 这一层没有别的入口，才谈不上下游写错时把历史抹掉。
+ */
+export function appendLine(path: string, line: string): void {
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const text = line.endsWith('\n') ? line : `${line}\n`;
+  const fd = openSync(path, 'a');
+  try {
+    writeSync(fd, text, null, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** 宽容读 JSON：不存在 / 解析失败 / 版本不符 一律返回 ok:false，不抛。 */
