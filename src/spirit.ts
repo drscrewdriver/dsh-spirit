@@ -269,6 +269,18 @@ export class Spirit {
       return;
     }
     if (compiled.draft === undefined) return;
+    const draft = compiled.draft;
+    /**
+     * 用户原文只在**显式开启采集**时进 `fact.quote`（并按 maxQuoteChars 截断）。
+     * 位置必须在 compile 之后：情绪判定那条链永远不该看到文本（信号包带自由文本会被整包拒），
+     * 而 cues 与卡文本都不拿这个字段——三条约束都有用例守。
+     * 按码点截（不是按 UTF-16 单元）：劈开代理对会写出无法编码的半个字符。
+     */
+    const cap = this.deps.cfg().capture;
+    const quote = cap.userSnippet === true && input.newUserText !== ''
+      ? Array.from(input.newUserText).slice(0, Math.max(0, Math.floor(cap.maxQuoteChars))).join('')
+      : undefined;
+    const fact = quote === undefined ? draft.fact : { ...draft.fact, quote };
     this.deps.store.append(
       {
         id: `x-${input.sessionId}-${input.now}-${runtime.firstTurnDone ? 'l' : 'f'}`,
@@ -278,7 +290,7 @@ export class Spirit {
         tsMs: input.now,
         personaRevision: this.persona.revision,
       },
-      compiled.draft,
+      { ...draft, fact },
     );
   }
 

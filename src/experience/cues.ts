@@ -6,7 +6,7 @@
  * 这些是宿主事件里现成的结构字段，不需要读任何自由文本。
  *
  * 三条边界：
- * 1. **默认不抽用户原文**（`capture.userSnippet` 关着时，一个用户词都不进 cues）——
+ * 1. **用户原文不进 cues**（`extractCues` 只吃结构字段；红线本体写在函数注释里）——
  *    用户说过什么会连同隐私与注入面一起进库，代价大于收益；要历史原文请走 DRSC。
  * 2. 只留 **basename**，不留目录：路径本身会泄露工作区结构。
  * 3. 数量与长度都有顶：cues 表会随条目线性膨胀，无顶就是无界增长。
@@ -33,17 +33,15 @@ export function baseName(path: string): string {
  * 从事实里取 cues。
  *
  * @param fact 结构化事实（唯一的原料来源）
- * @param userSnippet 可选的用户原文片段；**只有显式开启采集时才由调用方传入**，
- *                    本函数不判断开关（判断在采集侧，避免这里出现第二份配置口径）
+ *
+ * ⚠️ **用户原文永不进 cues**：`fact.quote` 在这里被**故意忽略**（不是“忘了写”）。
+ * cues 是检索键，键会被“想起”段带回卡片与提示 —— 那等于把用户的话绕一圈变成
+ * 模型引用的“历史原话”，正是本插件红线要挡的回灌路径。真需要历史原文请走 DRSC 的检索面。
  */
-export function extractCues(fact: ExperienceFact, userSnippet?: string): string[] {
+export function extractCues(fact: ExperienceFact): string[] {
   const tokens: string[] = [];
   if (fact.tool) tokens.push(fact.tool);
   for (const pathBase of fact.pathBases ?? []) tokens.push(baseName(pathBase));
-  // 用户原文只截前若干个 token，绝不整段进库
-  if (userSnippet !== undefined && userSnippet !== '') {
-    for (const word of userSnippet.split(/\s+/u).slice(0, 4)) tokens.push(word);
-  }
   const cleaned = tokens.map(normalize).filter((token) => token !== '');
   return [...new Set(cleaned)].slice(0, CUE_LIMITS.maxPerEntry);
 }

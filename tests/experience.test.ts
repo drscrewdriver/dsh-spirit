@@ -106,12 +106,13 @@ describe('cues 提取', () => {
     expect(cues.length).toBeLessThanOrEqual(CUE_LIMITS.maxPerEntry);
   });
 
-  it('默认不抽用户原文；显式传入时只取前 4 个词', () => {
-    const without = extractCues({ tool: 'bash' });
-    expect(without.some((cue) => cue.includes('投递'))).toBe(false);
-    const withSnippet = extractCues({ tool: 'bash' }, '帮我把 这个 投递 脚本 再 跑 一次');
-    expect(withSnippet.filter((cue) => cue.includes('一次')).length).toBe(0);
-    expect(withSnippet.length).toBeLessThanOrEqual(CUE_LIMITS.maxPerEntry);
+  it('用户原文绝不进 cues（即使条目里存了 quote）', () => {
+    // 红线：cues 是检索键，键会被“想起”段带回卡片与提示 ⇒ 用户的话不能变成回灌素材。
+    // 以前这里允许“显式传入时取前 4 个词”，等于在检索键上开了个口子。
+    const cues = extractCues({ tool: 'bash', quote: '帮我把 这个 投递 脚本 再 跑 一次' });
+    expect(cues.some((cue) => cue.includes('投递'))).toBe(false);
+    expect(cues).toContain('bash');
+    expect(cues.length).toBeLessThanOrEqual(CUE_LIMITS.maxPerEntry);
   });
 
   it('路径只留 basename，不带目录（防工作区结构外泄）', () => {

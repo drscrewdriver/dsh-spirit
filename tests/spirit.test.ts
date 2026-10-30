@@ -26,7 +26,7 @@ interface Harness {
 }
 
 /** 本套用例一律走内存降级路径（db=null）：门与指纹语义不依赖 SQLite。 */
-function harness(opts: { cfg?: () => SpiritConfig } = {}): Harness {
+function harness(opts: { cfg?: () => SpiritConfig; throwOnRecent?: boolean } = {}): Harness {
   const store = new ExperienceStore({ db: null, logger });
   const watcher = new TurnWatcher({ gapThresholdMs: 180_000 });
   const modes = {
@@ -46,6 +46,8 @@ function harness(opts: { cfg?: () => SpiritConfig } = {}): Harness {
       history: { store },
       logger,
       recentEntries: (sessionId, k) => {
+        // 故意为真：验“注入链内部抛错不得抛穿主会话”（checklist 的全链 fail-open）
+        if (opts.throwOnRecent) throw new Error('存储层抽风');
         lastEntries = store.recent(sessionId, k);
         return lastEntries;
       },
@@ -122,6 +124,13 @@ describe('8 道判定门（逐条）', () => {
     expect(h.store.count('s1')).toBe(0);
   });
 
+  it('注入链内部抛错 ⇒ passthrough(error)，不抛穿主会话（fail-open）', async () => {
+    // 实现里 spirit.ts 的 catch 返 `{kind:'passthrough', reason:'error'}`，但此前**没有用例**：
+    // 异常路径没验就等于“情绪功能够了就会把会话弄挂”这个风险没人守。
+    const h = harness({ throwOnRecent: true });
+    await expect(h.spirit.onPreStep(input())).resolves.toEqual({ kind: 'passthrough', reason: 'error' });
+  });
+
   it('门 8 默认人格下中性轮不记，但会发一张"平常"档的卡（首轮无指纹可比）', async () => {
     const h = harness();
     const outcome = await h.spirit.onPreStep(input());
@@ -144,6 +153,33 @@ describe('8 道判定门（逐条）', () => {
     // 默认人格的 focus 里先命中 self_mistake ⇒ 工具失败被归因成“我出了错”，而不是“工具不顺”
     expect(outcome.text).toContain('我出了错');
     expect(outcome.text).not.toContain('手边的工具不顺');
+  });
+
+  it('capture.userSnippet 默认关 ⇒ 条目里不存用户原文', async () => {
+    const h = harness();
+    h.watcher.observe('s1', { type: 'tool/call', data: { callId: 'c1', name: 'bash' } }, 900);
+    h.watcher.observe('s1', { type: 'tool/result', data: { message: { toolCallId: 'c1', isError: true } } }, 950);
+    await h.spirit.onPreStep(input({ newUserText: 'bash 那边怎么回事，先把投递放一放' }));
+    const rows = h.store.recent('s1', 5);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.fact.quote).toBeUndefined();
+    expect(JSON.stringify(rows[0])).not.toContain('投递');
+  });
+
+  it('开启后存截断 quote，但它不进卡文本、不进 cues', async () => {
+    // checklist 的“体验≠事实”红线在采集面的落地：原文只能作为**人读的细节**存着，
+    // 不能变成模型引用的“历史原话”。两个回灌入口（卡文本 / 检索键）各自断言。
+    const base = structuredClone(SPIRIT_DEFAULTS);
+    const h = harness({ cfg: cfgWith({ capture: { ...base.capture, userSnippet: true, maxQuoteChars: 8 } }) });
+    h.watcher.observe('s1', { type: 'tool/call', data: { callId: 'c1', name: 'bash' } }, 900);
+    h.watcher.observe('s1', { type: 'tool/result', data: { message: { toolCallId: 'c1', isError: true } } }, 950);
+    const outcome = await h.spirit.onPreStep(input({ newUserText: '帮我把投递脚本再跑一次看看' }));
+    expect(outcome.kind).toBe('injected');
+    const rows = h.store.recent('s1', 5);
+    // 按码点截到 8：不拆散代理对，也不整段进库
+    expect(Array.from(rows[0]?.fact.quote ?? '')).toHaveLength(8);
+    if (outcome.kind === 'injected') expect(outcome.text).not.toContain('投递');
+    expect(h.store.searchLocal('投递', { sessionId: 's1', limit: 3 })).toEqual([]);
   });
 
   it('预算装不下状态段 ⇒ passthrough(budget)，不发空壳', async () => {

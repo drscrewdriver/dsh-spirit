@@ -63,7 +63,9 @@ function stripComments(text: string): string {
 function readSources(): Array<{ file: string; body: string; code: string }> {
   return [...sourceFiles('../src/'), ...sourceFiles('../client/src/')].map((file) => {
     const body = readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
-    return { file, body, code: stripComments(body) };
+    // Windows 下 readdirSync(recursive) 给的是反斜杠路径，不归一化会让
+    // 任何按目录前缀过滤的 grep 闸**空转通过**（假绿比红更危险）。
+    return { file: file.replace(/\\/gu, '/'), body, code: stripComments(body) };
   });
 }
 
@@ -225,6 +227,25 @@ describe('task_7.4 / 7.5 请求形状与零副作用', () => {
     expect(out).toBe(original);
   });
 
+  it('预算装不下那一轮：hook 交回的就是 next() 原对象，且任何路径都不造空 messages', async () => {
+    /**
+     * 用 `budget` 而不是 `unchanged` 做样本：指纹只在**生效确认后**才提交（未确认不压制重发，
+     * 那有自己的一条用例），所以在无会话事件的真桩里 `unchanged` 根本不会触发——
+     * 拿它做断言会测到一个永远走不到的分支。预算卡到 8 字节则必定走 passthrough。
+     */
+    const tiny = structuredClone(SPIRIT_DEFAULTS);
+    // 改 live 而不是部署面：effectiveCfg 会用 live.cardMaxBytes 盖掉 card.maxBytes
+    //（本例正好把这条映射顺带验了）
+    tiny.live.cardMaxBytes = 8;
+    const { handlers } = makeHost(tiny);
+    const original = { kind: 'enter' as const, messages: [userMsg('这一轮装不下卡')] };
+    const out = await handlers['agent/pre-step']?.({ agent: { id: 'a1' } }, async () => original);
+    expect(out).toBe(original);
+    // 不注入时也不得把消息数组清空（空 messages 会让用户轮从会话里直接消失）
+    const messages = (out as { messages?: unknown[] }).messages ?? [];
+    expect(messages.length).toBeGreaterThan(0);
+  });
+
   it('门 7 已被取消的一轮：原样退回 next() 的决定且不记录（注入依赖置真）', async () => {
     const { handlers, store } = makeHost({}, { isAborted: () => true });
     const original = { kind: 'enter' as const, messages: [userMsg('跑到一半被停了')] };
@@ -379,6 +400,53 @@ describe('task_7.9 路由根两腿对敲', () => {
       expect(url.slice(SPIRIT_RPC_ROUTE.length + 1)).toBe(method);
       expect(SPIRIT_RPC_METHODS).toContain(url.slice(SPIRIT_RPC_ROUTE.length + 1));
     }
+  });
+});
+
+describe('task_7.10 checklist 审计补闸', () => {
+  /**
+   * 这一组是“逐条对 checklist 时照出来的缺口”：实现都在，但**没人守**。
+   * 没闸的不变式等于没有不变式——下一次改动静默推翻它时不会有任何地方报错。
+   */
+  it("扫描集非空（挡住“前缀不匹配 ⇒ 空转通过”的假绿闸）", () => {
+    const sources = readSources();
+    expect(sources.filter(({ file }) => file.startsWith('../src/')).length).toBeGreaterThan(15);
+    expect(sources.filter(({ file }) => file.startsWith('../client/src/')).length).toBeGreaterThan(3);
+  });
+
+  it('注入构造绝不署 kind:user（否则冒充用户轮次 + 被同机 L0 蒸馏）', () => {
+    const offenders = readSources()
+      .filter(({ file }) => file.startsWith('../src/'))
+      .filter(({ code }) => /kind:\s*'user'/u.test(code))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+    // 署名必须走单源常量，而不是在某个角落重拼一份字面量
+    const users = readSources().filter(({ file }) => file.startsWith('../src/') && file !== '../src/contract.ts');
+    expect(users.some(({ code }) => code.includes('SPIRIT_SOURCE_KIND'))).toBe(true);
+  });
+
+  it('除单源定义处，代码里不得再写第二份 plugin:spirit 判据', () => {
+    /**
+     * 允许名单只有三处，各自都不是“判据”：
+     * - `contract.ts`：常量定义处（单源）
+     * - `util/self-source.ts`：判据本体
+     * - `types.ts`：`declare module` 里的 MessageSourceMap **类型键**（必须写字面量，且它不参与运行期判定）
+     */
+    const allowed = ['../src/contract.ts', '../src/util/self-source.ts', '../src/types.ts'];
+    const offenders = readSources()
+      .filter(({ file }) => file.startsWith('../src/') && !allowed.includes(file))
+      .filter(({ code }) => /['"]plugin:spirit['"]/u.test(code))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it('条目主键只用 id，turn_seq 不参与任何键（重放/改写不会拿到另一行）', () => {
+    const schema = readFileSync(fileURLToPath(new URL('../src/db/schema.ts', import.meta.url)), 'utf8');
+    expect(schema).toMatch(/id\s+TEXT\s+PRIMARY KEY/u);
+    // 任何 PRIMARY KEY / UNIQUE 行里出现 *_seq 就是拿轮次当身份
+    const keyLines = schema.split('\n').filter((line) => /PRIMARY KEY|UNIQUE/iu.test(line));
+    expect(keyLines.filter((line) => /_seq\b/u.test(line))).toEqual([]);
+    expect(keyLines.length).toBeGreaterThan(0);
   });
 });
 

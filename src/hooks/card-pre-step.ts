@@ -89,7 +89,7 @@ export function registerCardPreStep(ctx: Context, deps: PreStepHookDeps): void {
         // v4 producer-owned kind + 宿主原生 snapshot 形态（后续快照取代先前）。
         // ⚠️ 不用 `form: 'slot'`：那不是 ContextForm 的合法值。
         source: {
-          kind: SPIRIT_SOURCE_KIND as 'plugin:spirit',
+          kind: SPIRIT_SOURCE_KIND,
           form: 'snapshot',
           sections: [{ name: SPIRIT_SLOT_SECTION_NAME, text: outcome.text }],
         },

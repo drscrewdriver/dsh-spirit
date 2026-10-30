@@ -160,6 +160,14 @@ export interface ExperienceFact {
   toolFailures?: number;
   /** 本轮新用户消息字符数（不存原文）。 */
   userChars?: number;
+  /**
+   * 用户原文片段：**仅当 `capture.userSnippet` 显式开启时存在**，且已按
+   * `capture.maxQuoteChars` 截断。三条硬约束（红线，不是建议）：
+   * - 不参与情绪判定（`compileTurn` 永远看不到它，信号包带自由文本会被整包拒绝）；
+   * - **永不进 cues**（否则用户的话会变成检索键，再被“想起”段回灌进提示）；
+   * - **永不进卡文本**（卡只说“我怎么经历”，不引用用户原话）。
+   */
+  quote?: string;
   /** 距上一轮的间隔 ms。 */
   gapMs?: number;
 }
