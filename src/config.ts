@@ -166,6 +166,43 @@ export const PERSONA_ENUMS = {
   saliences: SALIENCE_WEIGHTS,
 } as const;
 
+/**
+ * 读 live 节的当前值，两种形状都得接：
+ * - 新 schemastery：`liveSettingsSchema()` 成功标了 `.volatile()`，宿主给 `Volatile<T>`（有 `.get()`）；
+ * - 老 schemastery：探测不标时宿主直接给配置对象本体——没有 `.get()`，当成冻结快照读。
+ * 不兼容后者就是在老线把加载期崩换成运行期崩（`ref.get is not a function`）。
+ */
+export function readLiveRef(ref: unknown): SpiritLiveSettings {
+  const maybe = ref as { get?: () => SpiritLiveSettings } | null | undefined;
+  const raw = typeof maybe?.get === 'function' ? maybe.get() : (maybe as SpiritLiveSettings | null | undefined);
+  return resolveLive(raw);
+}
+
+/** live 节逐键兜底（缺键 = 用户已存值被静默丢弃那一类问题的读侧对应面）。 */
+export function resolveLive(raw: unknown): SpiritLiveSettings {
+  const d = SPIRIT_DEFAULTS.live;
+  if (typeof raw !== 'object' || raw === null) return { ...d };
+  const value = raw as Record<string, unknown>;
+  const flag = (key: keyof SpiritLiveSettings, fallback: boolean): boolean =>
+    typeof value[key] === 'boolean' ? (value[key] as boolean) : fallback;
+  const int = (key: keyof SpiritLiveSettings, fallback: number): number =>
+    typeof value[key] === 'number' && Number.isFinite(value[key] as number) ? Math.floor(value[key] as number) : fallback;
+  return {
+    enabled: flag('enabled', d.enabled),
+    personaEnabled: flag('personaEnabled', d.personaEnabled),
+    cardEnabled: flag('cardEnabled', d.cardEnabled),
+    bypass: flag('bypass', d.bypass),
+    cardMaxBytes: int('cardMaxBytes', d.cardMaxBytes),
+    recentK: int('recentK', d.recentK),
+    crossSessionM: int('crossSessionM', d.crossSessionM),
+    recallTimeoutMs: int('recallTimeoutMs', d.recallTimeoutMs),
+    halfLifeMs: int('halfLifeMs', d.halfLifeMs),
+    tierStepCap: int('tierStepCap', d.tierStepCap),
+    staleAfterMs: int('staleAfterMs', d.staleAfterMs),
+    drscEnabled: flag('drscEnabled', d.drscEnabled),
+  };
+}
+
 export function resolveDataDir(cfg: SpiritConfig): string {
   if (cfg.dataDir) return cfg.dataDir;
   return dshHomePath('spirit');

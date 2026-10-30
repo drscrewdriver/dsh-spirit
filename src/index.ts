@@ -1,0 +1,124 @@
+/**
+ * dsh-spirit 宿主半身入口。
+ *
+ * 两条总原则写在这里，不散落到各文件：
+ * 1. **存储与 DRSC 都是可选的**：库打不开 ⇒ 退内存镜像（卡照出、历史停用）；DRSC 不在 ⇒
+ *    历史路停用。两者都不许把异常抛到会话链路上——记忆/情绪是增强能力，
+ *    宿主本体必须照常工作。
+ * 2. **`inject` 只声明真正硬需要的服务**：声明即等它就绪。这里只等 `systemPrompt`；
+ *    `agents` / `webStartup` 走宽容读（`getService`），缺失就少一份能力而不是装不上。
+ */
+
+import type { Context } from '@deepseek-ai/cordis';
+import type { DatabaseSync } from 'node:sqlite';
+import type {} from '@deepseek-ai/dsh-agent'; // agent/created 事件名声明
+import type {} from '@deepseek-ai/dsh-session';
+
+import {
+  SPIRIT_ENTRY_ID,
+  SPIRIT_PLUGIN_NAME,
+  type SpiritConfig,
+  type SpiritLiveSettings,
+} from './contract.js';
+import { readLiveRef, resolveDataDir, spiritSchema, type ConfigSchema } from './config.js';
+import { probeCapabilities, readTrustedHosts } from './capability.js';
+import { openSpiritDb } from './db/open.js';
+import { decideDegrade } from './db/degrade.js';
+import { ExperienceStore } from './store/experience.js';
+import { PersonaStore } from './persona/store.js';
+import { SessionModeStore } from './store/session-modes.js';
+import { TurnWatcher } from './experience/watcher.js';
+import { DrscClient } from './drsc/client.js';
+import { DrscProbe } from './drsc/probe.js';
+import { Spirit } from './spirit.js';
+import { registerPersonaSection } from './hooks/persona-section.js';
+import { registerCardPreStep } from './hooks/card-pre-step.js';
+import { registerCardObserve } from './hooks/card-observe.js';
+import { isSubagentAgent, ownerSessionIdOfAgent, sessionIdOfSession, workspaceIdOfAgent } from './util/host-shape.js';
+
+export const name = SPIRIT_PLUGIN_NAME;
+
+/** 只等真正硬依赖的服务；其余走宽容读。 */
+export const inject = ['systemPrompt'];
+
+/** 导出名必须是 `Config`：cordis 只读 `plugin.Config`，叫别的名字会被静默忽略。 */
+export const Config = spiritSchema as unknown as ConfigSchema;
+
+export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
+  const logger = {
+    info: (message: string) => ctx.logger.info(message),
+    warn: (message: string) => ctx.logger.warn(message),
+    error: (message: string) => ctx.logger.error(message),
+  };
+  const caps = probeCapabilities(ctx);
+  const cfg = (): SpiritConfig => config;
+  const live = (): SpiritLiveSettings => readLiveRef(config.live);
+
+  const dataDir = resolveDataDir(config);
+  const opened = openSpiritDb(dataDir);
+  let db: DatabaseSync | null = null;
+  if (opened.ok) {
+    db = opened.db;
+  } else {
+    const decision = decideDegrade(opened.err);
+    logger.warn(`[spirit] 存储降级（${decision.reason}）`);
+  }
+
+  const personas = new PersonaStore({ dataDir, logger });
+  const modes = new SessionModeStore({ dataDir, logger });
+  const store = new ExperienceStore({ db, logger });
+  const watcher = new TurnWatcher({
+    // 用 getter 而不是快照值：阈值可在设置页热更，构造期定值会让人以为改了不生效
+    get gapThresholdMs() {
+      return cfg().capture.gapThresholdMs;
+    },
+  });
+
+  const client = config.drsc.enabled
+    ? new DrscClient({
+        baseUrl: config.drsc.baseUrl,
+        timeoutMs: config.drsc.timeoutMs,
+        trustedHosts: () => readTrustedHosts(ctx),
+      })
+    : undefined;
+  const probe = client
+    ? new DrscProbe({ client, enabled: () => cfg().drsc.enabled && live().drscEnabled, ttlMs: () => cfg().drsc.probeCacheTtlMs })
+    : undefined;
+
+  const spirit = new Spirit(
+    {
+      cfg,
+      live,
+      store,
+      watcher,
+      modes,
+      history: { store, ...(client ? { client } : {}), ...(probe ? { probe } : {}) },
+      logger,
+      recentEntries: (sessionId, k) => store.recent(sessionId, k),
+      previousEntries: (workspaceId, sessionId, m) => store.previousSessionEntries(workspaceId, sessionId, m),
+    },
+    personas.current(),
+  );
+
+  ctx.on('agent/created', () => {
+    // 人格可能由用户在运行期改：每轮现取，不留旧 salience
+    spirit.persona = personas.current();
+    return undefined;
+  });
+
+  registerPersonaSection(ctx, { personas, cfg, caps, logger });
+  registerCardObserve(ctx, { spirit, logger });
+  registerCardPreStep(ctx, {
+    spirit,
+    logger,
+    ownerOf: (agent) => ownerSessionIdOfAgent(agent) || String((agent as { id?: unknown }).id ?? ''),
+    isSubagent: isSubagentAgent,
+    sessionIdOf: (agent) => sessionIdOfSession((agent as { session?: unknown }).session) || String((agent as { id?: unknown }).id ?? ''),
+    workspaceIdOf: workspaceIdOfAgent,
+    isAborted: (payload) => (payload as { signal?: { aborted?: boolean } }).signal?.aborted === true,
+  });
+
+  logger.info(
+    `[spirit] 已装载 entry=${SPIRIT_ENTRY_ID} 存储=${db ? 'sqlite' : '内存降级'} 历史路=${client ? '开（待探测）' : '关'} section=${caps.systemPromptSection ? '可用' : '不可用'}`,
+  );
+}

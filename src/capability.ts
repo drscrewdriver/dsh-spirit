@@ -21,6 +21,20 @@ export interface HostCapabilities {
   rpcSurface: boolean;
 }
 
+/**
+ * 读宿主同源信任域名列表（DRSC 客户端的基址与 Host 头靠它）。
+ *
+ * 双名回退是必须的：服务在 0.2.1-alpha.2 仍 `webRuntime`、`webStartup`，只读一个名字
+ * 就会在其中一条线上永远拿不到。属性读抛也接住（未声明 inject 时会抛）。
+ */
+export function readTrustedHosts(ctx: unknown): readonly string[] | undefined {
+  for (const name of ['webStartup', 'webRuntime'] as const) {
+    const svc = getService(ctx, name) as { trustedHosts?: unknown } | undefined;
+    if (svc !== undefined && Array.isArray(svc.trustedHosts)) return svc.trustedHosts as readonly string[];
+  }
+  return undefined;
+}
+
 /** 会话事件的可读形状。 */
 export type SessionEventsShape = 'events' | 'snapshotEvents' | 'none';
 
