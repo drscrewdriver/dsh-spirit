@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here. Versioning is semantic.
 
+## Unreleased
+
+### Fixed
+
+- **History recall gained a scan window (`LOCAL_SCAN_LIMIT` = 5000 rows)**: `LIKE '%…%'` cannot use
+  an index and `LIMIT` truncates the output, not the scan — because the store is append-only and
+  never deletes rows, the cost of one lookup grew with total row count. Worse, this lookup runs
+  **synchronously** on `agent/pre-step`: `recall.timeoutMs` only covers the async DRSC call and does
+  **not** protect local SQLite. It now takes the most recent N rows as a candidate pool and filters
+  within it — bounded cost, and byte-for-byte equivalent when the table is smaller than the window
+  (regression tests pin this). Cross-session tone anchoring uses the same window.
+- **Degraded-mode wording completed**: the in-memory mirror is memory-only (capped at 200 rows, no
+  path back into the DB) — entries recorded while degraded are **not recoverable after a restart**.
+  Earlier text only said "history and cross-session stop", which reads like "you merely lose history".
+- **Panel now shows the DRSC projected segment count**: `ok` + **0 segments** means "connected, but
+  the projection DB has no content yet". Previously the panel said only "available", which made a
+  silent-empty state look healthy. It is deliberately not raised to `warn` (that would produce a
+  screenful of false alarms); the count is simply shown, and when the probe has no value nothing is
+  shown (**unknown is not zero**).
+
 ## 0.1.0
 
 First usable release: **a first-person experience entry store plus dual-lane instant recall**.

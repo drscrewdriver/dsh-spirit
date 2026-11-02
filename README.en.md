@@ -87,6 +87,10 @@ only the live recency lane runs — no errors, nothing invented. spirit calls on
   and the character has no feelings" happens silently.
 - **A broken store does not mean no feelings**: if `node:sqlite` is unavailable, entries fall back to
   an in-memory mirror — this turn's state is still injected, history and cross-session tone stop.
+  ⚠️ The mirror is memory-only (capped at 200 rows, **no path back into the DB**): entries recorded
+  while degraded do not survive a restart. The "storage unavailable" panel line says exactly this.
+  The plugin does not retry reopening in a loop (bounded failure beats infinite restart); restart
+  the host to recover.
 - **Off really means zero bytes**: the host was measured on two arms — installed with
   `enabled: false` versus not installed at all — pairing request bodies by kind. spirit contributes
   0 bytes (no injected row, no persona section, identical `system`). The only 40 B difference comes
@@ -137,6 +141,11 @@ without a restart; per-session switches live on the input-bar pill. (The 0.2.0-r
 not render an automatic volatile form, so those keys are not on the settings page.)
 
 ## Known limits (v0.1)
+
+- History recall has a **scan window**: the candidate pool is the most recent 5000 rows. `LIKE '%…%'`
+  cannot use an index, the store is append-only (rows are never deleted), and this lookup runs
+  **synchronously** on pre-step — `recall.timeoutMs` only covers the async DRSC call, not local
+  SQLite. Older entries are reachable through journal paging / export, not automatic recall
 
 - No long-range emotion retrieval, knowledge graph, conflict adjudication or persona self-evolution
   (that is memory-engine and dsh-soul territory)

@@ -69,6 +69,16 @@ export class DrscProbe {
     return this.cached?.verdict ?? VERDICT_SKIPPED;
   }
 
+  /**
+   * 最后一次探测到的已投影 segment 数（面板显示「可用但空」用）。
+   *
+   * 未探过或包络里根本没这个字段 ⇒ undefined（**未知不当 0**）：0 是「确实没内容」这个
+   * 有意义的事实，编一个 0 出去就把「不知道」伪装成了「没有」。
+   */
+  lastSegments(): number | undefined {
+    return this.cached?.segmentCount;
+  }
+
   private async run(now: number): Promise<DrscProbeResult> {
     if (!this.deps.enabled()) {
       return { verdict: VERDICT_SKIPPED, reason: '未启用或宿主未装配 collector', checkedAtMs: now };

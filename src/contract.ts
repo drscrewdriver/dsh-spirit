@@ -185,6 +185,14 @@ export interface SpiritSessionStats {
   updatedAt: number;
   /** DRSC 探测判定；`skipped` = 未安装（中性，不是故障）。 */
   drscVerdict: SpiritVerdict;
+  /**
+   * DRSC 已投影的 segment 数（探测结论的附带量；未探到 ⇒ 缺省）。
+   *
+   * 为何单独一个字段：`ok` + **0 段** = 「连上了但库里还没有内容」，这是最容易被读成
+   * "功能正常"的静默为空。不把它升成 `warn`（那会造成一屏假故障），只在面板把 0 显示
+   * 出来——用户自己就能判断是刚装还是扫错了目录。
+   */
+  drscSegments?: number;
   /** 存储降级为真时 ⇒ 不落库不检索，只走实时近因。 */
   degraded: boolean;
   /** 当前档位（无会话运行态时为 null）。 */

@@ -310,4 +310,37 @@ describe('历史路（真实库 + 假 DRSC）', () => {
     const result = await recallHistory({ store: s }, { query: '那次过了', limit: 3, maxCharsPerEntry: 120, timeoutMs: 500, now: 10, exclude: new Set(['那次过了。']) });
     expect(result.excerpts).toEqual([]);
   });
+
+  it('检索有扫描窗：窗外的旧条目不再被扫，小库行为逐行等价', () => {
+    /**
+     * `LIKE '%…%'` 用不上索引、`LIMIT` 只截输出不截扫描，而库 append-only 且只归档不删行。
+     * 没有窗，单次检索的成本就与总行数成正比，而它在 pre-step 上每轮同步跑一次。
+     */
+    const s = store();
+    s.append({ id: 'old', sessionId: 's1', workspaceId: 'w1', turnSeq: 1, tsMs: 1, personaRevision: 1 }, {
+      trigger: 'tool_failure', notice: 'environment', reaction: 'mild', text: '很早以前的投递事故。', lane: 'live', fact: {},
+    });
+    for (const [id, ts] of [['n1', 10], ['n2', 20]] as const) {
+      s.append({ id, sessionId: 's1', workspaceId: 'w1', turnSeq: 2, tsMs: ts, personaRevision: 1 }, {
+        trigger: 'recovery', notice: 'task_progress', reaction: 'mild', text: '后来又跑了两轮。', lane: 'live', fact: {},
+      });
+    }
+    expect(s.searchLocal('投递', { limit: 3, scanLimit: 2 }), '窗外旧条目不该进候选').toEqual([]);
+    expect(s.searchLocal('投递', { limit: 3, scanLimit: 10 }).map((e) => e.id), '窗足够大时仍命中').toEqual(['old']);
+    expect(s.searchLocal('投递', { limit: 3 }).map((e) => e.id), '缺省窗大于库大小时，行为与全表逐行等价').toEqual(['old']);
+  });
+
+  it('跨会话基调的会话定位不被扫描窗改造破坏', () => {
+    const s = store();
+    s.append({ id: 'p1', sessionId: 's0', workspaceId: 'w1', turnSeq: 1, tsMs: 1, personaRevision: 1 }, {
+      trigger: 'task_close', notice: 'task_progress', reaction: 'mild', text: '上一会话收尾。', lane: 'live', fact: {},
+    });
+    s.append({ id: 'p2', sessionId: 's0', workspaceId: 'w1', turnSeq: 2, tsMs: 2, personaRevision: 1 }, {
+      trigger: 'task_close', notice: 'task_progress', reaction: 'mild', text: '上一会话最后一句。', lane: 'live', fact: {},
+    });
+    s.append({ id: 'c1', sessionId: 's1', workspaceId: 'w1', turnSeq: 1, tsMs: 100, personaRevision: 1 }, {
+      trigger: 'recovery', notice: 'task_progress', reaction: 'mild', text: '本会话的条目。', lane: 'live', fact: {},
+    });
+    expect(s.previousSessionEntries('w1', 's1', 5).map((e) => e.id)).toEqual(['p1', 'p2']);
+  });
 });

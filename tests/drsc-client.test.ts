@@ -212,3 +212,36 @@ describe('失败口径：一律抛 DrscClientError，由调用方把历史路整
     await expect(new DrscClient({ fetchImpl }).status()).rejects.toBeInstanceOf(DrscClientError);
   });
 });
+
+describe('跨插件契约：脱敏臂与尾窗钳制（对端实现为准，不照抄注释）', () => {
+  /** collector 对任意 op 都能回一个合法包络。 */
+  const anyOp = () => jsonOk({ ok: true, session: null, rows: [], hits: [], total: 0 });
+
+  it('每个**取文本**的请求都带 redact=1：collector 缺省是原文臂，漏一个参数就是泄露面', async () => {
+    /**
+     * collector 的 `parseRedact` 只认 `'1'`，其余/缺省都是 0（原文臂）。本仓的条目会与
+     * 人设文本一起进系统提示，所以"取了原文"不是内部问题而是外泄。这里逐个取文本的方法验，
+     * 新增查询方法时漏带参数会让本用例变红。
+     *
+     * `status` **不在此列**：它只返回计数与上次同步结果，没有正文字段（不因为“统一好看”
+     * 给它加一个不起作用的参数——那会让“带了 redact”变成假安全感）。
+     */
+    const { fetchImpl, calls } = recorder(anyOp);
+    const client = new DrscClient({ fetchImpl });
+    await client.sessionTail('s1', 3);
+    await client.sessionAll('s1');
+    await client.listSessions(0, 10);
+    await client.search('投递', 5);
+    expect(calls).toHaveLength(4);
+    for (const call of calls) expect(call.url, `漏带 redact=1：${call.url}`).toContain('redact=1');
+  });
+
+  it('tail 钳到 ≥1：collector 对 ≤0 是「忽略参数 = 全量」，传 0 不能变成拉全文', async () => {
+    const { fetchImpl, calls } = recorder(anyOp);
+    const client = new DrscClient({ fetchImpl });
+    await client.sessionTail('s1', 0);
+    await client.sessionTail('s1', -5);
+    expect(calls[0]?.url).toContain('tail=1');
+    expect(calls[1]?.url).toContain('tail=1');
+  });
+});

@@ -165,6 +165,9 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     isAborted: (payload) => (payload as { signal?: { aborted?: boolean } }).signal?.aborted === true,
     afterOutcome: (input, outcome) => {
       const diag = spirit.diagOf(input.agentId);
+      // 段数与判定取自同一次探测结果（一次取值）：分两次调用可能落到不同缓存轮次，
+      // 面板就会出现「可用 · 12 段」而判定其实是上一轮的。
+      const segments = probe?.lastSegments();
       stats.note({
         agentId: input.agentId,
         sessionId: input.sessionId,
@@ -174,6 +177,7 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
         entryCount: diag.entryCount,
         mood: diag.mood,
         drscVerdict: drscVerdict(),
+        ...(segments === undefined ? {} : { drscSegments: segments }),
         degraded: !store.persistent,
         ...(diag.tendency !== undefined ? { tendency: diag.tendency } : {}),
       });

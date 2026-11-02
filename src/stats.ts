@@ -27,6 +27,8 @@ interface Counters {
   /** 最近一次状态段的倾向文案（bias 覆写时非空；面板展示位读它）。 */
   tendency?: string;
   drscVerdict: SpiritVerdict;
+  /** 最近一次探测到的投影段数（undefined = 未知，不当 0 用）。 */
+  drscSegments?: number;
   degraded: boolean;
   entryCount: number;
   updatedAt: number;
@@ -50,6 +52,7 @@ export interface StatsInput {
   entryCount: number;
   mood: Mood | undefined;
   drscVerdict: SpiritVerdict;
+  drscSegments?: number;
   degraded: boolean;
   /** 本轮状态段实际展示的倾向短语（含条件化覆写；无覆写时为空串，面板退到格子默认文案）。 */
   tendency?: string;
@@ -95,6 +98,7 @@ export class SpiritStats {
     row.entryCount = input.entryCount;
     row.mood = input.mood;
     row.drscVerdict = input.drscVerdict;
+    if (input.drscSegments !== undefined) row.drscSegments = input.drscSegments;
     row.degraded = input.degraded;
     row.lastRecallHits = input.recallHits;
     row.lastOutcome = input.outcome.reason;
@@ -161,6 +165,7 @@ export class SpiritStats {
       lastRecallHits: row.lastRecallHits,
       updatedAt: row.updatedAt,
       drscVerdict: row.drscVerdict,
+      ...(row.drscSegments === undefined ? {} : { drscSegments: row.drscSegments }),
       degraded: row.degraded,
       mood,
       mode,

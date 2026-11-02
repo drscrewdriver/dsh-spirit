@@ -229,27 +229,43 @@ export class DrscClient {
   /**
    * 会话尾窗：`op=session&session=<id>&tail=N&redact=1`（升序）。
    * collector 无此会话 ⇒ 空数组（新会话首轮的常态）。
+   *
+   * ⚠️ `tail` 必须钳到 **≥1**：collector 侧对非法/≤0 的 `tail` 是「忽略该参数」，
+   * 而忽略 = **返回整会话全量**。传 0 想表达"不要内容"，实际拿到的是全文——
+   * 两端语义相反，最容易被误读成"空"。
    */
   async sessionTail(sessionId: string, tail: number): Promise<DrscSessionRow[]> {
     const body = await this.getJson(
-      `?op=session&session=${encodeURIComponent(sessionId)}&tail=${Math.max(0, Math.floor(tail))}&redact=1`,
+      `?op=session&session=${encodeURIComponent(sessionId)}&tail=${Math.max(1, Math.floor(tail))}&redact=1`,
     );
     return parseSessionRows(body);
   }
 
-  /** 整会话正文（不带 `tail` ⇒ collector 侧全量升序）。历史回溯与导出用。 */
+  /**
+   * 整会话正文（不带 `tail` ⇒ collector 侧全量升序）。历史回溯与导出用。
+   *
+   * ⚠️ **无上界**：这是刻意的全量臂（collector 的「重建事实源」契约就靠它），只许用在
+   * 用户显式导出/回溯这类一次性动作上，**禁止进 `agent/pre-step` 之类热路径**——
+   * 大会话会一次性把整段正文搬进内存。需要热路径取内容就用 {@link sessionTail}。
+   */
   async sessionAll(sessionId: string): Promise<DrscSessionRow[]> {
     const body = await this.getJson(`?op=session&session=${encodeURIComponent(sessionId)}&redact=1`);
     return parseSessionRows(body);
   }
 
-  /** 会话枚举（`limit` 由 collector 侧钳到 1..500）。 */
+  /**
+   * 会话枚举（`limit` 由 collector 侧钳到 1..500）。
+   *
+   * ⚠️ `title` 是**原文**：collector 当前的 `sessions` 汇总走常驻 Map，**没有脱敏臂**
+   * （`redact` 只落在 session/search 两条路径）。这里仍然带上 `redact=1` 表达意图，
+   * 但对端忽略它——所以本方法**只可用来做会话枚举/定位，不得把 title 当正文字段用**。
+   */
   async listSessions(
     offset: number,
     limit: number,
   ): Promise<{ total: number; rows: DrscSessionSummary[] }> {
     const body = await this.getJson(
-      `?op=sessions&offset=${Math.max(0, Math.floor(offset))}&limit=${Math.max(1, Math.min(500, Math.floor(limit)))}`,
+      `?op=sessions&offset=${Math.max(0, Math.floor(offset))}&limit=${Math.max(1, Math.min(500, Math.floor(limit)))}&redact=1`,
     );
     return {
       total: num(body['total']),

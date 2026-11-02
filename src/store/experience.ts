@@ -10,6 +10,12 @@
  *    一条经历会显示两遍，用户无法判断哪条作数）。
  * 4. **任何库错误都不抛穿**。库打不开就退内存镜像：本轮"此刻状态"照样出卡，
  *    只是没有历史与跨会话——角色当下有没有情绪，不该取决于 SQLite 是否可用。
+ *    ⚠️ 镜像**只在内存**（上限 `MEMORY_MIRROR_LIMIT`，且没有回灌库的路径）：降级期间
+ *    记下的条目在进程重启后**不可恢复**。对外文案不许把这写成"只是少了历史"。
+ *
+ * 5. **读侧也要有上界**。写侧的批有上界不等于读侧安全：`LIKE '%…%'` 不走索引，而本库
+ *    append-only 且只归档不删行 ⇒ 没有扫描窗的检索会随使用时长线性变慢，而它在
+ *    `agent/pre-step` 上每轮同步跑一次。
  */
 
 import type { DatabaseSync, SQLOutputValue } from 'node:sqlite';
@@ -23,6 +29,15 @@ export const MEMORY_MIRROR_LIMIT = 200;
 
 /** 分页上限：一次 RPC 不打算搬空整个库。 */
 export const PAGE_MAX = 200;
+
+/**
+ * 检索候选池上限（行数）：`LIKE '%…%'` 用不上索引，`LIMIT` 只截输出不截扫描 ——
+ * 没有这个窗，单次检索的成本就与库的总行数成正比，而本库永不删行。
+ *
+ * 量级依据：每轮最多一条 ⇒ 5000 行 ≈ 数千轮的使用量；再往前的经历本就该由近因段
+ * 与淡出档位覆盖，不该在历史路里把"刚发生"挤掉。行数小于窗时行为与全表逐行等价。
+ */
+export const LOCAL_SCAN_LIMIT = 5000;
 
 const INSERT_SQL = `INSERT INTO experience (
     id, session_id, workspace_id, turn_seq, ts_ms, trigger, notice, reaction,
@@ -314,7 +329,13 @@ export class ExperienceStore {
     }
   }
 
-  /** 跨会话基调：本工作区最近一个其它会话的末尾几条。 */
+  /**
+   * 跨会话基调：本工作区最近一个其它会话的末尾几条。
+   *
+   * 内层子查询同样是**扫描窗**：`GROUP BY session_id` 在全表上跑就是一次全量扫，
+   * 而这条路在新会话首轮必走一次。先取最近 `LOCAL_SCAN_LIMIT` 条再分组，语义上
+   * 等于「最近的经历里，上一次会话长什么样」。
+   */
   previousSessionEntries(workspaceId: string, excludeSessionId: string, limit: number): ExperienceEntry[] {
     if (limit <= 0) return [];
     if (this.deps.db === null) {
@@ -324,10 +345,13 @@ export class ExperienceStore {
     }
     try {
       const sessionId = this.scalar(
-        `SELECT session_id FROM experience
-         WHERE workspace_id = ? AND session_id <> ? AND superseded_by IS NULL
+        `SELECT session_id FROM (
+           SELECT session_id, ts_ms FROM experience
+           WHERE workspace_id = ? AND session_id <> ? AND superseded_by IS NULL
+           ORDER BY ts_ms DESC, id DESC LIMIT ?
+         )
          GROUP BY session_id ORDER BY MAX(ts_ms) DESC LIMIT 1`,
-        [workspaceId, excludeSessionId],
+        [workspaceId, excludeSessionId, LOCAL_SCAN_LIMIT],
         'session_id',
       );
       if (sessionId === undefined) return [];
@@ -413,25 +437,42 @@ export class ExperienceStore {
    *
    * 这里**故意不做 FTS**：条目规模是事件数量级，扫表够用；实测不达标再补索引，
    * 不预先付维护成本（计划 task_4.2 的 p95 实测就是这条的验收口）。
+   *
+   * **扫描窗（必须有）**：`LIKE '%…%'` 走不了索引、`LIMIT` 只截输出不截扫描，而本库
+   * append-only 且只归档不删行 ⇒ 行数单调增长。更关键的是本方法**同步**执行，位于
+   * `agent/pre-step` 串行路径上——`recall.timeoutMs` 那个超时只包 DRSC 的异步检索，
+   * **管不到这里**。所以先按时间取最近 `scanLimit` 条做候选池，再在其上过滤：
+   * 代价有界；语义上等于"只在最近的经历里被勾起"。
+   *
+   * @param opts.scanLimit 候选池行数（缺省 `LOCAL_SCAN_LIMIT`；测试注入小值用）
    */
-  searchLocal(query: string, opts: { sessionId?: string; limit: number }): ExperienceEntry[] {
+  searchLocal(
+    query: string,
+    opts: { sessionId?: string; limit: number; scanLimit?: number },
+  ): ExperienceEntry[] {
     const parts = query
       .trim()
       .toLowerCase()
       .split(/\s+/u)
       .filter((part) => part.length >= 2);
     if (parts.length === 0 || this.deps.db === null) return [];
+    const scan = Math.max(1, Math.floor(opts.scanLimit ?? LOCAL_SCAN_LIMIT));
     try {
       const clauses = parts.map(() => `(c.cue LIKE ? OR e.text LIKE ?)`).join(' OR ');
       const params: unknown[] = [];
-      for (const part of parts) params.push(`%${part}%`, `%${part}%`);
-      const scope = opts.sessionId === undefined ? '' : `AND e.session_id = ?`;
+      const scopeInner = opts.sessionId === undefined ? '' : `AND session_id = ?`;
       if (opts.sessionId !== undefined) params.push(opts.sessionId);
+      params.push(scan);
+      for (const part of parts) params.push(`%${part}%`, `%${part}%`);
       params.push(Math.max(1, Math.floor(opts.limit)));
       const rows = this.all(
-        `SELECT e.* FROM experience e
+        `SELECT e.* FROM (
+           SELECT * FROM experience
+           WHERE superseded_by IS NULL ${scopeInner}
+           ORDER BY ts_ms DESC, id DESC LIMIT ?
+         ) e
          LEFT JOIN experience_cues c ON c.entry_id = e.id
-         WHERE e.superseded_by IS NULL AND (${clauses}) ${scope}
+         WHERE (${clauses})
          GROUP BY e.id
          ORDER BY MAX(e.ts_ms) DESC
          LIMIT ?`,

@@ -170,7 +170,12 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
           { style: mutedStyle },
           `${copy['panel.injected']} ${stats.injectedTurns} → ${stats.confirmedTurns} · ${stats.lastRecallHits} · ${copy['panel.confirmedHint']}`,
         ),
-        createElement('p', { style: mutedStyle }, `${copy['panel.drsc']}：${copy[DRSC_VERDICT_KEYS[stats.drscVerdict]]}`),
+        // 段数专治「连上了但库里没内容」：只说"可用"会把静默为空读成功能正常
+        createElement(
+          'p',
+          { style: mutedStyle },
+          `${copy['panel.drsc']}：${copy[DRSC_VERDICT_KEYS[stats.drscVerdict]]}${stats.drscSegments === undefined ? '' : ` · ${copy['panel.drscSegments']} ${stats.drscSegments}`}`,
+        ),
         // 淡出指标行（调参 SOP 的读数腿）：只在淡出真跑过时出现，关闸时不占行不编零
         fade !== undefined && fade.pool > 0
           ? createElement('p', { style: mutedStyle }, `${copy['panel.fade']}：${fade.full}/${fade.gist}/${fade.held}${fade.marked > 0 ? ` · ★${fade.marked}` : ''} · ${copy['panel.churn']} ${fade.churn}`)
