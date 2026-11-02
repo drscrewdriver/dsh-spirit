@@ -27,6 +27,8 @@ import { probeCapabilities, readTrustedHosts } from './capability.js';
 import { openSpiritDb } from './db/open.js';
 import { decideDegrade } from './db/degrade.js';
 import { ExperienceStore } from './store/experience.js';
+import { LedgerStore, ledgerLineText } from './store/ledger.js';
+import { BiasStore } from './store/bias.js';
 import { PersonaStore } from './persona/store.js';
 import { SessionModeStore } from './store/session-modes.js';
 import { TurnWatcher } from './experience/watcher.js';
@@ -73,6 +75,9 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   const personas = new PersonaStore({ dataDir, logger });
   const modes = new SessionModeStore({ dataDir, logger });
   const store = new ExperienceStore({ db, logger });
+  // v0.2 两张新面：未竟账（append-only 真源）与条件化（派生缓存，定性见 store/bias.ts）
+  const ledger = new LedgerStore({ db, logger });
+  const bias = new BiasStore({ db, logger });
   const watcher = new TurnWatcher({
     // 用 getter 而不是快照值：阈值可在设置页热更，构造期定值会让人以为改了不生效
     get gapThresholdMs() {
@@ -109,6 +114,14 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
       logger,
       recentEntries: (sessionId, k) => store.recent(sessionId, k),
       previousEntries: (workspaceId, sessionId, m) => store.previousSessionEntries(workspaceId, sessionId, m),
+      // 刀3：新会话首轮带出一行未竟账（过期/无账/关闸 ⇒ undefined，整行不出现）
+      ledgerLine: (workspaceId, excludeSessionId, now) =>
+        eff().ledger.enabled ? ledgerLineText(ledger.latestFor(workspaceId, excludeSessionId, now, eff().ledger.maxAgeMs)) : undefined,
+      // 刀4：pre-step 只做 O(1) 主键查表（闸由 readBias 每轮现判，半衰期在 store.read 里量化）
+      biasBand: (workspaceId, actionKey, now) => bias.read(workspaceId, actionKey, now, eff().bias.halfLifeMs),
+      onBiasUpsert: (workspaceId, actionKey, band, now) => bias.upsert(workspaceId, actionKey, band, now),
+      onLedgerSettle: (row) => ledger.append({ id: `l-${row.sessionId}-${row.turnSeq}`, ...row }),
+      onFadeStats: (agentId, fadeStats) => stats.noteFade(agentId, fadeStats),
       onConfirmed: (agentId) => stats.noteConfirmed(agentId),
     },
     personas.current(),
@@ -125,7 +138,23 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
 
   registerPersonaSection(ctx, { personas, eff, caps, logger });
   registerCardObserve(ctx, { spirit, logger });
-  registerSpiritRpc(ctx, { spirit, stats, store, modes, personas, dataDir, cfg, drscVerdict, logger, onWebServerReady: (port) => { webPort = port; } });
+  registerSpiritRpc(ctx, {
+    spirit,
+    stats,
+    store,
+    modes,
+    personas,
+    dataDir,
+    cfg,
+    eff,
+    drscVerdict,
+    logger,
+    // config.live 就是 volatile ref（带 .get()，新宿主还带 .update()）；原样递出去，不预先解包
+    liveRaw: () => config.live as unknown as { get(): SpiritLiveSettings; update?: (patch: Partial<SpiritLiveSettings>) => unknown },
+    onWebServerReady: (port) => {
+      webPort = port;
+    },
+  });
   registerCardPreStep(ctx, {
     spirit,
     logger,
@@ -146,6 +175,7 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
         mood: diag.mood,
         drscVerdict: drscVerdict(),
         degraded: !store.persistent,
+        ...(diag.tendency !== undefined ? { tendency: diag.tendency } : {}),
       });
     },
   });

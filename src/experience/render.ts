@@ -61,6 +61,22 @@ export const BODY_TABLE: Readonly<Record<TriggerKind, Readonly<Partial<Record<Re
   },
 };
 
+/**
+ * gist 表：每个事件族的一句压缩残句（“说不清细节但有过这一下”）。
+ *
+ * 淡出的中间形态（刀1）只能取自这张固定表：编译期派生落库，**禁止运行时造句**——
+ * 现场缩写等于改写记忆，而“被淡出的原文 + 现场生成的摘要”会构成双重记账。
+ * 措辞纪律与主句表一致：第一人称、不携带未经证实的具体性。
+ */
+export const GIST_TABLE: Readonly<Record<TriggerKind, string>> = {
+  [TRIGGER_USER_INTERRUPT]: '你打断我那一下，我收了手',
+  [TRIGGER_TOOL_FAILURE]: '有一次没走通，我记着',
+  [TRIGGER_RECOVERY]: '有一次后来过了，我松了口气',
+  [TRIGGER_TASK_CLOSE]: '有一次收在段落上，我停了停',
+  [TRIGGER_LONG_GAP]: '有一段没人接话的空白',
+  [TRIGGER_NEUTRAL]: '一轮寻常的事，我也记了一句',
+};
+
 /** 语气：开口词（terse 不加，句子更短）。 */
 const VOICE_OPENER: Readonly<Record<VoiceTier, string>> = {
   [VOICE_TERSE]: '',
@@ -127,3 +143,15 @@ export function renderExperienceText(input: DraftRenderInput): string {
 
 /** 供完备性测试遍历：每个事件族都必须给 mild 与 strong 两条。 */
 export const REQUIRED_REACTIONS: readonly ReactionTier[] = [REACTION_MILD, REACTION_STRONG];
+
+/**
+ * 出 gist 句（刀1 的编译期派生入口）：面词前缀 + 固定压缩句。
+ *
+ * 形状与主句同构（`面词：gist`），保证手记/导出里两种形态读起来是同一条经历的不同景深；
+ * 表缺格 ⇒ 返回空串（调用方不写 gist 列，淡出时该条目自然退化 held，宁缺毋造）。
+ */
+export function renderGistText(trigger: TriggerKind, notice: NoticeKind): string {
+  const gist = GIST_TABLE[trigger];
+  if (gist === undefined || gist === '') return '';
+  return `${NOTICE_WORDS[notice]}：${gist}`;
+}

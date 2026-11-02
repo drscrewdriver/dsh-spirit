@@ -1,7 +1,7 @@
 {
   "id": "dsh-spirit",
   "name": "dsh-spirit",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": {
     "en": "First-person experience journal for DSH: compiles process events into the character's lived moments, derives a mood tier from them, and injects the current state before each model step.",
     "zh": "DSH 第一人称体验条目插件：把流程事件编译成角色的体验点滴，从中派生情绪档，并在模型步骤前注入「此刻状态 + 刚发生的 + 被勾起的回忆」。"

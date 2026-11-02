@@ -35,6 +35,9 @@ interface TurnState {
   lastTsMs: number;
   /** 最近一次"有实质活动"的时刻，用于 gapMs。 */
   lastActivityMs: number;
+  /** 最后一次 todo 快照的结构性计数（刀3；undefined = 从未见过快照，不编造未竟）。 */
+  todoOpen?: number;
+  todoInProgress?: number;
   facts: ExperienceFact;
 }
 
@@ -72,17 +75,33 @@ function textLengthOf(content: unknown): number {
   return total;
 }
 
-/** todo 清单是否"非空且全部完成"（状态词表按宿主 todo 形状，未知状态不算完成）。 */
-function allTodosDone(rawTodos: unknown): { nonEmpty: boolean; done: boolean } {
-  if (!Array.isArray(rawTodos)) return { nonEmpty: false, done: false };
+/**
+ * todo 快照的结构计数（刀3）：只数状态，不读 content。
+ *
+ * 未竟判定只允许来自主人（用户）可见的 todo 快照——它同样是情绪输入，
+ * 而自由文本会整包被 isStructuredOnly 拒掉；这里把“有几个还开着”算成整数，
+ * 对外文案只拿档位（不伪造具体性：计数真为 3 才能说三条）。
+ */
+function todoCounts(rawTodos: unknown): { nonEmpty: boolean; done: boolean; open: number; inProgress: number } {
+  if (!Array.isArray(rawTodos)) return { nonEmpty: false, done: false, open: 0, inProgress: 0 };
   const todos = rawTodos.map(asRecord);
-  const open = new Set(['pending', 'in_progress', 'open', 'todo']);
+  const openSet = new Set(['pending', 'in_progress', 'open', 'todo']);
   const nonEmpty = todos.length > 0;
-  const done = nonEmpty && todos.every((t) => {
+  let open = 0;
+  let inProgress = 0;
+  for (const t of todos) {
     const status = str(t['status']).toLowerCase();
-    return status !== '' && !open.has(status);
-  });
-  return { nonEmpty, done };
+    if (status === 'in_progress') inProgress += 1;
+    if (status !== '' && openSet.has(status)) open += 1;
+  }
+  const done = nonEmpty && open === 0 && todos.every((t) => str(t['status']) !== '');
+  return { nonEmpty, done, open, inProgress };
+}
+
+/** 未竟读面（ledger 消费）：最后一次 todo 快照的结构计数；从未见过快照 ⇒ undefined（不编造）。 */
+export interface OpenLoops {
+  open: number;
+  inProgress: number;
 }
 
 export class TurnWatcher {
@@ -117,6 +136,23 @@ export class TurnWatcher {
   /** 释放 agent 的累加态（agent/disposed 时调用，否则长期会话会攒下无界条目）。 */
   release(agentId: string): void {
     this.states.delete(agentId);
+  }
+
+  /**
+   * 未竟读面（刀3）：**只读快照，不清计数**。
+   * 绝不能用 takeSignals 实现这个读——那会把 todoOpen 重置成 undefined，
+   * 而 turn/end 兑底路先于 agent/disposed 到达时，“最后快照”会被中间读取吃掉（集成测试调出的真 bug）。
+   * 从未见过快照 ⇒ undefined——ledger 不入账（宁缺毋造）。
+   */
+  openLoops(agentId: string): OpenLoops | undefined {
+    const state = this.states.get(agentId);
+    if (state === undefined || state.todoOpen === undefined || state.todoInProgress === undefined) return undefined;
+    return { open: state.todoOpen, inProgress: state.todoInProgress };
+  }
+
+  /** 最后见过的轮号（只读；dispose 结算拿它做幂等 id，与 turn/end 路的同轮 id 自然收敛）。 */
+  lastTurnSeq(agentId: string): number {
+    return this.states.get(agentId)?.turnSeq ?? 0;
   }
 
   /**
@@ -200,8 +236,11 @@ export class TurnWatcher {
         break;
       }
       case 'todo/write': {
-        const { nonEmpty, done } = allTodosDone(data['todos']);
-        if (nonEmpty && done) state.taskClosed = true;
+        const counts = todoCounts(data['todos']);
+        if (counts.nonEmpty && counts.done) state.taskClosed = true;
+        // 只留最后一次快照的计数（刀3）；未知形状整包不算
+        if (counts.nonEmpty) state.todoOpen = counts.open;
+        if (counts.nonEmpty) state.todoInProgress = counts.inProgress;
         break;
       }
       default:

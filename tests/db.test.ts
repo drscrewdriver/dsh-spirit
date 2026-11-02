@@ -37,7 +37,7 @@ describe('openSpiritDb', () => {
     opened.db.close();
   });
 
-  it('v0.1 不建 FTS5 虚表（不预开工，这条断言挡住"顺手加个索引"的提前投资）', () => {
+  it('v0.2 仍不建 FTS5 虚表（不预开工，这条断言挡住“顺手加个索引”的提前投资）', () => {
     const opened = openSpiritDb(dir);
     if (!opened.ok) throw new Error('应打开成功');
     const ddl = opened.db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'experience'`).all() as Array<{ sql: string }>;
@@ -69,13 +69,44 @@ describe('openSpiritDb', () => {
     if (!again.ok) expect(again.err).toBeInstanceOf(SchemaVersionError);
   });
 
-  it('库内版本低于本包且无迁移路径 ⇒ 同样拒读，不"凑合读"', () => {
+  it('库内版本低于本包且无迁移路径（v0）⇒ 同样拒读，不“凑合读”，且句柄不泄漏', () => {
     const first = openSpiritDb(dir);
     if (!first.ok) throw new Error('应打开成功');
     first.db.prepare(`UPDATE meta SET value = ? WHERE key = ?`).run('0', META_KEY_SCHEMA_VERSION);
     first.db.close();
     const again = openSpiritDb(dir);
     expect(again.ok).toBe(false);
+  });
+
+  it('v1 老库 ⇒ 正向迁移到 v2：新列补齐、原行原样读回、版本回写', () => {
+    // 先建 v2 库再退造成 v1（DROP 只造 fixture，不碰生产路径），比手抄一份 v1 DDL 更防漂移
+    const made = openSpiritDb(dir);
+    if (!made.ok) throw new Error('应打开成功');
+    made.db.exec(`ALTER TABLE experience DROP COLUMN gist`);
+    made.db.exec(`ALTER TABLE experience DROP COLUMN feedback_score`);
+    made.db.exec(`ALTER TABLE experience DROP COLUMN salience`);
+    made.db.prepare(`UPDATE meta SET value = ? WHERE key = ?`).run('1', META_KEY_SCHEMA_VERSION);
+    made.db
+      .prepare(
+        `INSERT INTO experience (id, session_id, workspace_id, turn_seq, ts_ms, trigger, notice, reaction, text, fact_json, lane, persona_revision, updated_at)
+         VALUES ('e1','s1','w1',1,1000,'tool_error','notice','mild','旧版本体验句','{}','live',1,1000)`,
+      )
+      .run();
+    made.db.close();
+    const upgraded = openSpiritDb(dir);
+    if (!upgraded.ok) throw new Error(`迁移应成功：${String(upgraded.err)}`);
+    expect(readStoredVersion(upgraded.db)).toBe(SPIRIT_DB_SCHEMA_VERSION);
+    const row = upgraded.db.prepare(`SELECT text, salience, gist, feedback_score FROM experience WHERE id = 'e1'`).get() as {
+      text: string; salience: number; gist: string | null; feedback_score: number | null;
+    };
+    expect(row.text).toBe('旧版本体验句');
+    expect(row.salience).toBe(0);
+    expect(row.gist).toBeNull();
+    // 再开一次：迁移整步跳过（列已存在即不重复 ALTER），不炸
+    upgraded.db.close();
+    const again = openSpiritDb(dir);
+    expect(again.ok).toBe(true);
+    if (again.ok) again.db.close();
   });
 
   it('空目录串 ⇒ 明确拒绝，不猜路径（猜出来的目录比报错更难查）', () => {
@@ -108,7 +139,16 @@ describe('planMigration', () => {
     expect(planMigration(SPIRIT_DB_SCHEMA_VERSION)).toEqual({ ok: true, steps: [] });
   });
 
-  it('v0.1 无迁移表 ⇒ 其它版本一律拒读，并说明是降级还是无路径', () => {
+  it('v1 ⇒ 有正向链（1→2，带人话 note）', () => {
+    const plan = planMigration(1);
+    expect(plan.ok).toBe(true);
+    if (plan.ok) {
+      expect(plan.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['1→2']);
+      expect(plan.steps[0]?.note.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('高于本包拒读（升级方向），链断（v0）也拒读并说明理由', () => {
     const higher = planMigration(SPIRIT_DB_SCHEMA_VERSION + 1);
     expect(higher.ok).toBe(false);
     const lower = planMigration(0);

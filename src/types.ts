@@ -187,6 +187,11 @@ export interface ExperienceEntry {
   reaction: ReactionTier;
   /** 查表产出的第一人称体验行。 */
   text: string;
+  /**
+   * 一句话压缩残句（v0.2 刀1：编译期从 GIST_TABLE 派生，禁运行时改写）。
+   * v1 迁移来的旧行没有 ⇒ undefined，淡出时自然退化 held（宁缺毋造）。
+   */
+  gist?: string;
   fact: ExperienceFact;
   lane: Lane;
   /** DRSC 出处锚点（形如 `drsc:<session>:<seq>`），非 DRSC 来源为空。 */
@@ -194,6 +199,13 @@ export interface ExperienceEntry {
   personaRevision: number;
   /** 软更正：指向取代本条的新 id；本条**不删除**。 */
   supersededBy?: string;
+  /**
+   * 人格在意度 0..2（v0.2 落库；v1 旧行为 0 ⇒ 淡出只走 held 退化路，不假装知道旧权重）。
+   * 只服淡出档位；情绪派生仍吃 reaction（derive.ts 的因果方向不变）。
+   */
+  salience?: number;
+  /** 人工反馈 -1..5（v0.2；只重排进卡优先序，**永不**参与 m/衰减/情绪派生）。 */
+  feedbackScore?: number;
   updatedAt: number;
 }
 
@@ -253,6 +265,10 @@ export interface ExperienceDraft {
   notice: NoticeKind;
   reaction: ReactionTier;
   text: string;
+  /** 编译期 gist（GIST_TABLE 派生；缺格时空串，store 按 NULL 落）。 */
+  gist?: string;
+  /** 编译期人格权重（淡出原料；与 shouldRecord 同源，不在 store 里重算）。 */
+  salience?: number;
   fact: ExperienceFact;
   lane: Lane;
   sourceRef?: string;

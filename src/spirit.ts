@@ -16,12 +16,14 @@ import { compileTurn } from './experience/compile.js';
 import type { TurnWatcher } from './experience/watcher.js';
 import { previousTone } from './experience/cross-session.js';
 import type { ExperienceStore } from './store/experience.js';
-import { recentLines } from './recall/recent.js';
+import { recentForms, formsDigest, type FormedEntry } from './recall/recent.js';
+import { feedbackFirst, type FadeConfig } from './recall/form.js';
 import { recallHistory, queryWorthRecall, type HistoryDeps } from './recall/history.js';
 import { deriveMood, moodChanged, withRevisionBump, type MoodConfig } from './slot/derive.js';
 import { renderCard } from './slot/render.js';
-import type { ExperienceEntry, Mood, PersonaCard } from './types.js';
-import type { SpiritConfig, SpiritLiveSettings } from './contract.js';
+import { biasTendency, readBias, type BiasReader } from './slot/bias.js';
+import { TRIGGER_TOOL_FAILURE, type ExperienceEntry, type Mood, type PersonaCard } from './types.js';
+import type { FadeStats, SpiritConfig, SpiritLiveSettings } from './contract.js';
 import { effectiveCfg } from './config.js';
 
 /** pre-step 的宿主侧输入（由 hook 适配器填，编排层不认宿主形状）。 */
@@ -47,7 +49,7 @@ export interface PreStepInput {
 export type PreStepOutcome =
   | { kind: 'passthrough'; reason: Gate }
   | { kind: 'recorded'; reason: Gate }
-  | { kind: 'injected'; text: string; bytes: number; fingerprint: string; reason: Gate };
+  | { kind: 'injected'; text: string; bytes: number; fingerprint: string; reason: Gate; tendency?: string };
 
 /** 判定链上的门（顺序固定，任一为假即零注入零副作用）。 */
 export type Gate =
@@ -76,6 +78,16 @@ export interface SpiritDeps {
   recentEntries(sessionId: string, k: number): ExperienceEntry[];
   /** 取上一会话末尾条目（跨会话基调）。 */
   previousEntries(workspaceId: string, sessionId: string, m: number): ExperienceEntry[];
+  /** 未竟账读面（刀3）：新会话首轮带出一行；省略/空 ⇒ 整段不出现。 */
+  ledgerLine?(workspaceId: string, excludeSessionId: string, now: number): string | undefined;
+  /** 条件化查表（刀4）：(workspace, actionKey) → 档位；O(1)，禁扫表。 */
+  biasBand?(workspaceId: string, actionKey: string, now: number): number | undefined;
+  /** 条件化冷写（刀4）：turn/end 结算里顺手 upsert，绝不在 pre-step 写。 */
+  onBiasUpsert?(workspaceId: string, actionKey: string, band: number, now: number): void;
+  /** 未竟账结算（刀3）：索引层落 session_ledger；只吃结构计数。 */
+  onLedgerSettle?(row: { sessionId: string; workspaceId: string; turnSeq: number; open: number; inProgress: number; tsMs: number }): void;
+  /** 淡出计数回调（stats 腿）：每轮把形态分布递出去，不在这里存。 */
+  onFadeStats?(agentId: string, stats: FadeStats): void;
   /** 卡被确认生效时的回调（统计面记分子；不在这里做业务判断）。 */
   onConfirmed?(agentId: string): void;
 }
@@ -94,7 +106,7 @@ interface AgentRuntime {
 
 export class Spirit {
   private readonly runtimes = new Map<string, AgentRuntime>();
-  private readonly diag = new Map<string, { entryCount: number; recallHits: number; mood: Mood | undefined; outcome: Gate }>();
+  private readonly diag = new Map<string, { entryCount: number; recallHits: number; mood: Mood | undefined; outcome: Gate; tendency?: string }>();
   /** 本轮检索段实际命中数（供诊断面读）。 */
   private readonly lastRecall = new Map<string, number>();
   /** sessionId → agentId：压缩事件只给会话，而运行态按 agent 计。 */
@@ -106,6 +118,8 @@ export class Spirit {
    * 只在 pre-step 的 payload 里——不在这里存下，结算时就只能拿到空字段。
    */
   private readonly turnCtx = new Map<string, { workspaceId: string; newUserText: string }>();
+  /** 会话→工作区的账本上下文：与 turnCtx 同生命周期，但**不随 release 删**（disposed 结算时靠它）。 */
+  private readonly ledgerCtx = new Map<string, string>();
   private readonly deps: SpiritDeps;
 
   /**
@@ -124,8 +138,13 @@ export class Spirit {
     return effectiveCfg(this.deps.cfg(), this.deps.live());
   }
 
-  private moodCfg(cfg: ReturnType<Spirit['eff']>): MoodConfig {
-    return { halfLifeMs: cfg.recall.halfLifeMs, stepCap: cfg.tier.stepCap, staleAfterMs: cfg.tier.staleAfterMs };
+  private moodCfg(cfg: ReturnType<Spirit['eff']>, biasBands?: Map<string, number>): MoodConfig {
+    return {
+      halfLifeMs: cfg.recall.halfLifeMs,
+      stepCap: cfg.tier.stepCap,
+      staleAfterMs: cfg.tier.staleAfterMs,
+      ...(biasBands === undefined || biasBands.size === 0 ? {} : { biasBands }),
+    };
   }
 
   /**
@@ -142,12 +161,13 @@ export class Spirit {
       recallHits: this.lastRecall.get(input.agentId) ?? 0,
       mood: this.runtimes.get(input.agentId)?.mood,
       outcome: outcome.reason,
+      ...(outcome.kind === 'injected' && outcome.tendency !== undefined ? { tendency: outcome.tendency } : {}),
     });
     return outcome;
   }
 
   /** 面板读的每轮诊断（没跑过任何一轮 ⇒ 全零形状，不编数据）。 */
-  diagOf(agentId: string): { entryCount: number; recallHits: number; mood: Mood | undefined; outcome: Gate } {
+  diagOf(agentId: string): { entryCount: number; recallHits: number; mood: Mood | undefined; outcome: Gate; tendency?: string } {
     return this.diag.get(agentId) ?? { entryCount: 0, recallHits: 0, mood: undefined, outcome: 'no-new-user' };
   }
 
@@ -169,6 +189,7 @@ export class Spirit {
       // 若不问条件就写，会把本轮真正的用户文本冲掉（影响 quote 采集），也会让纯工具轮被记上。
       if (input.messageCount > 0) {
         this.turnCtx.set(input.sessionId, { workspaceId: input.workspaceId, newUserText: input.newUserText });
+        this.ledgerCtx.set(input.sessionId, input.workspaceId);
       }
       // 卡总闸：关了就与旁路同处理（照常记录与派生，不出卡）
       if (!cfg.live.cardEnabled) {
@@ -204,14 +225,29 @@ export class Spirit {
 
       // ── 派生档位（只吃条目，不吃信号） ──
       const recentK = Math.max(0, Math.floor(cfg.card.recentK));
-      const entries = this.deps.recentEntries(input.sessionId, Math.max(recentK + 2, 4));
-      const derived = deriveMood(runtime.mood, entries, input.now, this.moodCfg(cfg));
+      const fade = fadeConfigOf(cfg);
+      // 淡出开启时候选池放宽：held 逐出后需要有替补（多取几条的成本是一次索引读，<1ms）
+      const poolK = fade.fadeEnabled ? Math.max(recentK * 3, recentK + 4) : Math.max(recentK + 2, 4);
+      const entries = this.deps.recentEntries(input.sessionId, poolK);
+      // 条件化（刀4）两通道共用一次读表：band 集按候选池里出现过的 trigger 取（O(1)×小常数，禁扫表）
+      const biasReader: BiasReader | undefined = this.deps.biasBand === undefined
+        ? undefined
+        : (actionKey) => this.deps.biasBand!(input.workspaceId, actionKey, input.now);
+      const biasBands = collectBiasBands(cfg, biasReader, entries);
+      const derived = deriveMood(runtime.mood, entries, input.now, this.moodCfg(cfg, biasBands));
       const mood = withRevisionBump(runtime.mood, derived);
       const changed = moodChanged(runtime.mood, mood);
 
       // ── 重发判据：档位没动且近因内容没动 ⇒ 沿用上一张 ──
-      const recentTexts = recentLines(entries, { now: input.now, halfLifeMs: cfg.recall.halfLifeMs, limit: recentK });
-      const fingerprint = `${mood.revision}|${recentTexts.join('#')}`;
+      // 淡出臂：形态档位进指纹——档内字节稳定，重发只发生在跨档（量化纪律的执行点）
+      const formed: FormedEntry[] = fade.fadeEnabled
+        ? recentForms(entries, { now: input.now, halfLifeMs: cfg.recall.halfLifeMs, limit: recentK, fade })
+        : recentForms(entries, { now: input.now, halfLifeMs: cfg.recall.halfLifeMs, limit: recentK });
+      const recentTexts = formed.map((item) => item.text);
+      const fingerprint = fade.fadeEnabled
+        ? `${mood.revision}|${recentTexts.join('#')}|${formsDigest(formed)}`
+        : `${mood.revision}|${recentTexts.join('#')}`;
+      if (fade.fadeEnabled) this.deps.onFadeStats?.(input.agentId, fadeStatsOf(formed, entries));
       if (!changed && fingerprint === runtime.lastFingerprint) {
         this.runtimes.set(input.agentId, { ...runtime, mood, firstTurnDone: true });
         return { kind: 'passthrough', reason: 'unchanged' };
@@ -237,18 +273,37 @@ export class Spirit {
         this.lastRecall.set(input.agentId, 0);
       }
 
-      const tone =
-        runtime.firstTurnDone || cfg.card.crossSessionM <= 0
-          ? undefined
-          : previousTone(this.deps.previousEntries(input.workspaceId, input.sessionId, cfg.card.crossSessionM), {
-              maxChars: cfg.recall.maxCharsPerEntry,
-            });
+      // 开场段两行：跨会话基调（既有）+ 未竟账（刀3，只吃结构计数；拿不到就整行不出现）
+      const toneParts: string[] = [];
+      if (!runtime.firstTurnDone && cfg.card.crossSessionM > 0) {
+        const tone = previousTone(this.deps.previousEntries(input.workspaceId, input.sessionId, cfg.card.crossSessionM), {
+          maxChars: cfg.recall.maxCharsPerEntry,
+        });
+        if (tone !== undefined && tone !== '') toneParts.push(tone);
+        const ledger = this.deps.ledgerLine?.(input.workspaceId, input.sessionId, input.now);
+        if (ledger !== undefined && ledger !== '') toneParts.push(ledger);
+        // 反馈重排也接开场段：人标过“重要”的基调行先说（两轴分离：只换序，不改内容与档位）
+        if (fade.fadeEnabled && fade.feedbackEnabled && toneParts.length > 1) {
+          const markedOf = (part: string): number => {
+            const hit = entries.find((entry) => entry.text === part || entry.gist === part || (entry.gist !== undefined && part.includes(entry.gist)));
+            return hit?.feedbackScore !== undefined && hit.feedbackScore > 0 ? hit.feedbackScore : 0;
+          };
+          const ordered = feedbackFirst(toneParts, markedOf);
+          toneParts.length = 0;
+          toneParts.push(...ordered);
+        }
+      }
+      const tone = toneParts.join('；');
+
+      // 条件化（刀4）：只经卡文本通道——不改 decision、不碰系统提示；乘子通道在上方 moodCfg
+      const tendencyOverride = biasTendency(readBias(cfg, biasReader, failedActionKeys(cfg, entries), biasBands));
 
       const card = renderCard({
         mood,
         recent: recentTexts,
         recalled,
-        ...(tone !== undefined && tone !== '' ? { tone } : {}),
+        ...(tone !== '' ? { tone } : {}),
+        ...(tendencyOverride !== undefined ? { tendencyOverride } : {}),
         maxBytes: cfg.card.maxBytes,
         maxCharsPerEntry: cfg.recall.maxCharsPerEntry,
       });
@@ -259,7 +314,14 @@ export class Spirit {
       this.runtimes.set(input.agentId, { ...runtime, mood, firstTurnDone: true });
       // 指纹**不在此提交**：等宿主把这行落进会话日志（card-observe 观察到同 id 行）才算生效。
       // 现在写 fingerprint 的后果：本轮被取消/覆盖时卡没进上下文，但下轮"以为发过了"不重发。
-      return { kind: 'injected', text: card.text, bytes: card.bytes, fingerprint, reason: 'injected' };
+      return {
+        kind: 'injected',
+        text: card.text,
+        bytes: card.bytes,
+        fingerprint,
+        reason: 'injected',
+        ...(tendencyOverride !== undefined ? { tendency: tendencyOverride } : {}),
+      };
     } catch (err) {
       this.deps.logger.warn(`[spirit] pre-step 异常，本轮不注入：${err instanceof Error ? err.message : String(err)}`);
       return { kind: 'passthrough', reason: 'error' };
@@ -296,7 +358,7 @@ export class Spirit {
       ? Array.from(input.newUserText).slice(0, Math.max(0, Math.floor(cap.maxQuoteChars))).join('')
       : undefined;
     const fact = quote === undefined ? draft.fact : { ...draft.fact, quote };
-    this.deps.store.append(
+    const entry = this.deps.store.append(
       {
         id: `x-${input.sessionId}-${input.now}-${runtime.firstTurnDone ? 'l' : 'f'}`,
         sessionId: input.sessionId,
@@ -307,6 +369,14 @@ export class Spirit {
       },
       { ...draft, fact },
     );
+    // 条件化冷写（刀4）：工具没走通这件事本身是可检索的动作键；band 取条目 reaction 档，
+    // 与已存档取严不取松（一次 mild 不许抹掉上次的 strong）
+    if (draft.trigger === TRIGGER_TOOL_FAILURE && entry.fact.tool !== undefined && entry.fact.tool !== '') {
+      const fresh = draft.reaction === 'strong' ? 2 : 1;
+      const stored = this.deps.biasBand?.(input.workspaceId, entry.fact.tool, input.now);
+      const band = typeof stored === 'number' && stored > fresh ? stored : fresh;
+      this.deps.onBiasUpsert?.(input.workspaceId, entry.fact.tool, band, input.now);
+    }
   }
 
   /** 登记在飞卡（适配器造好消息、拿到真实 id 后调）。 */
@@ -370,12 +440,49 @@ export class Spirit {
     const runtime = this.runtimes.get(agentId ?? '') ?? { pending: new Map<string, string>(), firstTurnDone: true };
     try {
       this.record(signals, { sessionId, workspaceId: ctx.workspaceId, now, newUserText: ctx.newUserText }, runtime);
+      // 未竟账兑底（刀3）：disposed 不发/丢失的宿主线在这里也能入账（取代链收敛重复）
+      this.settleLedger(sessionId, ctx.workspaceId, signals.turnSeq, now);
     } catch (err) {
-      // 结算失败不许影响会话本身（全链 fail-open）；下一轮的兜底路还会再试
+      // 结算失败不许影响会话本身（全链 fail-open）；下一轮的兑底路还会再试
       this.deps.logger.warn(`[spirit] turn/end 结算异常（本轮未记）：${err instanceof Error ? err.message : String(err)}`);
     }
   }
-
+  
+  /**
+   * 未竟账结算（刀3）：取最后一次 todo 快照的结构计数落一行账。
+   *
+   * openLoops 给 undefined（从未见过快照）⇒ 不入账——宁缺毋造，也不拿“没看见”
+   * 当“都收完了”的善后凭据。id 含 turnSeq：同一轮重复结算幂等（ON CONFLICT DO NOTHING）。
+   */
+  settleLedger(sessionId: string, workspaceId: string, turnSeq: number, now: number): void {
+    const cfg = this.eff();
+    if (!cfg.ledger.enabled || this.deps.onLedgerSettle === undefined) return;
+    const loops = this.deps.watcher.openLoops(sessionId);
+    if (loops === undefined) return;
+    this.deps.onLedgerSettle({
+      sessionId,
+      workspaceId,
+      turnSeq,
+      open: loops.open,
+      inProgress: loops.inProgress,
+      tsMs: now,
+    });
+  }
+  
+  /**
+   * agent 销毁时的会话级收尾（card-observe 在 `release()` 之前调）：
+   * 先结算未竟账，再释放采集态——顺序反了 openLoops 会被清空，账永远不落。
+   */
+  settleOnDispose(agentId: string, now: number): void {
+    for (const [sessionId, mapped] of [...this.sessionToAgent.entries()]) {
+      if (mapped !== agentId) continue;
+      const workspaceId = this.ledgerCtx.get(sessionId);
+      if (workspaceId === undefined) continue;
+      // 绝不能用 takeSignals 取轮号：它会顺手清掉 todo 计数，把“最后快照”吃掉（真 bug，集成测试调出）
+      this.settleLedger(sessionId, workspaceId, this.deps.watcher.lastTurnSeq(sessionId), now);
+    }
+  }
+  
   /**
    * 重置"已发过卡"的凭据（压缩/清空之后必须）。
    *
@@ -419,4 +526,62 @@ export class Spirit {
   moodOf(agentId: string): Mood | undefined {
     return this.runtimes.get(agentId)?.mood;
   }
+}
+
+/** 生效配置 → 淡出参数切片（纯投影，不在编排里藏默认值）。 */
+function fadeConfigOf(cfg: SpiritConfig): FadeConfig {
+  return {
+    fadeEnabled: cfg.recall.fadeEnabled,
+    feedbackEnabled: cfg.recall.feedbackEnabled,
+    fadeHalfLifeMs: cfg.recall.fadeHalfLifeMs,
+    fullMinScore: cfg.recall.fadeFullMinScore,
+    gistMinScore: cfg.recall.fadeGistMinScore,
+    gistMinSalience: cfg.recall.gistMinSalience,
+  };
+}
+
+/** 本轮形态分布（held = 候选池里被逐出注意力的未取代条目；marked = 被人标过重要的条数）。 */
+function fadeStatsOf(formed: readonly FormedEntry[], pool: readonly ExperienceEntry[]): FadeStats {
+  const usable = pool.filter((entry) => entry.supersededBy === undefined && entry.text !== '');
+  let full = 0;
+  let gist = 0;
+  for (const item of formed) {
+    if (item.form === 'full') full += 1;
+    else if (item.form === 'gist') gist += 1;
+  }
+  const marked = usable.filter((entry) => typeof entry.feedbackScore === 'number' && (entry.feedbackScore ?? 0) > 0).length;
+  return { full, gist, marked, held: Math.max(0, usable.length - formed.length), pool: usable.length };
+}
+
+/** 条件化的动作键集：候选池里“没走通”的工具名（结构字段，不读任何文本）。 */
+function failedActionKeys(cfg: SpiritConfig, entries: readonly ExperienceEntry[]): string[] {
+  if (!cfg.bias.enabled) return [];
+  const keys = new Set<string>();
+  for (const entry of entries) {
+    if (entry.supersededBy !== undefined) continue;
+    if (entry.trigger === TRIGGER_TOOL_FAILURE && entry.fact.tool !== undefined && entry.fact.tool !== '') {
+      keys.add(entry.fact.tool);
+    }
+  }
+  return [...keys];
+}
+
+/**
+ * 乘子通道的 band 集：trigger → 该族条目涉及动作的最强 band。
+ * 只读候选池内已见过的工具名（O(池)×O(1) 查表），不新增输入源。
+ */
+function collectBiasBands(cfg: SpiritConfig, reader: BiasReader | undefined, entries: readonly ExperienceEntry[]): Map<string, number> {
+  const bands = new Map<string, number>();
+  if (!cfg.bias.enabled || reader === undefined) return bands;
+  for (const entry of entries) {
+    if (entry.supersededBy !== undefined) continue;
+    if (entry.trigger !== TRIGGER_TOOL_FAILURE) continue;
+    const tool = entry.fact.tool;
+    if (tool === undefined || tool === '') continue;
+    const band = reader(tool);
+    if (band === undefined || band <= 0) continue;
+    const prev = bands.get(entry.trigger) ?? 0;
+    if (band > prev) bands.set(entry.trigger, band);
+  }
+  return bands;
 }

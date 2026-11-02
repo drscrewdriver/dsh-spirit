@@ -40,6 +40,12 @@ export interface MoodConfig {
   halfLifeMs: number;
   stepCap: number;
   staleAfterMs: number;
+  /**
+   * 条件化乘子通道（刀4）：trigger → band（undefined/缺省 = 关闭，派生与 v0.1 逐字一致）。
+   * 只放大**负向条目**的权重（被烫过的动作类型更压效价）；band 来自条目结构的派生缓存，
+   * 不是新数值输入源——输入侧仍只吃条目。乘子不跨 reaction 档，只改权重不改形状。
+   */
+  biasBands?: ReadonlyMap<string, number>;
 }
 
 /** 效价极性（-1..1 的内部量，只参与计算）。 */
@@ -106,7 +112,11 @@ export function deriveMood(
     let vSum = 0;
     let aSum = 0;
     for (const entry of entries) {
-      const weight = decayWeight(entry.tsMs, now, cfg.halfLifeMs) * (REACTION_GAIN[entry.reaction] ?? 1);
+      let weight = decayWeight(entry.tsMs, now, cfg.halfLifeMs) * (REACTION_GAIN[entry.reaction] ?? 1);
+      if (cfg.biasBands !== undefined && cfg.biasBands.size > 0 && (VALENCE_POLARITY[entry.trigger] ?? 0) < 0) {
+        const band = cfg.biasBands.get(entry.trigger);
+        if (band !== undefined && band > 0) weight *= 1.3;
+      }
       if (weight === 0) continue;
       weightSum += weight;
       vSum += weight * (VALENCE_POLARITY[entry.trigger] ?? 0);

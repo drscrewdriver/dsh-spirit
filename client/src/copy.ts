@@ -45,6 +45,19 @@ export const zh = {
   'panel.exported': '已导出',
   'panel.exportDry': '导出为干跑（未写文件）',
   'panel.exportFailed': '导出失败',
+  'panel.fade': '淡出（原文/一句话/退场）',
+  'panel.churn': '发卡轮次',
+  'panel.markImportant': '这条重要',
+  'panel.unmark': '撤销标记',
+  'panel.marked': '已记：这条重要',
+  'panel.unmarked': '已撤销标记',
+  'panel.markFailed': '标记失败',
+  'panel.fadeSettings': '淡出设置',
+  'panel.fadeOn': '开启滑窗淡出',
+  'panel.fadeHalfLife': '窗口半衰期（分钟）',
+  'panel.settingsSaved': '已保存（热更生效）',
+  'panel.settingsCold': '宿主不支持热更，需重启生效',
+  'panel.settingsFailed': '保存设置失败',
 } as const;
 
 export type CopyKey = keyof typeof zh;
@@ -85,6 +98,19 @@ export const en: Record<CopyKey, string> = {
   'panel.exported': 'Exported',
   'panel.exportDry': 'Dry run (no file written)',
   'panel.exportFailed': 'Export failed',
+  'panel.fade': 'fading (full/gist/held)',
+  'panel.churn': 'card re-issues',
+  'panel.markImportant': 'This mattered',
+  'panel.unmark': 'Undo mark',
+  'panel.marked': 'Marked: this mattered',
+  'panel.unmarked': 'Mark removed',
+  'panel.markFailed': 'Mark failed',
+  'panel.fadeSettings': 'fading settings',
+  'panel.fadeOn': 'Enable sliding-window fading',
+  'panel.fadeHalfLife': 'window half-life (min)',
+  'panel.settingsSaved': 'Saved (hot-applied)',
+  'panel.settingsCold': 'Host has no hot-update channel; restart to apply',
+  'panel.settingsFailed': 'Save failed',
 };
 
 export const DICTS: Record<'zh' | 'en', Record<CopyKey, string>> = { zh, en };

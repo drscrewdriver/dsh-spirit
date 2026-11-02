@@ -11,9 +11,9 @@
  * - `{ok:true, draft}` ⇒ 落库。
  */
 
-import { shouldRecord, pickNotice, pickReaction, wantsDetail } from './select.js';
+import { shouldRecord, pickNotice, pickReaction, wantsDetail, salienceOf } from './select.js';
 import { classifyTrigger, isStructuredOnly, type EventConfig } from './events.js';
-import { renderExperienceText } from './render.js';
+import { renderExperienceText, renderGistText } from './render.js';
 import { LANE_LIVE, type ExperienceDraft, type PersonaCard, type TurnSignals } from '../types.js';
 
 export type CompileResult =
@@ -47,18 +47,22 @@ export function compileTurn(signals: TurnSignals, persona: PersonaCard, cfg: Eve
   const trigger = classifyTrigger(signals, cfg);
   if (!shouldRecord(trigger, persona)) return { ok: true, draft: undefined };
   const fact = factOf(signals);
+  const notice = pickNotice(trigger, persona);
   const draft: ExperienceDraft = {
     trigger,
-    notice: pickNotice(trigger, persona),
+    notice,
     reaction: pickReaction(trigger, persona),
     text: renderExperienceText({
       trigger,
-      notice: pickNotice(trigger, persona),
+      notice,
       reaction: pickReaction(trigger, persona),
       fact,
       detail: wantsDetail(trigger, persona),
       voice: persona.voice,
     }),
+    // 淡出原料在编译期一次派生落库（刀1）：gist 只取固定表，salience 与 shouldRecord 同源重算
+    gist: renderGistText(trigger, notice),
+    salience: salienceOf(persona, trigger),
     lane: LANE_LIVE,
     fact,
   };

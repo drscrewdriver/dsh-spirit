@@ -71,11 +71,14 @@ export function registerCardObserve(ctx: Context, deps: ObserveHookDeps): void {
     return undefined;
   });
 
-  // agent 销毁即释放其运行态；会话级采集态随 session/end 语义自然淘汰（有顶在 watcher 侧）
+  // agent 销毁：先结算未竟账（刀3），再释放运行态——顺序反了 openLoops 已被清空，账永不落
   ctx.on('agent/disposed', (payload: unknown) => {
     try {
       const agent = (payload as { agent?: { id?: unknown } } | null | undefined)?.agent;
-      if (typeof agent?.id === 'string') deps.spirit.release(agent.id);
+      if (typeof agent?.id === 'string') {
+        deps.spirit.settleOnDispose(agent.id, now());
+        deps.spirit.release(agent.id);
+      }
     } catch {
       /* 销毁路径不抛 */
     }

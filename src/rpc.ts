@@ -17,7 +17,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, type SpiritConfig, type SpiritExportResult, type SpiritJournalPage, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats } from './contract.js';
+import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, SPIRIT_RANGES, type SpiritConfig, type SpiritExportResult, type SpiritFeedbackRequest, type SpiritJournalPage, type SpiritLiveSettings, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats, type SpiritSettingsView } from './contract.js';
 import type { Spirit } from './spirit.js';
 import type { SpiritStats } from './stats.js';
 import type { SessionModeStore } from './store/session-modes.js';
@@ -73,6 +73,10 @@ export interface RpcDeps {
   /** 导出件写到哪（数据目录本身）；由 index 传入，不从配置重算。 */
   dataDir: string;
   cfg: () => SpiritConfig;
+  /** 已合并 volatile 的生效配置（面板读写都优先用它）；省略时退到 cfg（老宿主线/测试代理）。 */
+  eff?: () => SpiritConfig;
+  /** volatile 写通道（面板六腿的 rpc 腿）：index 传入宿主给的真 ref；缺席 ⇒ settings-set 报不可热更。 */
+  liveRaw?: () => { get(): SpiritConfig['live']; update?: (patch: Partial<SpiritConfig['live']>) => unknown } | undefined;
   /** DRSC 探测结论（面板要如实显示 skipped/warn，不当故障也不当正常）。 */
   drscVerdict: () => SpiritVerdict;
   /**
@@ -136,6 +140,10 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
           text: entry.text,
           lane: entry.lane,
           sourceRef: entry.sourceRef ?? null,
+          // v0.2 淡出可见性：面板要能区分“库里有但不在焦点”与“没记”
+          gist: entry.gist ?? null,
+          salience: entry.salience ?? null,
+          feedbackScore: entry.feedbackScore ?? null,
         })),
       } satisfies SpiritJournalPage);
     }
@@ -218,6 +226,57 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         persisted,
       };
       return ok(result);
+    }
+    case 'experience-feedback': {
+      // 人工反馈（刀1 反馈腿）：只重排不回灌；-1..5 之外的值拒收，不静默钳位
+      const req = payload as unknown as Partial<SpiritFeedbackRequest>;
+      const entryId = str(req.entryId);
+      if (entryId === '') return err('bad-request', 'entryId 必填');
+      const score = typeof req.score === 'number' && Number.isFinite(req.score) ? Math.round(req.score) : Number.NaN;
+      if (!(score >= -1 && score <= 5)) return err('bad-request', 'score 只接受 -1..5（-1=显式撤销）');
+      const cfg = deps.cfg();
+      if (!cfg.recall.feedbackEnabled) return err('off', '反馈面未启用（recall.feedbackEnabled=false）');
+      const hit = deps.store.setFeedback(entryId, score);
+      if (!hit) return err('not-found', '条目不存在或已被取代');
+      return ok({ entryId, score, ok: true });
+    }
+    case 'settings-get': {
+      // 面板读的是**当前生效值**（live 接管后的形状），不是静态缺省
+      const live: SpiritLiveSettings = (deps.eff ?? deps.cfg)().live;
+      return ok({
+        fadeEnabled: live.fadeEnabled,
+        fadeHalfLifeMs: live.fadeHalfLifeMs,
+        feedbackEnabled: live.feedbackEnabled,
+        hotUpdatable: typeof deps.liveRaw?.()?.update === 'function',
+      } satisfies SpiritSettingsView);
+    }
+    case 'settings-set': {
+      // 只收面板可调的三键；区间单源 SPIRIT_RANGES（与 schema 同一张表，不抄第二份）
+      const ref = deps.liveRaw?.();
+      if (ref === undefined || typeof ref.update !== 'function') return err('no-volatile', '宿主 volatile 写通道不可用，改值需重启');
+      const patch: Partial<SpiritConfig['live']> = {};
+      if (typeof payload['fadeEnabled'] === 'boolean') patch.fadeEnabled = payload['fadeEnabled'];
+      if (typeof payload['feedbackEnabled'] === 'boolean') patch.feedbackEnabled = payload['feedbackEnabled'];
+      const half = payload['fadeHalfLifeMs'];
+      if (typeof half === 'number' && Number.isFinite(half)) {
+        const [lo, hi] = SPIRIT_RANGES['recall.fadeHalfLifeMs'] ?? [0, 0];
+        const v = Math.floor(half);
+        if (v < lo || v > hi) return err('bad-request', `fadeHalfLifeMs 只接受 ${lo}..${hi}`);
+        patch.fadeHalfLifeMs = v;
+      }
+      if (Object.keys(patch).length === 0) return err('bad-request', '没有可应用的合法键（只收 fadeEnabled/fadeHalfLifeMs/feedbackEnabled）');
+      try {
+        await Promise.resolve(ref.update(patch));
+      } catch (err2) {
+        return err('update-failed', err2 instanceof Error ? err2.message : String(err2));
+      }
+      const live: SpiritLiveSettings = (deps.eff ?? deps.cfg)().live;
+      return ok({
+        fadeEnabled: live.fadeEnabled,
+        fadeHalfLifeMs: live.fadeHalfLifeMs,
+        feedbackEnabled: live.feedbackEnabled,
+        hotUpdatable: true,
+      } satisfies SpiritSettingsView);
     }
     default:
       return err('not-found', `unknown endpoint ${endpoint}`);

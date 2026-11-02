@@ -205,6 +205,8 @@ export function measureRows(sessionId, rows) {
       cardRecallHits,
       cardRecentLines,
       cardToneRows,
+      /** 每轮发卡率（fingerprint churn 的离线代理：cardRows/turns，跨档重发强度）。 */
+      cardPerTurn: turns > 0 ? Number((cardRows / turns).toFixed(3)) : null,
       /** 每卡平均字节（注入体积的直接度量；无卡 ⇒ null，不是 0）。 */
       avgCardBytes: cardRows > 0 ? Math.round(cardBytes / cardRows) : null,
       /** 带署名却缺状态段的行数；> 0 说明卡形状与渲染器已不一致，报告数字不可信。 */
@@ -236,7 +238,29 @@ export function measureJournal(dbFile, sessionId) {
     for (const l of lanes) {
       if (l !== null && typeof l === 'object' && typeof l['lane'] === 'string') byLane[l['lane']] = num(l['n']);
     }
-    return { entries, byLane };
+    // v0.2 淡出代理量（缺省阈值口径，不是实机配置口径；v1 旧库无列 ⇒ 整块缺席，不编零）
+    let fade = null;
+    try {
+      const fr = db
+        .prepare(
+          `SELECT COUNT(*) AS n,
+             SUM(CASE WHEN gist IS NOT NULL AND gist <> '' THEN 1 ELSE 0 END) AS with_gist,
+             SUM(CASE WHEN salience >= 2 AND gist IS NOT NULL AND gist <> '' THEN 1 ELSE 0 END) AS fadeable
+           FROM experience WHERE session_id = ? AND superseded_by IS NULL`,
+        )
+        .get(sessionId);
+      if (fr !== null && typeof fr === 'object') {
+        fade = {
+          withGist: num(fr['with_gist']),
+          // 按缺省阈值（gistMinSalience=1/fullMinScore=550）时间足够久后可退成 held 的条数：
+          // salience≤1 的条目地板后 m≤250，不会落到 held（地板语义），故 held 代理 = 无 gist 列可降的行
+          heldProxy: num(fr['n']) - num(fr['with_gist']),
+        };
+      }
+    } catch {
+      fade = null; // v1 旧库没这些列：缺席比假零诚实
+    }
+    return { entries, byLane, fade };
   } catch (error) {
     return { entries: null, reason: error instanceof Error ? error.message : String(error) };
   } finally {
@@ -270,6 +294,9 @@ function aggregate(list) {
     /** 形状漂掉的行数（缺状态段或缺签名行）；不为 0 时本组数字不可信。 */
     shapeDriftRows: sum((s) => s.spirit.cardWithoutState + s.spirit.cardWithoutSignature),
     journalEntries: sum((s) => s.journal.entries ?? 0),
+    /** v0.2 淡出观察面（调参 SOP 的离线读数）：有残句可降的条数 / 按缺省阈值可退 held 的条数。 */
+    journalWithGist: sum((s) => s.journal.fade?.withGist ?? 0),
+    journalHeldProxy: sum((s) => s.journal.fade?.heldProxy ?? 0),
     correctionCandidates: sum((s) => s.correctionCandidates),
     /** 组内均值：每轮输入 token 与缓存命中率。样本量写在旁边，别让它被当显著结论。 */
     meanInputTokensPerTurn: Math.round(sum((s) => s.usage.inputTokens) / Math.max(1, sum((s) => s.turns))),
@@ -344,7 +371,10 @@ function renderText(report) {
       `${name}：会话 ${agg.sessions} · 轮次 ${agg.turns} · 回复 ${agg.assistantChars} 字符 · `
       + `输入 ${agg.inputTokens} tok（均值 ${agg.meanInputTokensPerTurn}/轮） · 缓存读 ${agg.cacheReadTokens} tok（均值命中率 ${agg.meanCacheHitRatio ?? '—'}）`,
     );
-    lines.push(`  卡行 ${agg.cardRows}（${agg.cardBytes} B，其中带「想起」${agg.cardRecallHits}） · 手记 ${agg.journalEntries} 条 · 纠正候选 ${agg.correctionCandidates}`);
+    lines.push(`  卡行 ${agg.cardRows}（${agg.cardBytes} B，其中带「想起」${agg.cardRecallHits}；每轮发卡 ${(agg.cardRows / Math.max(1, agg.turns)).toFixed(2)}） · 手记 ${agg.journalEntries} 条 · 纠正候选 ${agg.correctionCandidates}`);
+    if (agg.journalWithGist > 0 || agg.journalHeldProxy > 0) {
+      lines.push(`  淡出（缺省阈值代理）：有残句可降 ${agg.journalWithGist} · 无残句可退 held ${agg.journalHeldProxy}`);
+    }
     if (agg.shapeDriftRows > 0) lines.push(`  ⚠ ${agg.shapeDriftRows} 行卡形状与渲染器不一致（缺状态段或签名行）——本组数字不可信`);
   }
   if (report.groups.injected !== null && report.groups.bypassed !== null) {

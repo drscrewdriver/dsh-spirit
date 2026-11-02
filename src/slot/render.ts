@@ -42,6 +42,11 @@ export interface CardInput {
   recalled: readonly string[];
   /** 跨会话基调行（仅首轮给）。 */
   tone?: string;
+  /**
+   * 条件化（刀4）的行为倾向覆写短语：只换状态段的 tendency 半句，
+   * 档位词/声明行/签名行不动（回声判据与零字节门不受影响）；undefined ⇒ 照旧。
+   */
+  tendencyOverride?: string;
   maxBytes: number;
   /** 单条片段的字符顶（`recall.maxCharsPerEntry`）。 */
   maxCharsPerEntry: number;
@@ -92,7 +97,8 @@ export function renderCard(input: CardInput): CardResult {
   };
 
   // 状态段优先：装不下状态段就没有注入的意义
-  if (!pushIfFits(`状态：${escapeFrame(cell.label)}·${escapeFrame(cell.tendency)}`)) {
+  const tendency = input.tendencyOverride ?? cell.tendency;
+  if (!pushIfFits(`状态：${escapeFrame(cell.label)}·${escapeFrame(tendency)}`)) {
     return { text: '', bytes: 0, used: { status: 0, recent: 0, recalled: 0, tone: 0 }, dropped: 1 };
   }
   used.status = 1;

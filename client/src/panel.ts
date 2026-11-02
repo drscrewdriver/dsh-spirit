@@ -12,7 +12,7 @@
  */
 import { createElement, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 
-import type { SpiritJournalPage, SpiritSessionStats } from '../../src/contract.js';
+import type { SpiritJournalPage, SpiritSessionStats, SpiritSettingsView } from '../../src/contract.js';
 import type { RpcFn } from './rpc.js';
 import { copyOf } from './copy.js';
 import { sessionIdOf, type SeatProps } from './env.js';
@@ -29,6 +29,8 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
   const copy = copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
   const [stats, setStats] = useState<SpiritSessionStats | null>(null);
   const [page, setPage] = useState<SpiritJournalPage | null>(null);
+  const [settings, setSettings] = useState<SpiritSettingsView | null>(null);
+  const [halfLifeDraft, setHalfLifeDraft] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const seqRef = useRef(0);
   const mountedRef = useRef(true);
@@ -52,6 +54,13 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
       const tail = await rpc('journal-tail', target === '' ? {} : { sessionId: target, offset: 0, limit: 30 });
       if (token !== seqRef.current || !mountedRef.current) return;
       setPage(tail.ok ? tail.value : null);
+      // 面板可调腿：读当前生效值（不是静态缺省）；读失败不阻断主数据链
+      const s = await rpc('settings-get', {});
+      if (token !== seqRef.current || !mountedRef.current) return;
+      if (s.ok) {
+        setSettings(s.value);
+        setHalfLifeDraft(String(Math.round(s.value.fadeHalfLifeMs / 60_000)));
+      }
     } catch (err) {
       if (token !== seqRef.current || !mountedRef.current) return;
       setError(err instanceof Error ? err.message : String(err));
@@ -104,6 +113,39 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
   };
 
   const items = page?.rows ?? [];
+  /**
+   * 人工反馈（刀1 反馈腿）：只重排进卡优先序，不改条目本体、不回灌派生分。
+   * 两键形态：「这条重要」= 打分；已打过的行给「撤销」=-1（显式动作，不是默认值）。
+   */
+  const doMark = (entryId: string, score: number) => {
+    if (rpc === undefined) return;
+    setExportNote(null);
+    void rpc('experience-feedback', { entryId, score })
+      .then((result) => {
+        setExportNote(result.ok ? (score > 0 ? copy['panel.marked'] : copy['panel.unmarked']) : `${copy['panel.markFailed']}: ${result.error.message}`);
+        void load();
+      })
+      .catch(() => setExportNote(copy['panel.markFailed']));
+  };
+  const fade = stats?.fade;
+  /**
+   * 写 volatile 三键中的两个（开关 + 半衰期）：反馈闸不常改，只随 fadeEnabled 一起开关。
+   * 保存后重拉一次 settings-get 回显真值（update 可能被宿主拒 → 面板不能自报已生效）。
+   */
+  const saveSettings = (patch: { fadeEnabled?: boolean; fadeHalfLifeMs?: number }) => {
+    if (rpc === undefined) return;
+    setExportNote(null);
+    void rpc('settings-set', patch)
+      .then((result) => {
+        if (!result.ok) {
+          setExportNote(`${copy['panel.settingsFailed']}: ${result.error.message}`);
+          return;
+        }
+        setSettings(result.value);
+        setExportNote(result.value.hotUpdatable ? copy['panel.settingsSaved'] : copy['panel.settingsCold']);
+      })
+      .catch(() => setExportNote(copy['panel.settingsFailed']));
+  };
   return createElement(
     'section',
     { style: { padding: '12px 16px' } },
@@ -129,6 +171,36 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
           `${copy['panel.injected']} ${stats.injectedTurns} → ${stats.confirmedTurns} · ${stats.lastRecallHits} · ${copy['panel.confirmedHint']}`,
         ),
         createElement('p', { style: mutedStyle }, `${copy['panel.drsc']}：${copy[DRSC_VERDICT_KEYS[stats.drscVerdict]]}`),
+        // 淡出指标行（调参 SOP 的读数腿）：只在淡出真跑过时出现，关闸时不占行不编零
+        fade !== undefined && fade.pool > 0
+          ? createElement('p', { style: mutedStyle }, `${copy['panel.fade']}：${fade.full}/${fade.gist}/${fade.held}${fade.marked > 0 ? ` · ★${fade.marked}` : ''} · ${copy['panel.churn']} ${fade.churn}`)
+          : null,
+        // 面板可调腿（六腿的写腿）：仅当 volatile 通道可读时出现
+        settings === null
+          ? null
+          : createElement(
+            'div',
+            { style: { display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginTop: 6 } },
+            createElement('span', { style: mutedStyle }, copy['panel.fadeSettings']),
+            createElement(
+              'label',
+              { style: { display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 } },
+              createElement('input', { type: 'checkbox', checked: settings.fadeEnabled, onChange: (e: { target: { checked: boolean } }) => saveSettings({ fadeEnabled: e.target.checked }) }),
+              copy['panel.fadeOn'],
+            ),
+            createElement('span', { style: mutedStyle }, copy['panel.fadeHalfLife']),
+            createElement('input', {
+              type: 'number', min: 0, value: halfLifeDraft, style: { width: 72 },
+              onChange: (e: { target: { value: string } }) => setHalfLifeDraft(e.target.value),
+              onBlur: () => {
+                const minutes = Number.parseFloat(halfLifeDraft);
+                if (Number.isFinite(minutes) && Math.round(minutes * 60_000) !== settings.fadeHalfLifeMs) saveSettings({ fadeHalfLifeMs: Math.max(0, Math.round(minutes * 60_000)) });
+              },
+            }),
+            settings.hotUpdatable
+              ? null
+              : createElement('span', { style: mutedStyle }, copy['panel.settingsCold']),
+          ),
       ),
     items.length === 0
       ? null
@@ -148,6 +220,14 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
                   'div',
                   { style: mutedStyle },
                   `${copy['panel.turn']} ${item.turnSeq} · ${copy['panel.lane']} ${item.lane === 'drsc' ? copy['panel.laneDrsc'] : copy['panel.laneLive']}`,
+                ),
+                // 反馈只影响“先进哪条”；已打分的行给撤销入口（显式）
+                createElement(
+                  'div',
+                  { style: { display: 'flex', gap: 8, marginTop: 4 } },
+                  typeof item.feedbackScore === 'number' && item.feedbackScore > 0
+                    ? createElement('button', { type: 'button', style: mutedStyle, onClick: () => doMark(item.id, -1) }, copy['panel.unmark'])
+                    : createElement('button', { type: 'button', style: mutedStyle, onClick: () => doMark(item.id, 5) }, copy['panel.markImportant']),
                 ),
               ),
             ),

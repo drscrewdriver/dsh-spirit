@@ -9,7 +9,7 @@
  * 重启后从 0 开始是诚实的，伪造历史反而误导）。
  */
 
-import type { SpiritMoodView, SpiritSessionStats } from './contract.js';
+import type { FadeStats, SpiritMoodView, SpiritSessionStats } from './contract.js';
 import type { Gate, PreStepOutcome } from './spirit.js';
 import type { SpiritVerdict, Mood } from './types.js';
 
@@ -24,10 +24,20 @@ interface Counters {
   lastRecallHits: number;
   lastOutcome: Gate;
   mood: Mood | undefined;
+  /** 最近一次状态段的倾向文案（bias 覆写时非空；面板展示位读它）。 */
+  tendency?: string;
   drscVerdict: SpiritVerdict;
   degraded: boolean;
   entryCount: number;
   updatedAt: number;
+  /** v0.2 淡出累计（调参 SOP 指标；未启用时保持全 0）。 */
+  fadeFull: number;
+  fadeGist: number;
+  fadeHeld: number;
+  fadeMarked: number;
+  fadePool: number;
+  /** 发卡轮次（fingerprint churn 的代理量：每注入一张 +1）。 */
+  churn: number;
 }
 
 export interface StatsInput {
@@ -41,6 +51,8 @@ export interface StatsInput {
   mood: Mood | undefined;
   drscVerdict: SpiritVerdict;
   degraded: boolean;
+  /** 本轮状态段实际展示的倾向短语（含条件化覆写；无覆写时为空串，面板退到格子默认文案）。 */
+  tendency?: string;
 }
 
 export class SpiritStats {
@@ -62,6 +74,12 @@ export class SpiritStats {
         drscVerdict: 'skipped',
         degraded: false,
         entryCount: 0,
+        fadeFull: 0,
+        fadeGist: 0,
+        fadeHeld: 0,
+        fadeMarked: 0,
+        fadePool: 0,
+        churn: 0,
         updatedAt: now,
       };
       this.byAgent.set(agentId, row);
@@ -80,9 +98,11 @@ export class SpiritStats {
     row.degraded = input.degraded;
     row.lastRecallHits = input.recallHits;
     row.lastOutcome = input.outcome.reason;
+    if (input.tendency !== undefined) row.tendency = input.tendency;
     switch (input.outcome.kind) {
       case 'injected':
         row.injectedTurns += 1;
+        row.churn += 1;
         row.lastCardBytes = input.outcome.bytes;
         break;
       case 'recorded':
@@ -103,6 +123,17 @@ export class SpiritStats {
     if (row !== undefined) row.confirmedTurns += 1;
   }
 
+  /** 淡出形态分布累加（调参 SOP 的指标腿；只在 fadeEnabled 时会被调到）。 */
+  noteFade(agentId: string, stats: FadeStats): void {
+    const row = this.byAgent.get(agentId);
+    if (row === undefined) return;
+    row.fadeFull += stats.full;
+    row.fadeGist += stats.gist;
+    row.fadeHeld += stats.held;
+    row.fadeMarked += stats.marked;
+    row.fadePool += stats.pool;
+  }
+
   /** agent 销毁即释放（不然长会话列表会无界攒条目）。 */
   release(agentId: string): void {
     this.byAgent.delete(agentId);
@@ -115,7 +146,7 @@ export class SpiritStats {
     const mood: SpiritMoodView | null =
       row.mood === undefined
         ? null
-        : { valence: row.mood.valence, arousal: row.mood.arousal, label: row.mood.label, revision: row.mood.revision, tendency: '' };
+        : { valence: row.mood.valence, arousal: row.mood.arousal, label: row.mood.label, revision: row.mood.revision, tendency: row.tendency ?? '' };
     return {
       sessionId: row.sessionId,
       entryCount: row.entryCount,
@@ -133,6 +164,7 @@ export class SpiritStats {
       degraded: row.degraded,
       mood,
       mode,
+      fade: { full: row.fadeFull, gist: row.fadeGist, held: row.fadeHeld, marked: row.fadeMarked, pool: row.fadePool, churn: row.churn },
     };
   }
 

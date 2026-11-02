@@ -55,6 +55,9 @@ export const SPIRIT_OPS = [
   'persona-get',
   'session-mode',
   'session-mode-get',
+  'experience-feedback',
+  'settings-get',
+  'settings-set',
 ] as const;
 export type SpiritOp = (typeof SPIRIT_OPS)[number];
 
@@ -100,6 +103,28 @@ export interface SpiritExportRequest {
   dryRun?: boolean;
 }
 
+export interface SpiritFeedbackRequest {
+  /** 条目 id（journal-tail 回给的）。 */
+  entryId: string;
+  /** -1..5（对齐 prime 反馈域）；-1 = 显式撤销（必须显式动作，不是默认值）。 */
+  score: number;
+}
+
+/** 面板可调的 volatile 键（六腿的写腿；只收这三键，其余属部署面）。 */
+export interface SpiritSettingsRequest {
+  fadeEnabled?: boolean;
+  fadeHalfLifeMs?: number;
+  feedbackEnabled?: boolean;
+}
+
+export interface SpiritSettingsView {
+  fadeEnabled: boolean;
+  fadeHalfLifeMs: number;
+  feedbackEnabled: boolean;
+  /** 热更通道是否真能落盘（宿主 volatile 不可写时为 false，面板要如实标重启生效）。 */
+  hotUpdatable: boolean;
+}
+
 /** 端点 → 请求/响应类型的查表（两端共享的契约单一事实源）。 */
 export interface SpiritRequestMap {
   'session-stats': { sessionId?: string };
@@ -108,6 +133,9 @@ export interface SpiritRequestMap {
   'persona-get': Record<string, never>;
   'session-mode': SpiritSessionModeRequest;
   'session-mode-get': { sessionId: string };
+  'experience-feedback': SpiritFeedbackRequest;
+  'settings-get': Record<string, never>;
+  'settings-set': SpiritSettingsRequest;
 }
 
 export interface SpiritResponseMap {
@@ -117,6 +145,9 @@ export interface SpiritResponseMap {
   'persona-get': SpiritPersonaView;
   'session-mode': SpiritSessionModeResult;
   'session-mode-get': SpiritSessionModeResult;
+  'experience-feedback': { entryId: string; score: number; ok: boolean };
+  'settings-get': SpiritSettingsView;
+  'settings-set': SpiritSettingsView;
 }
 
 /** 端点字面量类型（client 与 host 白名单共用）。 */
@@ -160,6 +191,11 @@ export interface SpiritSessionStats {
   mood: SpiritMoodView | null;
   /** 会话级覆盖现状。 */
   mode: { off: boolean; bypass: boolean };
+  /**
+   * v0.2 淡出计数族（调参 SOP 的指标腿；累计整数，未启用淡出时全 0/缺省）：
+   * full/gist/held = 历轮形态分布累加；pool = 候选池累加；churn = 发卡轮次（重发强度代理）。
+   */
+  fade?: { full: number; gist: number; held: number; marked: number; pool: number; churn: number };
 }
 
 /** 手记分页视图（读库投影；库是真源，不是文档）。 */
@@ -176,6 +212,12 @@ export interface SpiritJournalPage {
     text: string;
     lane: string;
     sourceRef: string | null;
+    /** v0.2：一句话压缩残句（旧行/缺格 = null）。 */
+    gist: string | null;
+    /** v0.2：人格在意度 0..2（v1 旧行 = null，不假装知道旧权重）。 */
+    salience: number | null;
+    /** v0.2：人工反馈 -1..5（未打分 = null，保持原序）。 */
+    feedbackScore: number | null;
   }>;
   total: number;
   offset: number;
@@ -236,6 +278,37 @@ export interface SpiritConfig {
     maxCharsPerEntry: number;
     /** 条目近因半衰期（ms）。 */
     halfLifeMs: number;
+    /**
+     * 滑窗淡出总闸（v0.2 新能力，缺省**关**：关=注入行为与 v0.1 逐字节一致，灰度闸）。
+     * 开=条目按 salience×注意力衰减分档：full 原文 / gist 一句话 / held 不上卡。
+     */
+    fadeEnabled: boolean;
+    /**
+     * 注意力衰减半衰期（ms）——淡出档位的 Δt 尺度，与 `halfLifeMs`（排序用）解耦。
+     * 缺省取情绪尺度（小时，见 decay.ts 注：与 prime 记忆面的“天”同式不同尺）；
+     * 面板可调（调参 SOP 见 README：held 占比过高→拉长；重发率升高→加宽量化档）。
+     */
+    fadeHalfLifeMs: number;
+    /** full 档分数地板（**千分位**整数，550=0.55；m = (salience/2)×注意力衰减；反馈只重排不回灌 m）。 */
+    fadeFullMinScore: number;
+    /** gist 档分数地板（千分位，250=0.25；低于 gist 地板 ⇒ held 不上卡）。 */
+    fadeGistMinScore: number;
+    /** gist 档的最低 salience（弱条目不派生 gist，直接 held，宁缺毋造）。 */
+    gistMinSalience: number;
+    /** 人工反馈重排总闸（移植 prime recall-usage：-1..5 手打只重排，**不回灌派生分**）。 */
+    feedbackEnabled: boolean;
+  };
+  /** 未竟账（v0.2）：会话收尾的结构计数，新会话开局带出一行；缺省关（灰度）。 */
+  ledger: {
+    enabled: boolean;
+    /** 账行过期后不再带出（ms）。0 = 永不过期（配合有顶 GC，默认给顶）。 */
+    maxAgeMs: number;
+  };
+  /** 条件化 bias（v0.2）：强负体验给同类动作短期抑制（三档词）；缺省关（灰度）。 */
+  bias: {
+    enabled: boolean;
+    /** bias 半衰期（ms）：派生缓存表的过期尺度。 */
+    halfLifeMs: number;
   };
   tier: {
     /** 单轮最多跨几格（防人格抽动）。 */
@@ -294,6 +367,11 @@ export interface SpiritLiveSettings {
   recallMaxResults: number;
   /** 保留天数（同样补进 volatile；0 = 永久）。 */
   retentionDays: number;
+  /** 淡出开关与窗口尺度热更（面板六腿的 volatile 腿；阈值属部署面，不热更）。 */
+  fadeEnabled: boolean;
+  fadeHalfLifeMs: number;
+  /** 人工反馈重排热更（只重排不回灌；闸关=卡片序与闸开前一致）。 */
+  feedbackEnabled: boolean;
 }
 
 /**
@@ -321,7 +399,20 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
   dataDir: '',
   persona: { enabled: true, budgetBytes: 700 },
   card: { maxBytes: 512, recentK: 2, crossSessionM: 4 },
-  recall: { timeoutMs: 800, maxResults: SPIRIT_DEFAULTS_RECALL_MAX, maxCharsPerEntry: 120, halfLifeMs: 5_400_000 },
+  recall: {
+    timeoutMs: 800,
+    maxResults: SPIRIT_DEFAULTS_RECALL_MAX,
+    maxCharsPerEntry: 120,
+    halfLifeMs: 5_400_000,
+    fadeEnabled: false,
+    fadeHalfLifeMs: 5_400_000,
+    fadeFullMinScore: 550,
+    fadeGistMinScore: 250,
+    gistMinSalience: 1,
+    feedbackEnabled: true,
+  },
+  ledger: { enabled: false, maxAgeMs: 604_800_000 },
+  bias: { enabled: false, halfLifeMs: 5_400_000 },
   tier: { stepCap: 1, staleAfterMs: 600_000 },
   journal: { retentionDays: SPIRIT_DEFAULTS_RETENTION_DAYS, dryRun: true },
   capture: { userSnippet: false, maxQuoteChars: 160, gapThresholdMs: 180_000 },
@@ -341,6 +432,9 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
     drscEnabled: true,
     recallMaxResults: SPIRIT_DEFAULTS_RECALL_MAX,
     retentionDays: SPIRIT_DEFAULTS_RETENTION_DAYS,
+    fadeEnabled: false,
+    fadeHalfLifeMs: 5_400_000,
+    feedbackEnabled: true,
   },
 };
 
@@ -354,6 +448,10 @@ export const SPIRIT_RANGES: Record<string, readonly [number, number]> = {
   'recall.maxResults': [1, 12],
   'recall.maxCharsPerEntry': [40, 400],
   'recall.halfLifeMs': [0, 604_800_000],
+  'recall.fadeHalfLifeMs': [0, 2_592_000_000],
+  'recall.fadeFullMinScore': [0, 1_000],
+  'recall.fadeGistMinScore': [0, 1_000],
+  'recall.gistMinSalience': [0, 2],
   'tier.stepCap': [1, 2],
   'tier.staleAfterMs': [0, 86_400_000],
   'journal.retentionDays': [0, 3_650],
@@ -361,15 +459,27 @@ export const SPIRIT_RANGES: Record<string, readonly [number, number]> = {
   'capture.gapThresholdMs': [10_000, 3_600_000],
   'drsc.probeCacheTtlMs': [1_000, 600_000],
   'drsc.timeoutMs': [200, 20_000],
+  'ledger.maxAgeMs': [0, 2_592_000_000],
+  'bias.halfLifeMs': [0, 604_800_000],
 };
+
+/** 单轮淡出形态分布（stats/ab 的计数原料；都是整数计数，无对外数值语义）。 */
+export interface FadeStats {
+  full: number;
+  gist: number;
+  held: number;
+  pool: number;
+  /** 候选池里被人标过“重要”（feedback>0）的条数——反馈分布的累计面。 */
+  marked: number;
+}
 
 // ─────────────────────────────────────────────────────────── 版本与文件
 
-/** SQLite schema 版本；跨版本打开明确拒绝，不静默改库。 */
-export const SPIRIT_DB_SCHEMA_VERSION = 1;
+/** SQLite schema 版本；跨版本打开明确拒绝，不静默改库（v1→v2 提供正向迁移）。 */
+export const SPIRIT_DB_SCHEMA_VERSION = 2;
 /** `persona.json` 文件形状版本。 */
 export const SPIRIT_PERSONA_FILE_VERSION = 1;
 /** `session-modes.json` 文件形状版本。 */
 export const SPIRIT_MODES_FILE_VERSION = 1;
 /** 插件版本（与 package.json / dsh.plugin.json 同串，由门禁核对）。 */
-export const SPIRIT_VERSION = '0.1.1';
+export const SPIRIT_VERSION = '0.2.0';

@@ -78,6 +78,17 @@ spirit 只调用它的 `op` 面（`status` / `session` / `search`），**从不�
 - **关掉就是零字节**：真机把“装了但 `enabled:false`”与“根本没装”两臂的请求体逐类配对比过，
   spirit 自身贡献 0 字节（无注入行、无人格区、`system` 完全相同）；唯一的 40B 差异来自宿主
   自己列出的已安装插件清单（那是宿主行为，与插件启停无关）。
+- **淡出是逐出注意力，不是删记忆**：存储侧依旧 append-only 一个字节不删；`fadeEnabled`
+  开启后条目按 salience×注意力衰减分三态——原文(full)→一句话(gist)→不上卡(held)。
+  gist 只能编译期从固定表派生落库（运行时改写记忆=伪造）；衰减权重与姊妹引擎同式
+  `0.5^(Δt/halfLife)` 且同地板 0.5：**时间单独永远至多让一条经历“变淡一半”**，
+  held 经“无残句可降/低 salience 档/阈值调高”三条路达成，不靠把记忆归零。
+- **反馈两轴分离**：手打分（-1..5）只重排进卡优先序，**不回灌**衰减曲线与情绪派生——
+  打分是“人觉得重不重要”，衰减是“客观变淡”，合并就变成自我强化回路。
+- **未竟账只吃结构计数**：新会话开局那行“上次有口子没放下”只能来自 todo 快照的整数计数，
+  计数真为 3 才说 3；dispose 与 turn/end 双触发，幂等由 id 在存储层收敛。
+- **条件化不是控制面**：bias 只换卡上状态段的倾向半句（三档词），不碰 decision、不注钩子、
+  不对外报数；验收用例钉“开/关两臂除 text 外全等”。
 
 ## 想验证它到底有没有用
 
@@ -107,17 +118,55 @@ npm run ab -- --home "$DSH_HOME" --json   # 机读
 
 键名与默认值的唯一事实源是 [`src/contract.ts`](src/contract.ts)（部署面契约，不可更名）。
 常用项：`card.maxBytes`、`card.recentK`、`card.crossSessionM`、`recall.halfLifeMs`、`recall.timeoutMs`、
-`tier.stepCap`、`tier.staleAfterMs`、`journal.retentionDays`、`drsc.enabled`。
+`recall.fadeEnabled`（淡出总闸，**缺省关**）、`recall.fadeHalfLifeMs`（窗口尺度，volatile 可热更）、
+`recall.fadeFullMinScore`/`fadeGistMinScore`（千分位双阈值）、`recall.gistMinSalience`、
+`recall.feedbackEnabled`、`ledger.enabled`/`maxAgeMs`（未竟账，缺省关）、
+`bias.enabled`/`halfLifeMs`（条件化，缺省关）、`tier.stepCap`、`tier.staleAfterMs`、
+`journal.retentionDays`、`drsc.enabled`。
 每项在 [`cordis.patch.yml`](cordis.patch.yml) 的注释里都有一行说明。
+
+> ⚠ `fadeHalfLifeMs` 属 volatile 接管键：生效值永远来自 `live.fadeHalfLifeMs`，静态节同名的
+> 那份只是缺省——改静态不改 live 不会生效（集成调参时真实踩过这个坑，测试里也踩穿过）。
 
 数据目录：`$DSH_HOME/spirit`（`spirit.db` / `persona.json` / `persona-history.jsonl` / `session-modes.json` / `archive/`）。
 
 热改路径：`live.*` 节标了 `.volatile()`，改 `cordis.patch.yml` 不重启即生效；会话级开关走输入栏 pill。
-（0.2.0-rc.2 的 web 壳子不渲染 volatile 自动表单，所以这些键不在设置页上。）
+淡出三键（`live.fadeEnabled`/`fadeHalfLifeMs`/`feedbackEnabled`）另走面板「淡出设置」行与 `settings-get/set` RPC（写 volatile ref；不可热更时面板如实标“需重启”）。
+（0.2.0-rc.2 的 web 壳子不渲染 volatile 自动表单，所以这些键不在设置页上；面板的 `settings-*` RPC 腿不受此限。）
 
-## 已知边界（v0.1）
+## 遗忘怎么调：观察—pin—对照—定向—灰度（v0.2 淡出/未竟/条件化的调参 SOP）
 
-- 不做长期情绪检索、图谱、矛盾裁决、人设自动演化（那是记忆引擎与 soul 的地盘）
+淡出参数没有“校准过的最优值”，只有“这台机器上观察出来的合适值”，所以给可执行的五步：
+
+1. **指标先行**：面板「淡出（原文/一句话/退场）」行读每会话累计的 full/gist/held 占比与发卡轮次；
+   离线用 `npm run ab` 的「每轮发卡率」与「淡出代理」行归因。
+2. **基线可 pin**：`live.fadeHalfLifeMs=0` 冻结窗口（只按 salience 定档）与 `fadeEnabled=false`
+   是两个对照臂——任何调参结论都要先跟 pin 臂比过才作数。
+3. **A/B 双跑**：旁路臂=淡出关，注入臂=淡出开；重点看每轮发卡率（跨档重发强度）与卡字节。
+4. **调整方向判据**（不凭观感，落证据）：
+   - held 占比高且反馈高分多落在 held 项 → 半衰期调长或 gistMinSalience 下调；
+   - 每轮发卡率升高（档跳频繁）→ 量化档加宽（拉大 fadeHalfLifeMs 或降低 fadeGistMinScore）；
+   - 卡长期只有状态段、近因段空 → 候选池/阈值过严，回调 fadeFullMinScore。
+5. **灰度序**：缺省关 → 单会话开 → 反馈闭环数据攒够两个周期再议翻默认。
+
+可调项封顶四类（半衰期/双阈值/gist 最低档/窗口条数走 card.recentK）；`card.maxBytes` 与地板 0.5
+不在面板暴露——防止把窗口调到每轮跨档 churn，或把“淡出”调成“失忆”。
+
+## 与姊妹记忆引擎的 echo 链（v0.2 钉住的唯一活口）
+
+两仓正交靠三道既有守卫：注入署名 `plugin:spirit` 被对方 L0 入口过滤、双库互不读写、
+grep 断言同装跑真回合。但对方证据面**原样收 assistant 发言**——模型若复述卡语，会沿
+复述→蒸馏→画像的路把体验洗成事实。这条链 spirit 单方面修不了（修它要动对方的提取面，
+而解耦闸禁止 spirit 出现对方包名字面量），交付的是两条压风险的纪律：
+卡语汇保持不可蒸馏语（档位词短句、不陈述因果，复述进事实层也无信息量），
+`tests/echo-chain.test.ts` 把“语汇整段可识别”钉成 CI 断言，改版偷换文案会即红。
+
+## 已知边界（v0.2）
+
+- 不做长期情绪检索的**语义层**（矛盾裁决、图谱、人设自动演化仍不在——淡出/gist 是注入侧形态，
+  不是新的事实索引）；条目库依旧不建 FTS5
+- 淡出/未竟账/条件化三面**缺省全关**：实机最佳参数集尚未观察出来；开了的单会话数据只进
+  派生表与卡文本，关闸后行为与 v0.1 逐字节一致（有回归用例钉住）
 - 中性轮默认不记（`salience.neutral = 0`），否则库会退化成逐轮流水账
 - 真机 web 冒烟已过（宿主 0.2.0-rc.2，隔离 `DSH_HOME`）：宿主半装载、面板六端点（含 403/404/405 三面防线）、
   pill 三态写盘与重启读回、设置页「手记」分节渲染与导出落盘均逐项验过；

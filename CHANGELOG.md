@@ -2,6 +2,48 @@
 
 本项目的所有值得记录的变更都写在这里。版本号遵循语义化版本。
 
+## 0.2.0
+
+主体性流程记录：**遗忘作为设计**——滑窗淡出、未竟账、条件化、反馈重排，四件全部**缺省关**（灰度闸链：
+`live.fadeEnabled` 与各自静态闸取与，关闸后行为与 0.1.x 逐字节一致，有回归用例钉住）。
+
+### 新增
+
+- **滑窗淡出（`recall.fade*`）**：条目按 `m=(salience/2)×注意力权重` 分三态——原文 full / 一句话 gist /
+  不上卡 held。权重与姊妹引擎同式 `0.5^(Δt/halfLife)` 同地板 0.5（时间至多让记忆“变淡一半”，
+  held 经“无残句/低档/阈值调高”三路达成）；Δt 按半衰期**量化后才进指纹**，档内字节稳定、
+  重发只发生在跨档（护住 unchanged 门与“同档同召回⇒字节全等”红线）。gist 编译期从固定表
+  `GIST_TABLE` 派生落库（运行时改写记忆=伪造）。
+- **DB schema v1→v2**：`experience` 加 `salience`/`gist`/`feedback_score` 三列（全部加法迁移，
+  `PRAGMA table_info` 先查后加，幂等）；新表 `session_ledger`（未竟账，基元=session）与
+  `action_bias`（条件化，定性为**可重算派生缓存**，豁免无-UPDATE 纪律并在 schema 头注声明）。
+- **未竟账（`ledger.*`）**：`agent/disposed` 主触发 + `turn/end` 兑底（顺序：先结算后释放）；
+  只吃 todo 快照的结构计数（`watcher.openLoops` 为只读快照——中途读不吃计数，集成调出的真 bug
+  已修）；措辞档位化，计数真为 3 才说 3；maxAge 过期不带出，镜像有顶。
+- **条件化（`bias.*`）**：强负体验给同名动作短期抑制（三档词：hesitant/guarded），turn/end 冷路径
+  upsert、pre-step O(1) 主键查表（禁每轮扫表）；两通道：卡状态段倾向短语覆写（renderCard.tendencyOverride）
+  与 derive 乘子（只放大负向条目权重，不跨 reaction 档、不新增输入）；**不碰 decision、不注
+  钩子、不对外报数**；验收钉“开/关两臂除 text 外全等”与“缺省乘子集与无乘子逐字一致”。
+- **人工反馈重排（`recall.feedbackEnabled`）**：移植姊妹引擎 recall-usage 形态，-1..5 手打
+  （面板两键：这条重要/撤销）；**只重排进卡优先序，不回灌衰减曲线与情绪派生**（两轴分离）。
+- **echo 链断言（`tests/echo-chain.test.ts` + `src/util/echo-phrases.ts`）**：短语集单源派生自九档
+  label/tendency+签名行+gist；CI 档钉“卡语整段可识别”与入口分流规则；真机档（对方 L1 导出面
+  不含 spirit 短语）列入发版前置。
+- **面板六腿**：淡出开关/窗口尺度经 volatile 接管，新增 rpc `settings-get`/`settings-set`（区间单源 SPIRIT_RANGES；宿主 volatile 写通道不可用时如实报 `no-volatile` 需重启），
+  panel 补输入框（开关 + 半衰期分钟）与淡出指标行；手记分页回显 gist/salience/feedback，
+  stats 新增淡出计数族（full/gist/held/marked/pool/churn）；`ab-report` 新增每轮发卡率与淡出代理量。
+- **调参 SOP**（README）：指标→pin→A/B→方向判据→灰度序；可调项封顶四类，`card.maxBytes` 与
+  地板 0.5 不在面板暴露。
+
+### 变更
+
+- `SpiritJournalPage.rows` 新增 `gist`/`salience`/`feedbackScore` 三字段（null 合法，v1 旧行不假装知道）。
+- 未竟账/条件化共享 `live.fadeEnabled` 总闸：防止“只开一半”的半新半旧注入形态。
+
+### 未做（有意）
+
+- 冷路径叙事块（模型调用×DRSC 滞后源×画像污染放大三重风险，且依赖 echo 链真机档先落地）。
+
 ## 0.1.0
 
 第一个可用版本：**第一人称体验条目库 + 双路即时召回**。

@@ -26,8 +26,9 @@ export const PAGE_MAX = 200;
 
 const INSERT_SQL = `INSERT INTO experience (
     id, session_id, workspace_id, turn_seq, ts_ms, trigger, notice, reaction,
-    text, fact_json, lane, source_ref, persona_revision, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    text, fact_json, lane, source_ref, persona_revision, updated_at,
+    gist, salience
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 const INSERT_CUE_SQL = `INSERT INTO experience_cues (entry_id, cue) VALUES (?, ?)`;
 
@@ -48,6 +49,10 @@ interface Row {
   persona_revision: number;
   superseded_by: string | null;
   updated_at: number;
+  // v2 列（对 v1 旧库不存在，读侧一律可缺省；写侧由 append/淡出派生供给）
+  gist?: string | null;
+  salience?: number;
+  feedback_score?: number | null;
 }
 
 export interface AppendContext {
@@ -84,6 +89,8 @@ function toEntry(row: Row): ExperienceEntry {
   } catch {
     fact = {}; // fact_json 坏了不影响这条经历本身：丢细节、留句子
   }
+  const salience = typeof row.salience === 'number' && Number.isFinite(row.salience) ? row.salience : undefined;
+  const feedback = typeof row.feedback_score === 'number' && Number.isFinite(row.feedback_score) ? row.feedback_score : undefined;
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -94,11 +101,14 @@ function toEntry(row: Row): ExperienceEntry {
     notice: row.notice as ExperienceEntry['notice'],
     reaction: row.reaction as ExperienceEntry['reaction'],
     text: row.text,
+    gist: typeof row.gist === 'string' && row.gist !== '' ? row.gist : undefined,
     fact,
     lane: row.lane as ExperienceEntry['lane'],
     sourceRef: row.source_ref ?? undefined,
     personaRevision: row.persona_revision,
     supersededBy: row.superseded_by ?? undefined,
+    ...(salience === undefined ? {} : { salience }),
+    ...(feedback === undefined ? {} : { feedbackScore: feedback }),
     updatedAt: row.updated_at,
   };
 }
@@ -218,6 +228,8 @@ export class ExperienceStore {
           entry.sourceRef ?? null,
           entry.personaRevision,
           entry.updatedAt,
+          entry.gist ?? null,
+          entry.salience ?? 0,
         ]);
         for (const cue of cues) this.run(INSERT_CUE_SQL, [entry.id, cue]);
       });
@@ -251,6 +263,32 @@ export class ExperienceStore {
     } catch (err) {
       this.deps.logger.warn(`[spirit] 取代标记失败：${err instanceof Error ? err.message : String(err)}`);
       return false;
+    }
+  }
+
+  /**
+   * 人工反馈落库（刀1 反馈腿）：feedback_score 列可覆写（v2 豁免定性见 db/schema.ts 头注）。
+   *
+   * 两轴分离的执行点：这里只写反馈列，条目本体（text/salience/gist）不动；
+   * 读侧（recentForms）拿它做**重排**，永不拿它参与 m/衰减/情绪派生。
+   * @returns 是否命中一条未取代的条目
+   */
+  setFeedback(entryId: string, score: number): boolean {
+    const clamped = Math.max(-1, Math.min(5, Math.round(score)));
+    const mirrorHit = (): boolean => {
+      const hit = this.mirror.find((e) => e.id === entryId && e.supersededBy === undefined);
+      if (hit === undefined) return false;
+      hit.feedbackScore = clamped;
+      return true;
+    };
+    if (this.deps.db === null) return mirrorHit();
+    try {
+      return (
+        this.run(`UPDATE experience SET feedback_score = ? WHERE id = ? AND superseded_by IS NULL`, [clamped, entryId]) > 0
+      );
+    } catch (err) {
+      this.deps.logger.warn(`[spirit] 反馈写入失败（退内存镜像）：${err instanceof Error ? err.message : String(err)}`);
+      return mirrorHit();
     }
   }
 

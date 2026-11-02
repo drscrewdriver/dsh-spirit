@@ -30,6 +30,8 @@ import {
  */
 export interface VolatileRef<T> {
   get(): T;
+  /** 宿主 volatile 写通道（schemastery 支持时存在）：settings-set 腿用它热更；缺席 ⇒ 面板如实报“需重启”。 */
+  update?(patch: Partial<T>): unknown;
 }
 
 /** 显式标注导出面形状，避免 d.ts 里出现不可命名的 schemastery/cosmokit 内部类型。 */
@@ -67,6 +69,9 @@ function liveSettingsSchema(): VolatileRef<SpiritLiveSettings> {
     drscEnabled: bool(d.drscEnabled),
     recallMaxResults: num('recall.maxResults', d.recallMaxResults),
     retentionDays: num('journal.retentionDays', d.retentionDays),
+    fadeEnabled: bool(d.fadeEnabled),
+    fadeHalfLifeMs: num('recall.fadeHalfLifeMs', d.fadeHalfLifeMs),
+    feedbackEnabled: bool(d.feedbackEnabled),
   });
   const maybe = node as unknown as { volatile?: () => unknown };
   return (typeof maybe.volatile === 'function' ? maybe.volatile() : node) as VolatileRef<SpiritLiveSettings>;
@@ -89,6 +94,20 @@ export const spiritSchema: ConfigSchema = Schema.object({
     maxResults: num('recall.maxResults', SPIRIT_DEFAULTS.recall.maxResults),
     maxCharsPerEntry: num('recall.maxCharsPerEntry', SPIRIT_DEFAULTS.recall.maxCharsPerEntry),
     halfLifeMs: num('recall.halfLifeMs', SPIRIT_DEFAULTS.recall.halfLifeMs),
+    fadeEnabled: bool(SPIRIT_DEFAULTS.recall.fadeEnabled),
+    fadeHalfLifeMs: num('recall.fadeHalfLifeMs', SPIRIT_DEFAULTS.recall.fadeHalfLifeMs),
+    fadeFullMinScore: num('recall.fadeFullMinScore', SPIRIT_DEFAULTS.recall.fadeFullMinScore),
+    fadeGistMinScore: num('recall.fadeGistMinScore', SPIRIT_DEFAULTS.recall.fadeGistMinScore),
+    gistMinSalience: num('recall.gistMinSalience', SPIRIT_DEFAULTS.recall.gistMinSalience),
+    feedbackEnabled: bool(SPIRIT_DEFAULTS.recall.feedbackEnabled),
+  }),
+  ledger: Schema.object({
+    enabled: bool(SPIRIT_DEFAULTS.ledger.enabled),
+    maxAgeMs: num('ledger.maxAgeMs', SPIRIT_DEFAULTS.ledger.maxAgeMs),
+  }),
+  bias: Schema.object({
+    enabled: bool(SPIRIT_DEFAULTS.bias.enabled),
+    halfLifeMs: num('bias.halfLifeMs', SPIRIT_DEFAULTS.bias.halfLifeMs),
   }),
   tier: Schema.object({
     stepCap: num('tier.stepCap', SPIRIT_DEFAULTS.tier.stepCap),
@@ -129,6 +148,16 @@ export const SCHEMA_FIELD_KEYS: readonly string[] = [
   'recall.maxResults',
   'recall.maxCharsPerEntry',
   'recall.halfLifeMs',
+  'recall.fadeEnabled',
+  'recall.fadeHalfLifeMs',
+  'recall.fadeFullMinScore',
+  'recall.fadeGistMinScore',
+  'recall.gistMinSalience',
+  'recall.feedbackEnabled',
+  'ledger.enabled',
+  'ledger.maxAgeMs',
+  'bias.enabled',
+  'bias.halfLifeMs',
   'tier.stepCap',
   'tier.staleAfterMs',
   'journal.retentionDays',
@@ -154,6 +183,9 @@ export const SCHEMA_FIELD_KEYS: readonly string[] = [
   'live.drscEnabled',
   'live.recallMaxResults',
   'live.retentionDays',
+  'live.fadeEnabled',
+  'live.fadeHalfLifeMs',
+  'live.feedbackEnabled',
 ];
 
 /** 数值键区间表覆盖检查用的键集（`num()` 引用的键必须都在 SPIRIT_RANGES 里）。 */
@@ -206,6 +238,9 @@ export function resolveLive(raw: unknown): SpiritLiveSettings {
     drscEnabled: flag('drscEnabled', d.drscEnabled),
     recallMaxResults: int('recallMaxResults', d.recallMaxResults),
     retentionDays: int('retentionDays', d.retentionDays),
+    fadeEnabled: flag('fadeEnabled', d.fadeEnabled),
+    fadeHalfLifeMs: int('fadeHalfLifeMs', d.fadeHalfLifeMs),
+    feedbackEnabled: flag('feedbackEnabled', d.feedbackEnabled),
   };
 }
 
@@ -231,7 +266,18 @@ export function effectiveCfg(cfg: SpiritConfig, live?: SpiritLiveSettings): Spir
       crossSessionM: live.crossSessionM,
     },
     drsc: { ...cfg.drsc, enabled: cfg.drsc.enabled && live.drscEnabled },
-    recall: { ...cfg.recall, timeoutMs: live.recallTimeoutMs, halfLifeMs: live.halfLifeMs, maxResults: live.recallMaxResults },
+    recall: {
+      ...cfg.recall,
+      timeoutMs: live.recallTimeoutMs,
+      halfLifeMs: live.halfLifeMs,
+      maxResults: live.recallMaxResults,
+      // 淡出开关与窗口尺度走 volatile（面板六腿）；阈值属部署面，不热更。
+      fadeEnabled: cfg.recall.fadeEnabled && live.fadeEnabled,
+      fadeHalfLifeMs: live.fadeHalfLifeMs,
+      feedbackEnabled: cfg.recall.feedbackEnabled && live.feedbackEnabled,
+    },
+    ledger: { ...cfg.ledger, enabled: cfg.ledger.enabled && live.fadeEnabled },
+    bias: { ...cfg.bias, enabled: cfg.bias.enabled && live.fadeEnabled },
     tier: { ...cfg.tier, stepCap: live.tierStepCap, staleAfterMs: live.staleAfterMs },
     journal: { ...cfg.journal, retentionDays: live.retentionDays },
     live,

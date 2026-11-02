@@ -23,6 +23,22 @@
       #     maxResults: 3
       #     maxCharsPerEntry: 120
       #     halfLifeMs: 5400000      # 条目近因半衰期（缺省 90 分钟，经验值可调）
+      #     fadeEnabled: false       # 滑窗淡出总闸（v0.2 新能力，缺省关=与 v0.1 逐字节一致；灰度闸）
+      #     fadeHalfLifeMs: 5400000  # 淡出档位的 Δt 尺度（与 prime 同式 0.5^(Δt/halfLife)；情绪尺度缺省；
+      #                              #   调参 SOP 见 README：held 占比过高→拉长，重发率升高→加宽量化档）
+      #     fadeFullMinScore: 550    # full 档分数地板（千分位；m=(salience/2)×注意力衰减，反馈不回灌 m）
+      #     fadeGistMinScore: 250    # gist 档分数地板（千分位；低于它 ⇒ held 不上卡，库内仍在）
+      #     gistMinSalience: 1       # gist 的最低 salience（弱条目直接 held，宁缺毋造）
+      #     feedbackEnabled: true    # 人工反馈只重排不回灌派生分（两轴分离，移植 prime recall-usage）
+      #   ledger:
+      #     enabled: false           # 未竟账（会话收尾结构计数，新会话开局带出一行；缺省关）
+      #     maxAgeMs: 604800000      # 账行过期不再带出（缺省 7 天顶，配合有顶 GC）
+      #   bias:
+      #     enabled: false           # 条件化（强负体验→同类动作短期抑制，三档词；缺省关）
+      #     halfLifeMs: 5400000      # 派生缓存表的过期尺度
+      #   live:                      # volatile 热更节（改值不重启；0.2.0-rc.2 web 壳不渲染其表单）
+      #     fadeEnabled: false       # 与静态 recall.fadeEnabled 取与：淡出/未竟/条件化统一灰度总开关
+      #     fadeHalfLifeMs: 5400000  # 面板可调的窗口尺度（六腿的 volatile 腿）
       #   tier:
       #     stepCap: 1               # 单轮最多跨几格（防人格抽动）
       #     staleAfterMs: 600000     # 越此无新条目 ⇒ 退中性档

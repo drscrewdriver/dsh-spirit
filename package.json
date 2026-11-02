@@ -1,6 +1,6 @@
 {
   "name": "dsh-spirit",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "DSH 第一人称体验条目插件：把流程中的事件编译成角色的体验点滴（SQLite 条目库），派生情绪档，并在每一步模型前把「此刻状态 + 刚发生的 + 被勾起的回忆」注入消息轨尾部。记录体验，不记录工作事实。",
   "type": "module",
   "main": "dist/index.js",
