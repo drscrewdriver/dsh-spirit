@@ -10,6 +10,7 @@ import { decideDegrade, isSqliteUnavailable } from '../src/db/degrade.js';
 import { DB_FILE_NAME, openSpiritDb, readStoredVersion, SchemaVersionError } from '../src/db/open.js';
 import { planMigration } from '../src/db/migrate.js';
 import { META_KEY_SCHEMA_VERSION } from '../src/db/schema.js';
+import { ExperienceStore } from '../src/store/experience.js';
 
 let dir = '';
 beforeEach(() => {
@@ -25,7 +26,7 @@ function tablesOf(db: DatabaseSync): string[] {
 }
 
 describe('openSpiritDb', () => {
-  it('建出 experience / experience_cues / mood_state / meta 与四个索引，并写入版本号', () => {
+  it('建出 experience / experience_cues / mood_state / meta 与六个索引，并写入版本号', () => {
     const opened = openSpiritDb(dir);
     if (!opened.ok) throw new Error('应打开成功');
     const names = tablesOf(opened.db);
@@ -33,7 +34,11 @@ describe('openSpiritDb', () => {
       expect(names, expected).toContain(expected);
     }
     expect(readStoredVersion(opened.db)).toBe(SPIRIT_DB_SCHEMA_VERSION);
-    expect(names.filter((n) => n.startsWith('exp_'))).toHaveLength(4);
+    // v5：翻阅 tab 补了 exp_ts（全库分页）与 exp_trigger_ts（类型筛选）
+    expect(names.filter((n) => n.startsWith('exp_'))).toHaveLength(6);
+    // 藏起列在新库直接带出（旧库靠 4→5 链步补齐，见下方迁移例）
+    const cols = (opened.db.prepare(`PRAGMA table_info(experience)`).all() as Array<{ name: string }>).map((r) => r.name);
+    expect(cols).toContain('hidden_at');
     opened.db.close();
   });
 
@@ -55,6 +60,85 @@ describe('openSpiritDb', () => {
     expect(readStoredVersion(second.db)).toBe(SPIRIT_DB_SCHEMA_VERSION);
     second.db.close();
     expect(join(dir, DB_FILE_NAME)).toContain(DB_FILE_NAME);
+  });
+
+  // ── v3：人设两表（schema 形状即约束 + 正向迁移链） ──
+
+  it('v3 新库建出 persona_current / persona_revision', () => {
+    const opened = openSpiritDb(dir);
+    if (!opened.ok) throw new Error('应打开成功');
+    const names = tablesOf(opened.db);
+    expect(names).toContain('persona_current');
+    expect(names).toContain('persona_revision');
+    opened.db.close();
+  });
+
+  it('persona_current 的 CHECK 钉死单行：误插第二行直接 SQL 报错', () => {
+    const opened = openSpiritDb(dir);
+    if (!opened.ok) throw new Error('应打开成功');
+    opened.db.prepare(`INSERT INTO persona_current (singleton, revision, card_json, updated_at) VALUES (1, 1, '{}', 1000)`).run();
+    // 第二行：singleton 只能给 1，而 1 已被占 ⇒ 主键冲突/CHECK 双保险，必须 throw
+    expect(() => opened.db.prepare(`INSERT INTO persona_current (singleton, revision, card_json, updated_at) VALUES (1, 2, '{}', 2000)`).run()).toThrow();
+    expect(() => opened.db.prepare(`INSERT INTO persona_current (singleton, revision, card_json, updated_at) VALUES (2, 2, '{}', 2000)`).run()).toThrow();
+    opened.db.close();
+  });
+
+  it('v2 旧库重开 ⇒ 正向迁移成功：人设两表建出、meta 回写当前版、既有数据不丢', () => {
+    const made = openSpiritDb(dir);
+    if (!made.ok) throw new Error('应打开成功');
+    made.db.prepare(`INSERT INTO experience (id, session_id, workspace_id, turn_seq, ts_ms, trigger, notice, reaction, text, fact_json, lane, persona_revision, updated_at, salience) VALUES ('e1','s1','w1',1,1000,'neutral','task_progress','none','旧行','{}','live',1,1000,0)`).run();
+    // 手工把库退回 v2 形状：删两张 v3 新表 + 版本号改 2（模拟老宿主的重开现场）
+    made.db.exec('DROP TABLE persona_current');
+    made.db.exec('DROP TABLE persona_revision');
+    made.db.prepare(`UPDATE meta SET value = ? WHERE key = ?`).run('2', META_KEY_SCHEMA_VERSION);
+    made.db.close();
+
+    const again = openSpiritDb(dir);
+    if (!again.ok) throw new Error('v2 库应能正向迁移打开');
+    const names = tablesOf(again.db);
+    expect(names).toContain('persona_current');
+    expect(names).toContain('persona_revision');
+    expect(readStoredVersion(again.db)).toBe(SPIRIT_DB_SCHEMA_VERSION);
+    expect((again.db.prepare(`SELECT COUNT(*) AS n FROM experience`).get() as { n: number }).n).toBe(1);
+    again.db.close();
+  });
+
+  it('planMigration：v2→v6 登记在链上（缺登记就是链断、老库拒读）；当前版自身零步', () => {
+    const up = planMigration(2);
+    expect(up.ok).toBe(true);
+    if (up.ok) expect(up.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['2→3', '3→4', '4→5', '5→6']);
+    const same = planMigration(SPIRIT_DB_SCHEMA_VERSION);
+    expect(same.ok).toBe(true);
+    if (same.ok) expect(same.steps).toHaveLength(0);
+  });
+
+  // ── v4：主人背景档案表 ──
+
+  it('v4 新库建出 owner_profile；误插第二行被 CHECK/主键拒', () => {
+    const opened = openSpiritDb(dir);
+    if (!opened.ok) throw new Error('应打开成功');
+    expect(tablesOf(opened.db)).toContain('owner_profile');
+    opened.db.prepare(`INSERT INTO owner_profile (singleton, sync_text, self_text, sync_meta, revision, updated_at) VALUES (1, '', '', '', 1, 1000)`).run();
+    expect(() => opened.db.prepare(`INSERT INTO owner_profile (singleton, sync_text, self_text, sync_meta, revision, updated_at) VALUES (1, 'a', '', '', 1, 1)`).run()).toThrow();
+    expect(() => opened.db.prepare(`INSERT INTO owner_profile (singleton, sync_text, self_text, sync_meta, revision, updated_at) VALUES (2, 'b', '', '', 1, 1)`).run()).toThrow();
+    opened.db.close();
+  });
+
+  it('v3 旧库重开 ⇒ 正向迁移到 v4：owner_profile 建出、meta 回写 4、人设数据不丢', () => {
+    const made = openSpiritDb(dir);
+    if (!made.ok) throw new Error('应打开成功');
+    made.db.prepare(`INSERT INTO persona_current (singleton, revision, card_json, updated_at) VALUES (1, 3, '{"revision":3}', 1000)`).run();
+    // 手工退回 v3 形状：删 v4 新表 + 版本号改 3
+    made.db.exec('DROP TABLE owner_profile');
+    made.db.prepare(`UPDATE meta SET value = ? WHERE key = ?`).run('3', META_KEY_SCHEMA_VERSION);
+    made.db.close();
+
+    const again = openSpiritDb(dir);
+    if (!again.ok) throw new Error('v3 库应能正向迁移打开');
+    expect(tablesOf(again.db)).toContain('owner_profile');
+    expect(readStoredVersion(again.db)).toBe(SPIRIT_DB_SCHEMA_VERSION);
+    expect((again.db.prepare(`SELECT revision FROM persona_current WHERE singleton = 1`).get() as { revision: number }).revision).toBe(3);
+    again.db.close();
   });
 
   it('库内版本高于本包 ⇒ 拒读（不静默按旧形状读）', () => {
@@ -113,6 +197,65 @@ describe('openSpiritDb', () => {
     const opened = openSpiritDb('   ');
     expect(opened.ok).toBe(false);
   });
+
+  // ── v5：藏起列（翻阅 tab 管理动作的标记位，行永不物理删） ──
+
+  it('v4 旧库重开 ⇒ 正向迁移到 v5：hidden_at 补齐、既有行原样读回、重复开不炸', () => {
+    const made = openSpiritDb(dir);
+    if (!made.ok) throw new Error('应打开成功');
+    made.db
+      .prepare(
+        `INSERT INTO experience (id, session_id, workspace_id, turn_seq, ts_ms, trigger, notice, reaction, text, fact_json, lane, persona_revision, updated_at, salience)
+         VALUES ('e5','s1','w1',1,1000,'neutral','task_progress','none','藏前写的旧行','{}','live',1,1000,0)`,
+      )
+      .run();
+    // 手工退回 v4 形状：DROP 掉 hidden_at + 版本号改 4（只造 fixture，不碰生产路径）
+    made.db.exec('ALTER TABLE experience DROP COLUMN hidden_at');
+    made.db.prepare(`UPDATE meta SET value = ? WHERE key = ?`).run('4', META_KEY_SCHEMA_VERSION);
+    made.db.close();
+
+    const again = openSpiritDb(dir);
+    if (!again.ok) throw new Error(`v4 库应能正向迁移打开：${String(again.err)}`);
+    expect(readStoredVersion(again.db)).toBe(SPIRIT_DB_SCHEMA_VERSION);
+    const row = again.db.prepare(`SELECT text, hidden_at FROM experience WHERE id = 'e5'`).get() as { text: string; hidden_at: number | null };
+    expect(row.text).toBe('藏前写的旧行');
+    expect(row.hidden_at).toBeNull(); // 老行默认全部「在场」，不被新列误伤
+    again.db.close();
+    // 再开一次：列已存在 ⇒ 迁移整步跳过，不炸
+    const third = openSpiritDb(dir);
+    expect(third.ok).toBe(true);
+    if (third.ok) third.db.close();
+  });
+
+  // ── v6：长觉阶梯五张派生表 ──
+
+  it('v5 老库重开 ⇒ 正向迁移到 v6：五表建出、既有条目原样在场（G21 假空反证）、重复开不炸', () => {
+    const made = openSpiritDb(dir);
+    if (!made.ok) throw new Error('应打开成功');
+    made.db
+      .prepare(
+        `INSERT INTO experience (id, session_id, workspace_id, turn_seq, ts_ms, trigger, notice, reaction, text, fact_json, lane, persona_revision, updated_at, salience)
+         VALUES ('v6e','s1','w1',1,1000,'neutral','task_progress','none','长觉前的旧行','{}','live',1,1000,0)`,
+      )
+      .run();
+    // 手工退回 v5：DROP 五表 + 版本号改 5（只造 fixture）
+    for (const t of ['topic', 'experience_topic', 'insight', 'causal_edge', 'sleep_run']) made.db.exec(`DROP TABLE ${t}`);
+    made.db.prepare(`UPDATE meta SET value = ? WHERE key = ?`).run('5', META_KEY_SCHEMA_VERSION);
+    made.db.close();
+
+    const again = openSpiritDb(dir);
+    if (!again.ok) throw new Error(`v5 库应能正向迁移打开：${String(again.err)}`);
+    expect(readStoredVersion(again.db)).toBe(SPIRIT_DB_SCHEMA_VERSION);
+    const names = tablesOf(again.db);
+    for (const t of ['topic', 'experience_topic', 'insight', 'causal_edge', 'sleep_run']) expect(names, t).toContain(t);
+    // 假空反证：老库升上来后原行仍在 recent() 可见面（REQUIRED_COLUMNS 静默 filter 的教训）
+    const store = new ExperienceStore({ db: again.db, logger: { warn: () => {}, info: () => {} } });
+    expect(store.recent('s1', 5).map((e) => e.id)).toEqual(['v6e']);
+    again.db.close();
+    const third = openSpiritDb(dir);
+    expect(third.ok).toBe(true);
+    if (third.ok) third.db.close();
+  });
 });
 
 describe('degrade 判定', () => {
@@ -139,11 +282,11 @@ describe('planMigration', () => {
     expect(planMigration(SPIRIT_DB_SCHEMA_VERSION)).toEqual({ ok: true, steps: [] });
   });
 
-  it('v1 ⇒ 有正向链（1→2，带人话 note）', () => {
+  it('v1 ⇒ 有正向链（1→2→3→4→5→6，带人话 note）', () => {
     const plan = planMigration(1);
     expect(plan.ok).toBe(true);
     if (plan.ok) {
-      expect(plan.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['1→2']);
+      expect(plan.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['1→2', '2→3', '3→4', '4→5', '5→6']);
       expect(plan.steps[0]?.note.length).toBeGreaterThan(0);
     }
   });

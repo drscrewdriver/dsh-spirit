@@ -21,7 +21,11 @@ import {
   TRIGGER_TASK_CLOSE,
   TRIGGER_TOOL_FAILURE,
   TRIGGER_USER_INTERRUPT,
+  VOICE_BLUNT,
+  VOICE_HUSH,
+  VOICE_LIVELY,
   VOICE_PLAIN,
+  VOICE_POETIC,
   VOICE_TERSE,
   VOICE_WARM,
   type ExperienceFact,
@@ -82,6 +86,10 @@ const VOICE_OPENER: Readonly<Record<VoiceTier, string>> = {
   [VOICE_TERSE]: '',
   [VOICE_PLAIN]: '',
   [VOICE_WARM]: '跟你说，',
+  [VOICE_LIVELY]: '嘿嘿，',
+  [VOICE_HUSH]: '',
+  [VOICE_BLUNT]: '说白了，',
+  [VOICE_POETIC]: '',
 };
 
 /** 语气：收尾（只表态度，不表事实）。 */
@@ -89,6 +97,10 @@ const VOICE_CLOSER: Readonly<Record<VoiceTier, string>> = {
   [VOICE_TERSE]: '。',
   [VOICE_PLAIN]: '。',
   [VOICE_WARM]: '，我放在心上了。',
+  [VOICE_LIVELY]: '，挺有意思的。',
+  [VOICE_HUSH]: '，我小声记下了。',
+  [VOICE_BLUNT]: '，就这。',
+  [VOICE_POETIC]: '，像水纹一样记着。',
 };
 
 /** 间隔分档词（不给分钟数：写"隔了 7 分钟"是伪精确，而分档是体验的真实形状）。 */

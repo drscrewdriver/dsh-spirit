@@ -116,7 +116,13 @@ export type ArousalTier = (typeof AROUSAL_TIERS)[number];
 export const VOICE_PLAIN = 'plain' as const;
 export const VOICE_TERSE = 'terse' as const;
 export const VOICE_WARM = 'warm' as const;
-export const VOICE_TIERS = [VOICE_PLAIN, VOICE_TERSE, VOICE_WARM] as const;
+// 语气扩列（v0.3.6 用户点名：三档偏少）——新档只进枚举与词表，全链自动传导
+// （面板 select 列 VOICE_TIERS、md 反查表由两者派生、稳定区 [语气] 行读 VOICE_WORDS）。
+export const VOICE_LIVELY = 'lively' as const;
+export const VOICE_HUSH = 'hush' as const;
+export const VOICE_BLUNT = 'blunt' as const;
+export const VOICE_POETIC = 'poetic' as const;
+export const VOICE_TIERS = [VOICE_PLAIN, VOICE_TERSE, VOICE_WARM, VOICE_LIVELY, VOICE_HUSH, VOICE_BLUNT, VOICE_POETIC] as const;
 export type VoiceTier = (typeof VOICE_TIERS)[number];
 
 /**
@@ -133,6 +139,13 @@ export const LANE_LIVE = 'live' as const;
 export const LANE_DRSC = 'drsc' as const;
 export const LANES = [LANE_LIVE, LANE_DRSC] as const;
 export type Lane = (typeof LANES)[number];
+
+/**
+ * 因果四词单源（v0.3.5 长觉阶梯）：启发式边与 LLM 投影边的 relation 都往这四处归。
+ * 词表是开放的（LLM 可提新关系词，只钳长度不白名单），但这四个是「因果」的规范集：
+ * 星海截断优先判定与面板图例都读这一处，不各抄第二份（照姊妹包同一教训）。
+ */
+export const SPIRIT_CAUSAL_RELATIONS = ['导致', '因为', '修复了', '取代'] as const;
 
 /**
  * 探测/自检判定四值。`skipped` 是**中性无据**（如 DRSC 未安装），
@@ -200,6 +213,11 @@ export interface ExperienceEntry {
   /** 软更正：指向取代本条的新 id；本条**不删除**。 */
   supersededBy?: string;
   /**
+   * 「藏起来」标记位（v5 翻阅 tab）：非空 ⇒ 退出星海图/注入/手记缺省视图，
+   * 行永不物理删，可随时清空再想起（覆写豁免定性见 db/schema.ts 头注）。
+   */
+  hiddenAt?: number;
+  /**
    * 人格在意度 0..2（v0.2 落库；v1 旧行为 0 ⇒ 淡出只走 held 退化路，不假装知道旧权重）。
    * 只服淡出档位；情绪派生仍吃 reaction（derive.ts 的因果方向不变）。
    */
@@ -215,6 +233,16 @@ export interface PersonaCard {
   /** 单调递增；人格区文本以其为缓存键。 */
   revision: number;
   name: string;
+  /**
+   * 昵称序列（v0.3.4）：主人日常怎么喊这条鱼——大名之外的批量别名。
+   * 进稳定区（`[昵称]` 行，常用称呼）让模型认得所有叫法；空数组合法（整行物理离场）。
+   */
+  aliases: string[];
+  /**
+   * 自称序列（v0.3.4）：这条鱼说话时用什么自称（我/本鱼/鱼鱼…）。
+   * 主人可在人设页改，模型也能经 `spirit_selfname` 工具自己增删（累积式自我认同）。
+   */
+  selfNames: string[];
   voice: VoiceTier;
   /** 触发族 → 在意度。缺键按 `0` 处理（不在意，不记）。 */
   salience: Record<TriggerKind, SalienceWeight>;

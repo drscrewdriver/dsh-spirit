@@ -23,7 +23,7 @@ import {
   type SpiritLiveSettings,
 } from './contract.js';
 import { effectiveCfg, readLiveRef, resolveDataDir, spiritSchema, type ConfigSchema } from './config.js';
-import { probeCapabilities, readTrustedHosts } from './capability.js';
+import { probeCapabilities, readTrustedHosts, getService } from './capability.js';
 import { openSpiritDb } from './db/open.js';
 import { decideDegrade } from './db/degrade.js';
 import { ExperienceStore } from './store/experience.js';
@@ -34,10 +34,20 @@ import { SessionModeStore } from './store/session-modes.js';
 import { TurnWatcher } from './experience/watcher.js';
 import { DrscClient } from './drsc/client.js';
 import { DrscProbe } from './drsc/probe.js';
+import { PrimeClient } from './prime/client.js';
+import { OwnerSyncService } from './prime/sync.js';
+import { OwnerProfileStore } from './store/owner.js';
+import { DreamRunner } from './dream/dream.js';
+import { TopicStore } from './store/topics.js';
+import { InsightStore } from './store/insights.js';
+import { EdgeStore, heuristicEdges } from './store/edges.js';
+import { RuminateRunner } from './distill/ruminate.js';
+import { createLlmChannel, type DistillRoute, type LlmChannel, type LlmRuntimeLike } from './distill/llm.js';
 import { Spirit } from './spirit.js';
 import { registerPersonaSection } from './hooks/persona-section.js';
 import { registerCardPreStep } from './hooks/card-pre-step.js';
 import { registerCardObserve } from './hooks/card-observe.js';
+import { registerSelfNameTool } from './tools/selfname.js';
 import { registerSpiritRpc } from './rpc.js';
 import { SpiritStats } from './stats.js';
 import { isSubagentAgent, ownerSessionIdOfAgent, sessionIdOfSession, workspaceIdOfAgent } from './util/host-shape.js';
@@ -72,7 +82,7 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     logger.warn(`[spirit] 存储降级（${decision.reason}）`);
   }
 
-  const personas = new PersonaStore({ dataDir, logger });
+  const personas = new PersonaStore({ dataDir, logger, db });
   const modes = new SessionModeStore({ dataDir, logger });
   const store = new ExperienceStore({ db, logger });
   // v0.2 两张新面：未竟账（append-only 真源）与条件化（派生缓存，定性见 store/bias.ts）
@@ -101,6 +111,40 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   const probe = client
     ? new DrscProbe({ client, enabled: () => cfg().drsc.enabled && live().drscEnabled, ttlMs: () => cfg().drsc.probeCacheTtlMs })
     : undefined;
+
+  // 主人背景档案（v0.3.2）：DB 权威 + prime-memory 同步。基址跟 webPort 同源（真宿主实测：
+  // 端口是挑的）；prime 未装 ⇒ 探测失败 ⇒ 同步跳过，功能整体休眠不报错。
+  const ownerStore = new OwnerProfileStore({ dataDir, logger, db });
+  const primeClient = new PrimeClient({
+    baseUrl: config.owner.baseUrl,
+    trustedHosts: () => readTrustedHosts(ctx),
+    localPort: () => webPort,
+  });
+  const ownerSync = new OwnerSyncService({ client: primeClient, store: ownerStore, cfg: eff, logger });
+
+  // 做梦（v0.3.3）：确定性本地整理 pass，零模型零 DRSC 依赖；db 取用现走闭包（降级面每轮现判）
+  const dream = new DreamRunner({ store, db: () => db, dataDir, cfg: eff, logger });
+
+  // 长觉阶梯（v0.3.5）：派生层三 store + 异步归纳 Runner。llm 通道是域注入晚到的（slot 可变），
+  // 缺席时 runner 自带 supported:false 降级信封——长觉整条休眠不报错（照 owner/prime 先例）。
+  const topics = new TopicStore({ db: () => db, logger });
+  const insights = new InsightStore({ db: () => db, logger });
+  const edges = new EdgeStore({ db: () => db, logger });
+  let llmChannel: LlmChannel | undefined;
+  const readHostDefault = (): DistillRoute | undefined => {
+    // agentDefaultModel 是可选服务，缺失时不得抛错（fail-closed 会拒蒸，不隐式猜模型）
+    const svc = getService(ctx, 'agentDefaultModel') as { model?: { provider?: unknown; id?: unknown } } | undefined;
+    const provider = typeof svc?.model?.provider === 'string' ? svc.model.provider : '';
+    const model = typeof svc?.model?.id === 'string' ? svc.model.id : '';
+    return provider !== '' && model !== '' ? { provider, model } : undefined;
+  };
+  const sleep = new RuminateRunner({ db: () => db, store, topics, insights, edges, channel: () => llmChannel, defaultModel: readHostDefault, cfg: eff, logger });
+  // ⚠️ 域注入不是顶层 inject：没 llm 服务的宿主线（tui/headless）上顶层声明会把整插件挂死
+  ctx.inject(['llm'], (scope) => {
+    const llm = scope.get('llm') as LlmRuntimeLike | undefined;
+    if (llm === undefined || typeof llm.stream !== 'function') return;
+    llmChannel = createLlmChannel({ llm: () => llm, defaultModel: readHostDefault, logger });
+  });
 
   const stats = new SpiritStats();
   const spirit = new Spirit(
@@ -136,8 +180,11 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     return undefined;
   });
 
-  registerPersonaSection(ctx, { personas, eff, caps, logger });
+  registerPersonaSection(ctx, { personas, owner: ownerStore, eff, caps, logger });
   registerCardObserve(ctx, { spirit, logger });
+  // 自称工具（v0.3.4）：模型可自己增删自称列表（人设面唯一对模型开放的写字段）；
+  // 部署总闸关 ⇒ 根本不注册（关闸时模型看不见这个工具，零副作用纪律）。
+  if (config.enabled) registerSelfNameTool(ctx, { personas, logger });
   registerSpiritRpc(ctx, {
     spirit,
     stats,
@@ -148,6 +195,9 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     cfg,
     eff,
     drscVerdict,
+    owner: { store: ownerStore, sync: ownerSync },
+    dream,
+    ladder: { sleep, topics, insights, edges },
     logger,
     // config.live 就是 volatile ref（带 .get()，新宿主还带 .update()）；原样递出去，不预先解包
     liveRaw: () => config.live as unknown as { get(): SpiritLiveSettings; update?: (patch: Partial<SpiritLiveSettings>) => unknown },
@@ -188,6 +238,87 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     const id = (payload as { agent?: { id?: unknown } }).agent?.id;
     if (typeof id === 'string') stats.release(id);
     return undefined;
+  });
+
+  /**
+   * 低频同步定时器（缺省日级）：首跑带 0–10min 抖动防整点风暴，周期每轮现读配置。
+   * handler 不 await 会话链路（同步是后台冷路径）；disposer 挂 fiber，热重载不留旧定时器。
+   */
+  ctx.effect(() => {
+    let stopped = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const kickoff = setTimeout(() => {
+      if (stopped) return;
+      void ownerSync.sync();
+      interval = setInterval(() => void ownerSync.sync(), eff().owner.syncIntervalMs);
+    }, Math.floor(Math.random() * 600_000));
+    return () => {
+      stopped = true;
+      clearTimeout(kickoff);
+      if (interval !== undefined) clearInterval(interval);
+    };
+  });
+
+  /**
+   * 做梦定时器（v0.3.3，缺省日级）：owner 同款骨架——抖动 kick + 周期现读 eff() + disposer。
+   * enabled=false 整条不挂（零副作用纪律）；kick/interval 回调内每轮现读 eff().dream.enabled
+   * ——live 热更闸翻转不需要重挂 effect（关闸后空转，开闸后恢复）；去重窗在 DreamRunner 内部。
+   */
+  ctx.effect(() => {
+    if (!eff().dream.enabled) return () => undefined;
+    let stopped = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const kickoff = setTimeout(() => {
+      if (stopped) return;
+      dream.run();
+      interval = setInterval(() => {
+        dream.run();
+      }, eff().dream.intervalMs);
+    }, Math.floor(Math.random() * 600_000));
+    return () => {
+      stopped = true;
+      clearTimeout(kickoff);
+      if (interval !== undefined) clearInterval(interval);
+    };
+  });
+
+  /**
+   * 主题骨架启动回填（v0.3.5，零模型确定性动作）：cues×trigger 聚桶即时可分区，
+   * 长觉关着也有主题（降级人格不破）。冷路径：延迟几秒跑，不卡 boot；幂等（assign 同题 no-op）。
+   */
+  ctx.effect(() => {
+    const timer = setTimeout(() => {
+      try {
+        const recent = store.listRecent(500);
+        topics.heuristicBackfill(recent.map((entry) => ({ id: entry.id, trigger: entry.trigger, cues: store.cuesFor([entry.id]).get(entry.id) ?? [] })), Date.now());
+        edges.backfillHeuristic(heuristicEdges(recent), Date.now());
+      } catch (err) {
+        logger.warn(`[spirit] 主题骨架回填失败（不影响记录与注入）：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }, 5_000);
+    return () => clearTimeout(timer);
+  });
+
+  /**
+   * 长觉定时器（v0.3.5，缺省 6h）：同款骨架——抖动 kick + 周期现读 + disposer。
+   * enabled（双闸后视图）关 ⇒ 整条不挂；run() 自身还有去重窗/退避/unsupported 多重闸。
+   */
+  ctx.effect(() => {
+    if (!eff().distill.enabled) return () => undefined;
+    let stopped = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const kickoff = setTimeout(() => {
+      if (stopped) return;
+      sleep.run();
+      interval = setInterval(() => {
+        sleep.run();
+      }, eff().distill.intervalMs);
+    }, Math.floor(Math.random() * 600_000));
+    return () => {
+      stopped = true;
+      clearTimeout(kickoff);
+      if (interval !== undefined) clearInterval(interval);
+    };
   });
 
   logger.info(

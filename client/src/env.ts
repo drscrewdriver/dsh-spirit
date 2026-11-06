@@ -14,11 +14,16 @@ export function hostRequire(id: string): unknown {
 
 export interface SpiritClientCtx {
   slots: {
-    inject(slot: string, factory: () => unknown): unknown;
+    /** 第三个形参是装载标签（宿主诊断用），姊妹包已这么用。 */
+    inject(slot: string, factory: () => unknown, label?: string): unknown;
     register(options: Record<string, unknown>, component: unknown): unknown;
+    /** 诊断用：服务面不保证暴露它，**判定一律走 `inject` 探测**。 */
+    specDynamic?(slot: string): unknown;
   };
   /** 按名取客户端服务（不把可选服务写进声明式 inject：晚到会永久挂起 apply）。 */
   get(name: string): unknown;
+  /** 布局服务（关闭主栏整页用）；老宿主可能整体缺席。 */
+  layout?: { selectPanel?(key: string | null): unknown };
 }
 
 /** 组件 props 里能拿到的会话上下文（宿主 zone 注入形状；两种形状都得接）。 */

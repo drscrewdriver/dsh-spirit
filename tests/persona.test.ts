@@ -107,6 +107,23 @@ describe('人格区文本（同态与预算）', () => {
     expect(bumped).toBe(base);
   });
 
+  it('昵称行（v0.3.4）：在场时进稳定区（名字后、语气前）；空 ⇒ 整行物理离场', () => {
+    const withAlias = composePersonaText({ ...card, aliases: ['阿鱼', '鱼鱼'] }, 700);
+    expect(withAlias).toContain('[昵称] 阿鱼、鱼鱼');
+    expect(withAlias.indexOf('[昵称]')).toBeGreaterThan(withAlias.indexOf('[角色]'));
+    expect(withAlias.indexOf('[昵称]')).toBeLessThan(withAlias.indexOf('[语气]'));
+    // 空数组 ⇒ 与无此字段时代逐字节一致（老卡不因此变样，稳定区不被新行抖动）
+    expect(composePersonaText({ ...card, aliases: [] }, 700)).toBe(composePersonaText(card, 700));
+  });
+
+  it('自称行（v0.3.4）：在昵称后、语气前；空 ⇒ 整行离场（与老卡逐字节一致）', () => {
+    const withSelf = composePersonaText({ ...card, aliases: ['阿鱼'], selfNames: ['我', '本鱼'] }, 700);
+    expect(withSelf).toContain('[自称] 我、本鱼');
+    expect(withSelf.indexOf('[自称]')).toBeGreaterThan(withSelf.indexOf('[昵称]'));
+    expect(withSelf.indexOf('[自称]')).toBeLessThan(withSelf.indexOf('[语气]'));
+    expect(composePersonaText({ ...card, selfNames: [] }, 700)).toBe(composePersonaText(card, 700));
+  });
+
   it('超预算截在整行边界（不留半句）', () => {
     const full = composePersonaText(card, 700);
     const lines = full.split('\n');

@@ -18,12 +18,17 @@ import type {} from '@deepseek-ai/dsh-agent'; // agent/created 事件名声明
 
 import { SPIRIT_SECTION_NAME, SPIRIT_SECTION_ORDER, type SpiritConfig } from '../contract.js';
 import type { PersonaStore } from '../persona/store.js';
-import { composePersonaText } from '../persona/render.js';
+import { composeOwnerText, composePersonaText } from '../persona/render.js';
+import type { OwnerProfileStore } from '../store/owner.js';
 import { getService, type HostCapabilities } from '../capability.js';
-import type { PersonaCard } from '../types.js';
 
 export interface PersonaSectionDeps {
   personas: PersonaStore;
+  /**
+   * 主人背景档案（v0.3.2）：同一稳定区内拼 persona 文本 + 主人段（各用各预算键）。
+   * 省略 ⇒ 只拼人格区（老宿主/测试代理的形态）。
+   */
+  owner?: OwnerProfileStore;
   /**
    * ⚠️ 必须是**已合并 live 兜底的生效配置**（`effectiveCfg(config, readLiveRef(config.live))`），
    * 不是原始 `config`。
@@ -51,18 +56,21 @@ export function registerPersonaSection(ctx: Context, deps: PersonaSectionDeps): 
     registered.add(agent);
     const agentCtx = (agent as { ctx?: { systemPrompt?: { section?: unknown } } }).ctx;
     if (typeof agentCtx?.systemPrompt?.section !== 'function') return;
-    // revision 缓存：同一张卡只算一次文本
-    let cacheKey = -1;
+    // 缓存键 = 人格 revision + 档案 revision + 同步时刻：三者都没动字节才准复用——
+    // 只看 persona.revision 会把"后台同步更新了主人段"当成没变化，新段永远进不了提示。
+    let cacheKey = '';
     let cacheText = '';
-    let cachePersona: PersonaCard | undefined;
     const text = (): string => {
       const cfg = deps.eff();
       if (!cfg.enabled || !cfg.persona.enabled || !cfg.live.personaEnabled) return '';
       const persona = deps.personas.current();
-      if (cachePersona !== undefined && cacheKey === persona.revision && cacheText !== '') return cacheText;
-      cacheText = composePersonaText(persona, cfg.persona.budgetBytes);
-      cacheKey = persona.revision;
-      cachePersona = persona;
+      const ownerRow = deps.owner?.get();
+      const key = `${persona.revision}:${ownerRow?.revision ?? 0}:${ownerRow?.syncMeta.syncedAt ?? 0}`;
+      if (cacheKey === key && cacheText !== '') return cacheText;
+      const personaText = composePersonaText(persona, cfg.persona.budgetBytes);
+      const ownerText = ownerRow === undefined ? '' : composeOwnerText(ownerRow, cfg.owner.budgetBytes);
+      cacheText = [personaText, ownerText].filter((part) => part !== '').join('\n');
+      cacheKey = key;
       return cacheText;
     };
     try {

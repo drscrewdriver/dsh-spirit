@@ -11,7 +11,7 @@ import { clampInt, clampTier } from '../util/tier.js';
 import { NOTICE_KINDS, VOICE_TIERS, TRIGGER_KINDS, NOTICE_BEING_IGNORED, NOTICE_SELF_MISTAKE, NOTICE_TASK_STALL, NOTICE_USER_STATE, TRIGGER_LONG_GAP, TRIGGER_NEUTRAL, TRIGGER_RECOVERY, TRIGGER_TASK_CLOSE, TRIGGER_TOOL_FAILURE, TRIGGER_USER_INTERRUPT, type NoticeKind, type PersonaCard, type SalienceWeight, type TriggerKind, type VoiceTier } from '../types.js';
 
 /** 字段规模上限：人格文件是人手写的，超长就是写错了，不是要支持的特性。 */
-export const PERSONA_LIMITS = { values: 8, boundaries: 8, nameChars: 40, itemChars: 120 } as const;
+export const PERSONA_LIMITS = { values: 8, boundaries: 8, aliases: 8, selfNames: 8, nameChars: 40, aliasChars: 24, itemChars: 120 } as const;
 
 /**
  * 内置默认人格。
@@ -23,6 +23,8 @@ export const DEFAULT_PERSONA: PersonaCard = {
   id: 'default',
   revision: 1,
   name: '未命名角色',
+  aliases: [],
+  selfNames: [],
   voice: 'plain',
   salience: {
     [TRIGGER_USER_INTERRUPT]: 2,
@@ -44,6 +46,16 @@ function stringList(value: unknown, limit: number): string[] {
     .map((item) => item.trim().slice(0, PERSONA_LIMITS.itemChars))
     .filter((item) => item !== '')
     .slice(0, limit);
+}
+
+/** 短词列表（昵称/自称共用）：比条目短得多（超 24 字就是写成了句子），去重保序、有顶。 */
+function aliasList(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const kept = value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim().slice(0, PERSONA_LIMITS.aliasChars))
+    .filter((item) => item !== '');
+  return [...new Set(kept)].slice(0, limit);
 }
 
 /**
@@ -99,6 +111,8 @@ export function sanitizePersona(raw: unknown): { persona: PersonaCard; fellBack:
       id: id === '' ? DEFAULT_PERSONA.id : id,
       revision,
       name: name === '' ? DEFAULT_PERSONA.name : name,
+      aliases: aliasList(value['aliases'], PERSONA_LIMITS.aliases),
+      selfNames: aliasList(value['selfNames'], PERSONA_LIMITS.selfNames),
       voice,
       salience: salienceOf(value['salience']),
       focus: focusOf(value['focus']),

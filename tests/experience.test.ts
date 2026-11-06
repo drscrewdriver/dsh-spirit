@@ -397,13 +397,116 @@ describe('保留与归档：一行都不删', () => {
     expect(readdirSync(join(dir, 'archive')).length).toBe(1);
   });
 
-  it('全仓不存在删除体验行的 SQL（红线机械核对）', () => {
+  it('全仓不存在删除体验行的 SQL（红线机械核对；\b 把住真表名——派生表 experience_topic 的整表重算不在禁 区）', () => {
     const files = readdirSync(join(process.cwd(), 'src'), { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.ts'));
     const offenders: string[] = [];
     for (const file of files) {
       const body = readFileSync(join(process.cwd(), 'src', file), 'utf8');
-      if (/DELETE\s+FROM\s+experience/iu.test(body)) offenders.push(file);
+      if (/DELETE\s+FROM\s+experience\b/iu.test(body)) offenders.push(file);
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('翻阅与编辑（v5 管理面）', () => {
+  let dir = '';
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'spirit-admin-'));
+  });
+  afterEach(() => {
+    closeAll();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function adminStore(): { store: ExperienceStore; db: ReturnType<typeof track> } {
+    const openedDb = openSpiritDb(dir);
+    if (!openedDb.ok) throw new Error('库应可打开');
+    const db = track(openedDb.db);
+    return { store: new ExperienceStore({ db, logger }), db };
+  }
+
+  it('藏起来 ⇒ 退出近因/分页/星海窗口/计数；再想起 ⇒ 原样回来；重复藏幂等', () => {
+    const { store } = adminStore();
+    store.append(ctxA, draft);
+    store.append({ ...ctxA, id: 'e2', tsMs: 2_000 }, draft);
+    expect(store.setHidden(['e1'], true)).toBe(1);
+    expect(store.recent('s1', 5).map((e) => e.id)).toEqual(['e2']);
+    expect(store.page('s1', 0, 10).rows.map((e) => e.id)).toEqual(['e2']);
+    expect(store.listRecent(10).map((e) => e.id)).toEqual(['e2']);
+    expect(store.countAll()).toBe(1);
+    expect(store.count('s1')).toBe(1);
+    expect(store.setHidden(['e1'], true)).toBe(0); // 幂等：已藏的不重复计数
+    expect(store.setHidden(['e1'], false)).toBe(1);
+    expect(store.countAll()).toBe(2);
+    // 行从未消失：byId 永远读得回来（可回滚优先）
+    expect(store.byId('e1')?.text).toBe(draft.text);
+  });
+
+  it('listAdmin：跨会话分页 hasMore、trigger/marked 筛选、hiddenOnly 视图、搜索与浏览同投影', () => {
+    const { store } = adminStore();
+    for (let i = 0; i < 5; i += 1) {
+      store.append(
+        { id: `x${i}`, sessionId: i % 2 === 0 ? 's1' : 's2', workspaceId: 'w1', turnSeq: i, tsMs: 1_000 + i * 100, personaRevision: 1 },
+        { ...draft, text: `第${i}句` },
+      );
+    }
+    store.setFeedback('x3', 5);
+    store.setHidden(['x0'], true);
+    const first = store.listAdmin({ offset: 0, limit: 3 });
+    expect(first.rows.map((e) => e.id)).toEqual(['x4', 'x3', 'x2']); // 藏行不在缺省视图
+    expect(first.hasMore).toBe(true);
+    const marked = store.listAdmin({ marked: true, offset: 0, limit: 10 });
+    expect(marked.rows.map((e) => e.id)).toEqual(['x3']);
+    const hiddenView = store.listAdmin({ hiddenOnly: true, offset: 0, limit: 10 });
+    expect(hiddenView.rows.map((e) => e.id)).toEqual(['x0']);
+    const searched = store.listAdmin({ query: '第2句', offset: 0, limit: 10 });
+    expect(searched.rows.map((e) => e.id)).toEqual(['x2']);
+    expect(searched.truncated).toBe(false);
+    const byTrigger = store.listAdmin({ trigger: 'tool_failure', offset: 0, limit: 10 });
+    expect(byTrigger.rows).toHaveLength(4);
+    const byLane = store.listAdmin({ lane: 'live', offset: 0, limit: 10 });
+    expect(byLane.rows).toHaveLength(4); // 5 句里藏 1，缺省视图 4
+  });
+
+  it('reviseEntry：更正式插新行，★与 cues 跟着走，旧行进幽灵；幽灵/藏行拒改', () => {
+    const { store } = adminStore();
+    store.append(ctxA, draft); // 带 fact.tool=bash ⇒ 有 cues
+    store.setFeedback('e1', 5);
+    const revised = store.reviseEntry('e1', { text: '其实那一下我记岔了，重新记。', salience: 2 });
+    expect(revised).not.toBeNull();
+    expect(revised?.id).not.toBe('e1');
+    expect(revised?.feedbackScore).toBe(5); // G4：★不随编辑蒸发
+    // 读回断言（round-28 拓的假绿教训）：★必须**落库**，不能只在返回对象里
+    expect(store.byId(revised?.id ?? '')?.feedbackScore).toBe(5);
+    expect(revised?.sourceRef).toBe('rev:e1');
+    expect(revised?.salience).toBe(2);
+    expect(store.byId('e1')?.supersededBy).toBe(revised?.id);
+    const cues = store.cuesFor([revised?.id ?? '']).get(revised?.id ?? '');
+    expect(cues).toContain('bash'); // cues 拷贝而非重建（不拿提取器再造一次真相）
+    // 幽灵行与藏行都拒改（编辑不是恢复后门）
+    expect(store.reviseEntry('e1', { text: '再改' })).toBeNull();
+    store.setHidden([revised?.id ?? ''], true);
+    expect(store.reviseEntry(revised?.id ?? '', { text: '藏后改' })).toBeNull();
+  });
+
+  it('allForSession 含幽灵与藏行（备份腿不许投影筛选渗进来）；镜像路行为对齐', () => {
+    const { store } = adminStore();
+    store.append(ctxA, draft);
+    store.append({ ...ctxA, id: 'e2', tsMs: 2_000 }, draft);
+    store.supersede('e1', 'e2');
+    store.setHidden(['e2'], true);
+    const rows = store.allForSession('s1');
+    expect(rows.map((e) => e.id).sort()).toEqual(['e1', 'e2']);
+    // 镜像分支：同样能藏能编辑能列（降级态管理面不半瘫）
+    const mirror = new ExperienceStore({ db: null, logger });
+    mirror.append(ctxA, draft);
+    mirror.setFeedback('e1', 5);
+    expect(mirror.setHidden(['e1'], true)).toBe(1);
+    expect(mirror.listAdmin({ offset: 0, limit: 10 }).rows).toHaveLength(0);
+    expect(mirror.listAdmin({ hiddenOnly: true, offset: 0, limit: 10 }).rows.map((e) => e.id)).toEqual(['e1']);
+    mirror.setHidden(['e1'], false); // 先再想起：藏行拒改是正确行为，编辑腿单独验
+    const mirrorRevised = mirror.reviseEntry('e1', { text: '镜像里的新理解' });
+    expect(mirrorRevised?.feedbackScore).toBe(5);
+    expect(mirror.recent('s1', 5).map((e) => e.id)).toEqual([mirrorRevised?.id]);
   });
 });

@@ -152,15 +152,23 @@ describe('task_7.2 语义诚实闸', () => {
 });
 
 describe('task_7.3 / 7.3b 解耦与不越界', () => {
-  it('src 与 client 的**代码**都不引用 prime-memory、不读它的库、不调它的端点', () => {
+  it('src 与 client 不引用 prime-memory 包、不读它的库；dsh-memory 端点只许 prime/client.ts 一处', () => {
     // 只扫代码不扫注释：文档里写"同机装了 dsh-memory 会怎样"正是本插件的关键约束，
     // 把它禁止掉会逼人把注释删掉——那是拿安全换门禁变绿。
-    const needles = ['dsh-prime-memory', '~/.dsh/memory', 'dsh-memory/'];
+    // v0.3.2 边界演进：主人档案要**消费** prime-memory 的只读 RPC（用户点名需求），
+    // 所以禁的不再是"碰它的端点"，而是"散落式消费"：契约形状只许收在 client.ts 单文件，
+    // 包引用与库直读仍是硬禁（那是把对方内部 schema 当自己依赖的开始）。
+    const hardBan = ['dsh-prime-memory', '~/.dsh/memory'];
     const offenders: string[] = [];
+    const endpointUsers: string[] = [];
     for (const { file, code } of readSources()) {
-      for (const needle of needles) if (code.includes(needle)) offenders.push(`${file} → ${needle}`);
+      for (const needle of hardBan) if (code.includes(needle)) offenders.push(`${file} → ${needle}`);
+      if (code.includes('dsh-memory/') && file !== '../src/prime/client.ts') endpointUsers.push(file);
     }
     expect(offenders).toEqual([]);
+    expect(endpointUsers).toEqual([]);
+    // 正向断言：唯一消费面确实在 client.ts（否则"收口"会变成"根本没接线"的假绿）
+    expect(readSources().some(({ file, code }) => file === '../src/prime/client.ts' && code.includes('dsh-memory/'))).toBe(true);
   });
 
   it('不直读 DRSC 的库文件（只走它的 op 面）', () => {
@@ -168,9 +176,17 @@ describe('task_7.3 / 7.3b 解耦与不越界', () => {
       .filter(({ code }) => /projection\.db|dsh-reference-session-collector[^']*(db|sqlite)/u.test(code))
       .map(({ file }) => file);
     expect(offenders).toEqual([]);
-    // 唯一的 collector 字面量只能是 API 路径
+    // 唯一的 collector 字面量只能是 API 路径——但 v0.3.3 起有一个合法例外：
+    // copy.ts 的缺席指引文案（drscHint.guide）必须报出包名才能让用户复制命令；
+    // 它是纯文案面不是读路径，读代码面的纪律不变。
     const apiOnly = readSources().filter(({ body }) => body.includes('dsh-reference-session-collector'));
-    for (const { body } of apiOnly) expect(body).toContain('/api/dsh-reference-session-collector');
+    for (const { file, body } of apiOnly) {
+      if (file === '../client/src/copy.ts') {
+        expect(body).toContain('dsh plugin add dsh-reference-session-collector');
+        continue;
+      }
+      expect(body, file).toContain('/api/dsh-reference-session-collector');
+    }
   });
 
   it('spirit 自己不维护会话索引（会话列表是 DRSC 的地盘）', () => {
@@ -465,8 +481,10 @@ describe('task_7.10 checklist 审计补闸', () => {
   });
 
   it('注入构造绝不署 kind:user（否则冒充用户轮次 + 被同机 L0 蒸馏）', () => {
+    // 豁免一处：distill/llm.ts 的 kind:'user' 是**蒸馏调用的模型 API 输入消息**（发给 llm 服务的
+    // 一次性请求），不是会话消息轨的注入——会话轨的冒充红线由 SPIRIT_SOURCE_KIND 单源把守不变。
     const offenders = readSources()
-      .filter(({ file }) => file.startsWith('../src/'))
+      .filter(({ file }) => file.startsWith('../src/') && file !== '../src/distill/llm.ts')
       .filter(({ code }) => /kind:\s*'user'/u.test(code))
       .map(({ file }) => file);
     expect(offenders).toEqual([]);
@@ -497,6 +515,133 @@ describe('task_7.10 checklist 审计补闸', () => {
     const keyLines = schema.split('\n').filter((line) => /PRIMARY KEY|UNIQUE/iu.test(line));
     expect(keyLines.filter((line) => /_seq\b/u.test(line))).toEqual([]);
     expect(keyLines.length).toBeGreaterThan(0);
+  });
+});
+
+describe('spirit-sea-admin：写面收敛与风格纪律实闸', () => {
+  /**
+   * G1：把 schema.ts 头注里声称的「无-UPDATE 豁免闸」从纸面落成实闸。
+   * experience 是可回滚真源：只有四个标记列能被原地覆写（取代/时间戳/★打分/藏起），
+   * 正文与派生分（text/fact/salience/gist/trigger/notice）要变只能插新行——
+   * 编辑走 reviseEntry（插新行+旧行置 superseded_by），绝不 UPDATE 正文。
+   */
+  it('G1 UPDATE experience 的列白名单：只许 superseded_by/updated_at/feedback_score/hidden_at', () => {
+    const allowed = new Set(['superseded_by', 'updated_at', 'feedback_score', 'hidden_at']);
+    const offenders: string[] = [];
+    for (const { file, code } of readSources()) {
+      if (!file.startsWith('../src/')) continue;
+      // 抓 UPDATE experience SET … WHERE 之间的列名清单（语句全部是本仓字面量，零拼接）
+      for (const m of code.matchAll(/UPDATE\s+experience\s+SET\s+([\s\S]*?)\s+WHERE/gu)) {
+        for (const part of (m[1] ?? '').split(',')) {
+          const col = part.trim().match(/^([a-z_]+)\s*=/u)?.[1];
+          if (col !== undefined && !allowed.has(col)) offenders.push(`${file} → UPDATE ${col}`);
+          if (col === undefined && part.trim() !== '') offenders.push(`${file} → 无法解析的 SET 段: ${part.trim()}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+    // 防伪绿：扫描集里确实拓到了两条以上已知写面（supersede 与 setFeedback）
+    const seen = readSources().filter(({ file, code }) =>
+      file.startsWith('../src/') && /UPDATE\s+experience\s+SET/u.test(code));
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+  });
+
+  /**
+   * G10：契约在、UI 没了——门禁不会替你把关可达性。
+   * 这三个 op 是设置卡瘦身后的「必须还能从 client 摸到」清单（experience-feedback
+   * 迁去翻阅 tab、settings-set/journal-export 留卡内），引用消失即红。
+   */
+  it('G10 UI 可达性：settings-set/journal-export/experience-feedback 在 client 源码有引用', () => {
+    const required = ['settings-set', 'journal-export', 'experience-feedback'];
+    const clientCode = readSources()
+      .filter(({ file }) => file.startsWith('../client/src/'))
+      .map(({ code }) => code)
+      .join('\n');
+    for (const op of required) expect(clientCode.includes(`'${op}'`), op).toBe(true);
+  });
+
+  /**
+   * R5 拟人化风格闸：项目以 DeepSeek 拟人化为目标，新机制文案统一鱼的第一人称行为语言。
+   * 只约束新前缀键（rec / dream / drscHint 三族）——既有键里「任务推进」是用户定过的
+   * 在意面 label，不在射程；新文案里出现机械词（批处理/批量/作业/退场/废弃/物理删除）即红。
+   */
+  it('R5 新前缀文案禁机械词（拟人化风格纪律）', () => {
+    const banned = ['批处理', '批量', '作业', '退场', '废弃', '物理删除'];
+    const zh = readFileSync(fileURLToPath(new URL('../client/src/copy.ts', import.meta.url)), 'utf8');
+    const offenders: string[] = [];
+    for (const m of zh.matchAll(/\b(?:rec|dream|drscHint|sleep|topic|causal)\.\w+:\s*'([^']*)'/gu)) {
+      for (const word of banned) {
+        if ((m[1] ?? '').includes(word)) offenders.push(`${m[0].slice(0, 40)} → ${word}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('spirit-memory-ladder：长觉阶梯实闸（G11/G13/G15/G20/G24）', () => {
+  /**
+   * G15 结构版：注入链的输入面只认工作记忆。
+   * 蒸馏产物（topic/insight/causal_edge/sleep_run）是 action_bias 定性——调研拓出的硬阻断：
+   * 只要蒸馏行进了 recent()/deriveMood 的可见面，注入指纹每轮变、卡片每轮重发，
+   * 而现有门禁全绿（条数闸不数内容）。行为版在 ruminate.test（蒸完整轮后指纹逐字不变）。
+   */
+  it('G15 注入链文件不得 import 蒸馏派生模块', () => {
+    const injectionFiles = readSources()
+      .filter(({ file }) =>
+        file.startsWith('../src/') &&
+        /spirit\.ts$|hooks\/[\w-]+\.ts$|slot\/[\w-]+\.ts$|recall\/[\w-]+\.ts$|experience\/[\w-]+\.ts$/u.test(file));
+    const bannedImport = /from\s*'[^']*(?:topics|insights|edges|ruminate)\.js'|from\s*'[^']*embed\//u;
+    const offenders = injectionFiles.filter(({ code }) => bannedImport.test(code)).map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * G11 出站面收口：解耦闸只防跨插件越界，不防对全互联网越界（调研发现）。
+   * 非 loopback 目标的 fetch 只能出现在点名文件里（embed/remote.ts 是预留位，长觉阶梯启用前不该有第四处）。
+   */
+  it('G11 fetch 调用点白名单收口', () => {
+    const allowed = ['../src/drsc/client.ts', '../src/prime/client.ts', '../src/embed/remote.ts'];
+    const offenders = readSources()
+      .filter(({ file, code }) => file.startsWith('../src/') && !allowed.includes(file) && /\bfetch\s*\(/u.test(code))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * G13 fail-closed：模型路由解析失败绝不隐式改选（账单+隐私+可解释性三重不可接受）。
+   * distill 目录一旦存在：①必须有 NoDistillRouteError（正向断言防伪绿）；②不得出现退默认模型的分支形状。
+   */
+  it('G13 distill 路不存退默认模型分支', () => {
+    const distillFiles = readSources().filter(({ file }) => file.startsWith('../src/distill/'));
+    if (distillFiles.length === 0) return; // 未落地：空集绿（落地后本断言自动获得内容）
+    expect(distillFiles.some(({ code }) => code.includes('NoDistillRouteError'))).toBe(true);
+    const offenders = distillFiles
+      .filter(({ code }) => /fallback\w*model|defaultModel\s*\?\?|退到?默认/u.test(code))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * G20 数据出境：蒸馏 prompt 只吃查表产物（text/gist/结构化 fact），用户原文是红线——
+   * capture.userSnippet 缺省关的隐私承诺不能被 prompt 绕过（quote 三硬约束同族）。
+   */
+  it('G20 prompts 构造不得引用 quote', () => {
+    const prompts = readSources().filter(({ file }) => /src\/distill\/prompts\.ts$/u.test(file));
+    for (const { code } of prompts) expect(code).not.toMatch(/\bquote\b/u);
+  });
+
+  /**
+   * G24 凭据零落日志/零回显：apiKey 是 spirit 的首份凭据（部署面），
+   * 不进 settings-get 响应、不进日志行；rpc.ts 的「没有密钥类数据」注释已同步改为准确表述。
+   */
+  it('G24 apiKey 不进 settings-get 响应、不落日志', () => {
+    const rpcCode = stripComments(readFileSync(fileURLToPath(new URL('../src/rpc.ts', import.meta.url)), 'utf8'));
+    const settingsBlock = rpcCode.slice(rpcCode.indexOf("case 'settings-get'"), rpcCode.indexOf("case 'sea-graph'"));
+    expect(settingsBlock).not.toContain('apiKey');
+    const loggerOffenders = readSources()
+      .filter(({ file, code }) => file.startsWith('../src/') && /logger\.\w+\([^)]*apiKey(?!\s*[:?])[^)]*\)/u.test(code) && !code.includes('是否已配置'))
+      .map(({ file }) => file);
+    expect(loggerOffenders).toEqual([]);
   });
 });
 

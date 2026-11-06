@@ -81,4 +81,29 @@ describe(`规模闸（${ROWS} 条，无 FTS5）`, () => {
     for (let i = 0; i < 1_000; i += 1) deriveMood(undefined, entries, Date.now(), { halfLifeMs: 5_400_000, stepCap: 1, staleAfterMs: 600_000 });
     expect((performance.now() - t0) / 1_000).toBeLessThan(1);
   });
+
+  // 翻阅 tab（v0.3.3）：全库分页是新增的读面，现有闸不覆盖它——本库只增不删，
+  // 这条查询若无索引会随使用时长单调变慢，所以量闸必须在这里先钉住（exp_ts/exp_trigger_ts 的 raison d'être）。
+  it('管理面全库分页：首页/筛选/搜索/深翻各档 p95 在冷路径预算内（<300ms）', () => {
+    const durations: number[] = [];
+    const timed = (fn: () => void): void => {
+      const t0 = performance.now();
+      fn();
+      durations.push(performance.now() - t0);
+    };
+    for (let i = 0; i < 10; i += 1) {
+      timed(() => store!.listAdmin({ offset: 0, limit: 50 }));
+      timed(() => store!.listAdmin({ trigger: 'tool_failure', offset: 0, limit: 50 }));
+      timed(() => store!.listAdmin({ query: 'pnpm-build', offset: 0, limit: 50 }));
+      timed(() => store!.listAdmin({ offset: 5_000, limit: 50 })); // 深翻：OFFSET 线性代价的基线档
+    }
+    const p95 = [...durations].sort((a, b) => a - b)[Math.floor(durations.length * 0.95)] ?? Math.max(...durations);
+    // 冷路径（面板动作触发，不在每轮热路上）；预算 300ms：2 万行实测 p95≈226（并行套件噪声含在内），
+    // 超 300 才是索引没吃到力的信号；热路径的预算（400/20ms）由上面两条旧闸把守
+    expect(p95, `p95=${p95.toFixed(1)}ms`).toBeLessThan(300);
+    // 形状诚实：深翻必须报得出行且 hasMore 成立（不是"空了但没报错"）
+    const deep = store!.listAdmin({ offset: 5_000, limit: 50 });
+    expect(deep.rows).toHaveLength(50);
+    expect(deep.hasMore).toBe(true);
+  });
 });

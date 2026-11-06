@@ -8,7 +8,7 @@
  * stats ⇄ client。少一腿即红——历史上姊妹包正是靠这一份测试挡住了"用户已存值被静默丢弃"。
  */
 
-import type { SpiritVerdict } from './types.js';
+import type { Lane, SpiritVerdict, TriggerKind } from './types.js';
 
 // ─────────────────────────────────────────────────────────── 命名（避让表）
 
@@ -58,6 +58,35 @@ export const SPIRIT_OPS = [
   'experience-feedback',
   'settings-get',
   'settings-set',
+  // v0.3 记忆星海（只读投影，不开写图面）
+  'sea-graph',
+  // v0.3 人设管理（复用 PersonaStore.save 的既有写面）
+  'persona-preview',
+  'persona-set',
+  'persona-history',
+  'persona-restore',
+  // v0.3.1 人设 markdown 备份（导出可读单层 md；导入走 save() 唯一写路径 = 追加新 revision）
+  'persona-export-md',
+  'persona-import-md',
+  // v0.3.2 主人背景档案（双段：prime-memory 同步段 + 主人自述段；ping 为事件接收预备）
+  'owner-get',
+  'owner-set-self',
+  'owner-sync-now',
+  'owner-sync-ping',
+  // v0.3.3 翻阅 tab（条目管理面：藏起/更正编辑，行永不物理删）+ 做梦（确定性整理 pass）
+  'entries-list',
+  'entries-hide',
+  'entries-unhide',
+  'entries-update',
+  'dream-run',
+  'dream-report',
+  // v0.3.5 长觉阶梯：异步归纳 pass（进度/取消/报告）+ 主题分区只读面 + 碰撞人工裁决
+  'sleep-run',
+  'sleep-status',
+  'sleep-cancel',
+  'sleep-report',
+  'topics-get',
+  'insight-resolve',
 ] as const;
 export type SpiritOp = (typeof SPIRIT_OPS)[number];
 
@@ -110,17 +139,22 @@ export interface SpiritFeedbackRequest {
   score: number;
 }
 
-/** 面板可调的 volatile 键（六腿的写腿；只收这三键，其余属部署面）。 */
+/** 面板可调的 volatile 键（六腿的写腿；只收这五键，其余属部署面）。 */
 export interface SpiritSettingsRequest {
   fadeEnabled?: boolean;
   fadeHalfLifeMs?: number;
   feedbackEnabled?: boolean;
+  dreamEnabled?: boolean;
+  /** 长觉热更开关（v0.3.5）：面板一键开；部署面总闸关时它开了也不跑（双闸取与）。 */
+  distillEnabled?: boolean;
 }
 
 export interface SpiritSettingsView {
   fadeEnabled: boolean;
   fadeHalfLifeMs: number;
   feedbackEnabled: boolean;
+  dreamEnabled: boolean;
+  distillEnabled: boolean;
   /** 热更通道是否真能落盘（宿主 volatile 不可写时为 false，面板要如实标重启生效）。 */
   hotUpdatable: boolean;
 }
@@ -136,6 +170,31 @@ export interface SpiritRequestMap {
   'experience-feedback': SpiritFeedbackRequest;
   'settings-get': Record<string, never>;
   'settings-set': SpiritSettingsRequest;
+  'sea-graph': SpiritSeaRequest;
+  'persona-preview': SpiritPersonaPreviewRequest;
+  'persona-set': SpiritPersonaSetRequest;
+  'persona-history': SpiritPersonaHistoryRequest;
+  'persona-restore': SpiritPersonaRestoreRequest;
+  'persona-export-md': Record<string, never>;
+  'persona-import-md': { text: string };
+  'owner-get': Record<string, never>;
+  'owner-set-self': SpiritOwnerSetSelfRequest;
+  'owner-sync-now': Record<string, never>;
+  'owner-sync-ping': { reason?: string };
+  // v0.3.3 翻阅 tab + 做梦
+  'entries-list': SpiritEntriesListRequest;
+  'entries-hide': SpiritEntriesHideRequest;
+  'entries-unhide': SpiritEntriesHideRequest;
+  'entries-update': SpiritEntriesUpdateRequest;
+  'dream-run': Record<string, never>;
+  'dream-report': Record<string, never>;
+  // v0.3.5 长觉阶梯
+  'sleep-run': Record<string, never>;
+  'sleep-status': Record<string, never>;
+  'sleep-cancel': Record<string, never>;
+  'sleep-report': Record<string, never>;
+  'topics-get': Record<string, never>;
+  'insight-resolve': SpiritInsightResolveRequest;
 }
 
 export interface SpiritResponseMap {
@@ -148,6 +207,29 @@ export interface SpiritResponseMap {
   'experience-feedback': { entryId: string; score: number; ok: boolean };
   'settings-get': SpiritSettingsView;
   'settings-set': SpiritSettingsView;
+  'sea-graph': SpiritSeaGraph;
+  'persona-preview': SpiritPersonaPreview;
+  'persona-set': SpiritPersonaView;
+  'persona-history': SpiritPersonaHistoryPage;
+  'persona-restore': SpiritPersonaView;
+  'persona-export-md': SpiritPersonaMarkdown;
+  'persona-import-md': SpiritPersonaView;
+  'owner-get': SpiritOwnerProfile;
+  'owner-set-self': SpiritOwnerProfile;
+  'owner-sync-now': SpiritOwnerSyncResult;
+  'owner-sync-ping': SpiritOwnerPingResult;
+  'entries-list': SpiritEntriesListResult;
+  'entries-hide': SpiritEntriesHideResult;
+  'entries-unhide': SpiritEntriesHideResult;
+  'entries-update': SpiritJournalRow;
+  'dream-run': SpiritDreamOutcome;
+  'dream-report': { report: SpiritDreamReport | null };
+  'sleep-run': { accepted: boolean; reason?: string };
+  'sleep-status': SpiritSleepStatus;
+  'sleep-cancel': { requested: boolean };
+  'sleep-report': { report: SpiritSleepReport | null };
+  'topics-get': { topics: Array<{ id: string; name: string; origin: string; entries: number; insights: number; insightRows: SpiritInsightView[] }>; conflicts: SpiritInsightView[] };
+  'insight-resolve': { resolved: boolean };
 }
 
 /** 端点字面量类型（client 与 host 白名单共用）。 */
@@ -206,27 +288,38 @@ export interface SpiritSessionStats {
   fade?: { full: number; gist: number; held: number; marked: number; pool: number; churn: number };
 }
 
+/** 手记行形状（journal-tail 与翻阅 tab 的 entries-list 共用同一投影：搜索/浏览回同形，不分两套字段）。 */
+export interface SpiritJournalRow {
+  id: string;
+  tsMs: number;
+  turnSeq: number;
+  trigger: string;
+  notice: string;
+  reaction: string;
+  text: string;
+  lane: string;
+  sourceRef: string | null;
+  /** v0.2：一句话压缩残句（旧行/缺格 = null）。 */
+  gist: string | null;
+  /** v0.2：人格在意度 0..2（v1 旧行 = null，不假装知道旧权重）。 */
+  salience: number | null;
+  /** v0.2：人工反馈 -1..5（未打分 = null，保持原序）。 */
+  feedbackScore: number | null;
+  /** v0.3：勾起线索（≤4 条）：手记条目从“一句话”变成“带证据面的卡片”（对照 prime-memory explorer 的结构层）。 */
+  cues: string[];
+  /** v0.3：所属会话（翻阅 tab 跨会话列表要显示来源；journal-tail 单会话视图里恒等于页会话）。 */
+  sessionId?: string;
+  /** v0.3.3：被谁取代（未取代 = null；翻阅 tab 的幽灵行才带得出解释）。 */
+  supersededBy?: string | null;
+  /** v0.3.3：藏起时间（未藏 = null）。 */
+  hiddenAt?: number | null;
+}
+
 /** 手记分页视图（读库投影；库是真源，不是文档）。 */
 export interface SpiritJournalPage {
   sessionId: string;
   /** 返回给面板的条目（体验句 + 结构化事实分列）。 */
-  rows: Array<{
-    id: string;
-    tsMs: number;
-    turnSeq: number;
-    trigger: string;
-    notice: string;
-    reaction: string;
-    text: string;
-    lane: string;
-    sourceRef: string | null;
-    /** v0.2：一句话压缩残句（旧行/缺格 = null）。 */
-    gist: string | null;
-    /** v0.2：人格在意度 0..2（v1 旧行 = null，不假装知道旧权重）。 */
-    salience: number | null;
-    /** v0.2：人工反馈 -1..5（未打分 = null，保持原序）。 */
-    feedbackScore: number | null;
-  }>;
+  rows: SpiritJournalRow[];
   total: number;
   offset: number;
   limit: number;
@@ -243,11 +336,172 @@ export interface SpiritExportResult {
   dryRun: boolean;
 }
 
-/** 人格读面（写面不在 v0.1，故只 get）。 */
+/** 淡出档位（图上就是“亮度等级”的离散档；与注入侧同一公式同一阈值）。 */
+export type SpiritSeaTier = 'full' | 'gist' | 'held';
+
+/**
+ * 记忆星海（v0.3）：**只读投影**，不是可查询图谱。
+ *
+ * 点的坐标（x/y/z）不在契约里：语义（归属轴 `axis`、老化 `freshness`）由 host 算，
+ * 几何由 client 的 layout 算——换主题/换布局不需要重取数据。
+ */
+export interface SpiritSeaPoint {
+  id: string;
+  /** 毫秒时间戳；只用于布局与详情，不进任何对外文本。 */
+  t: number;
+  sessionId: string;
+  turnSeq: number;
+  trigger: TriggerKind;
+  lane: Lane;
+  /** 体验句（已按 `SEA_POINT_TEXT_MAX` 截断）。 */
+  text: string;
+  /** 一句话残句（v1 旧行没有 ⇒ null）。 */
+  gist: string | null;
+  /** 人格在意度 0..2（v1 旧行 = 0，不假装知道旧权重）。 */
+  salience: number;
+  /** 老化权重 0..1（无 0.5 地板；亮度直接用它）。 */
+  freshness: number;
+  /**
+   * 亮度等级（淡出档位）：`full` 实星 / `gist` 半亮 / `held` 暗星。
+   *
+   * 连续 `freshness` 负责“同一档内部的渐变”，离散 `tier` 负责“能不能发光”：
+   * 光晕强度由它门控，否则极老但相关的条目会被当成“没记住”。
+   */
+  tier: SpiritSeaTier;
+  /** 归属轴 −1..+1：−1 = 关于她自己，+1 = 关于主人。 */
+  axis: number;
+  /** 人工反馈 −1..5；未打分 = null。 */
+  feedback: number | null;
+  /** 勾起线索（≤4 条）：详情卡的“证据面” chips（与手记同源，来自 experience_cues）。 */
+  cues: string[];
+  /**
+   * 幽灵点：本条已被更正（`superseded_by` 非空）。
+   *
+   * 星海**故意**把它画出来：append-only + 只标记不删是本插件的根纪律，
+   * 图上只留新行就等于把“我记错过、后来改了”这条事实规掉。
+   * 渲染上它不发光、降亮度，只能被点中看原文。
+   */
+  superseded: boolean;
+}
+
+/** 边：四类都**可解释**（共享 cue / 时间邻近 / 取代链 / 因果），不随机连。 */
+export interface SpiritSeaEdge {
+  a: string;
+  b: string;
+  score: number;
+  /** 'causal'（v0.3.5）：长觉/启发式因果边，label 带关系词；截断优先级 causal > cue > time。 */
+  kind: 'cue' | 'time' | 'supersede' | 'causal';
+  /** 关系词（因果边专用：导致/因为/修复了/取代或 LLM 新词）。 */
+  label?: string;
+}
+
+export interface SpiritSeaStats {
+  /** 窗口内实际返回的点数（含幽灵点）。 */
+  loaded: number;
+  /** 其中被更正过的幽灵点数（面板要能说出“图上有 N 条已被更正”）。 */
+  ghosts: number;
+  /** 库内可用条目总数（不分窗口）。 */
+  total: number;
+  edges: number;
+  byTrigger: Record<string, number>;
+  byLane: Record<string, number>;
+  /** 淡出三档分布（未启用淡出时按 salience 退化为 full/held 两类）。 */
+  fade: { full: number; gist: number; held: number };
+  /** 当前情绪档词（无运行态时为空串，不编造）。 */
+  moodLabel: string;
+  span: { from: number; to: number } | null;
+  /** 库不可用 → true（图上要单独提示，不与「无条目」合并）。 */
+  degraded: boolean;
+  /** 本次窗口上限（便于前端显示「已加载 X / 上限 Y」）。 */
+  window: number;
+}
+
+export interface SpiritSeaGraph {
+  points: SpiritSeaPoint[];
+  edges: SpiritSeaEdge[];
+  stats: SpiritSeaStats;
+  /**
+   * “刚发生的”条目 id（近因路：该会话最近 `card.recentK` 条）。
+   *
+   * ⚠️ 它是“当前会进卡的那几条”的**近似**（取库内最近几条，不等价于上一张卡的快照），
+   * 图上用它做高亮可以，不得当“实际注入了哪些”的审计结论。
+   */
+  focusIds: string[];
+  /**
+   * DRSC 探测判定（v0.3.3 顶栏短提示的数据源）：单源在服务端，
+   * 面板不再自己拉 session-stats 猜——星海打开时未必有会话注册表。
+   */
+  drscVerdict: SpiritVerdict;
+}
+
+export interface SpiritSeaRequest {
+  /** `all`（缺省）= 全库跨会话；`session` = 只看某一会话。 */
+  scope?: 'all' | 'session';
+  /** `scope='session'` 时必填；`all` 时忽略。 */
+  sessionId?: string;
+  /** 窗口大小；缺省与上限都是 `SEA_WINDOW_LIMIT`。 */
+  limit?: number;
+}
+
+/** 可写的人设字段白名单（id / revision 不接受外部写入）。 */
+export interface SpiritPersonaPatch {
+  name?: string;
+  /** 昵称序列（大名之外的批量称呼，去重保序、单条 ≤24 字、最多 8 个）。 */
+  aliases?: string[];
+  /** 自称序列（我/本鱼/鱼鱼…）：主人可改，模型也能经 spirit_selfname 工具自己增删。 */
+  selfNames?: string[];
+  voice?: string;
+  salience?: Record<string, number>;
+  focus?: string[];
+  values?: string[];
+  boundaries?: string[];
+}
+
+export interface SpiritPersonaPreviewRequest {
+  patch: SpiritPersonaPatch;
+}
+
+export interface SpiritPersonaPreview {
+  /** 保存后会注入系统提示的原文（与 `composePersonaText` 同源）。 */
+  projectedText: string;
+  bytes: number;
+  budgetBytes: number;
+  overBudget: boolean;
+}
+
+export interface SpiritPersonaSetRequest {
+  /** 乐观并发：与当前 revision 不等即拒绝（不静默覆盖别人的修改）。 */
+  expectedRevision: number;
+  patch: SpiritPersonaPatch;
+}
+
+export interface SpiritPersonaHistoryRequest {
+  limit?: number;
+}
+
+export interface SpiritPersonaHistoryItem {
+  revision: number;
+  name: string;
+  voice: string;
+}
+
+export interface SpiritPersonaHistoryPage {
+  current: number;
+  items: SpiritPersonaHistoryItem[];
+}
+
+export interface SpiritPersonaRestoreRequest {
+  /** 回到哪一版（以**新 revision** 落库，历史不动）。 */
+  revision: number;
+}
+
+/** 人格读面（写面不在 v0.1，故只 get；v0.3 起写面经 `persona-set` 接出）。 */
 export interface SpiritPersonaView {
   id: string;
   revision: number;
   name: string;
+  aliases: string[];
+  selfNames: string[];
   voice: string;
   salience: Record<string, number>;
   focus: string[];
@@ -255,6 +509,162 @@ export interface SpiritPersonaView {
   boundaries: string[];
   /** 当前会被注入系统提示的原文（与注入同源，可核对）。 */
   projectedText: string;
+}
+
+/**
+ * 人设的 markdown 备份（单层纯人话，文件本身就是恢复源）。
+ *
+ * `revision` 在导出时是当前版本号；导入时**一律不采信**（由 store 推进）——
+ * 外部给什么都不收，与 `persona-set` 的 `expectedRevision` 同纪律。
+ */
+export interface SpiritPersonaMarkdown {
+  text: string;
+  revision: number;
+}
+
+/**
+ * 主人背景档案（双段）：同步段来自 prime-memory 图谱投影（整段覆盖），
+ * 自述段主人手写（同步永不触碰）。`primeStatus` 是探测实态，不是缓存意图。
+ */
+export interface SpiritOwnerProfile {
+  syncText: string;
+  selfText: string;
+  syncMeta: { syncedAt: number | null; sourceNodes: number; degraded: boolean };
+  /** 面板编辑的乐观并发锚（只随自述段推进；同步落库不碰它）。 */
+  revision: number;
+  primeStatus: 'available' | 'absent' | 'graph-off';
+}
+
+export interface SpiritOwnerSetSelfRequest {
+  text: string;
+  expectedRevision: number;
+}
+
+export interface SpiritOwnerSyncResult {
+  ok: boolean;
+  /** false = 去重窗命中或源缺席（都不是错误，但面板要能说出口）。 */
+  updated: boolean;
+  reason?: string;
+}
+
+export interface SpiritOwnerPingResult {
+  accepted: boolean;
+}
+
+// ─────────────────────────────────────────────────────── 翻阅 tab 与做梦（v0.3.3）
+
+/** 翻阅查询：全库跨会话筛选 + 服务端分页（行形状与 journal-tail 同一投影）。 */
+export interface SpiritEntriesListRequest {
+  query?: string;
+  trigger?: string;
+  lane?: string;
+  /** true ⇒ 只看被标过在意的（feedback_score >= 0）。 */
+  marked?: boolean;
+  /** 默认不含幽灵；true ⇒ 连被取代的历史版本一起列。 */
+  includeGhosts?: boolean;
+  /** 「藏起来的回忆」视图：只看藏起的（恢复入口在这里）。 */
+  hiddenOnly?: boolean;
+  sessionId?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface SpiritEntriesListResult {
+  rows: SpiritJournalRow[];
+  /** wanted=limit+1 探界，不做全表 COUNT（本库只增不删，COUNT(*) 是每次扫）。 */
+  hasMore: boolean;
+  /** 搜索候选池被扫描窗吃满 ⇒ 更早的可能没勾起（诚实截断，不假装是全）。 */
+  truncated: boolean;
+  offset: number;
+  /** 首屏（offset===0）下发枚举 slug 目录：client 拿自己的 label 单源翻译，不手抄枚举。 */
+  catalogs?: { triggers: string[]; lanes: string[] };
+}
+
+export interface SpiritEntriesHideRequest {
+  /** 批量上界 200（超出服务端截断不报错，scale-ledger F1：没有上界的批是债）。 */
+  ids: string[];
+}
+
+export interface SpiritEntriesHideResult {
+  changed: number;
+}
+
+/** 更正式编辑：只收正文/残句/在意度三字段，其余列不开放（trigger/notice 是编译期真相）。 */
+export interface SpiritEntriesUpdateRequest {
+  entryId: string;
+  text?: string;
+  gist?: string;
+  salience?: number;
+}
+
+/** 梦境报告（确定性整理 pass 的读数；只进面板，禁进注入文本与系统提示）。 */
+export interface SpiritDreamReport {
+  dreamedAt: number;
+  mergedPairs: number;
+  archivedSessions: number;
+  archivedEntries: number;
+  archiveDryRun: boolean;
+  active: number;
+  ghosts: number;
+  marked: number;
+  tierFull: number;
+  tierGist: number;
+  tierHeld: number;
+}
+
+export interface SpiritDreamOutcome {
+  updated: boolean;
+  reason?: 'dedup-window' | 'running' | 'degraded' | 'failed' | 'disabled';
+  report?: SpiritDreamReport | null;
+}
+
+// ─────────────────────────────────────────────────────── 长觉阶梯（v0.3.5）
+
+/** 长觉任务阶段（对外可见枚举；拟人语域：没有「批处理/管道」）。 */
+export const SLEEP_PHASES = ['idle', 'collecting', 'distilling', 'deduping', 'persisting', 'done', 'failed', 'cancelled'] as const;
+export type SleepPhase = (typeof SLEEP_PHASES)[number];
+
+/** 一次长觉的产出读数（只进面板，禁进注入——与梦境报告同处置）。 */
+export interface SpiritSleepReport {
+  finishedAt: number;
+  /** 本次实际使用的模型（回显事实，不粉饰；fail-closed 解析失败时根本不会有报告）。 */
+  model: string;
+  entriesScanned: number;
+  topicsTouched: number;
+  insightsCreated: number;
+  edgesCreated: number;
+  conflictsMarked: number;
+  /** 碰撞判定为重复而被丢弃的新洞察数（旧行永远在场，丢弃的只是提案）。 */
+  duplicatesDropped: number;
+}
+
+/** sleep-status 响应：带降级信封（llm 缺席/未装配是 supported:false 的绿路径，不是故障）。 */
+export interface SpiritSleepStatus {
+  supported: boolean;
+  running: boolean;
+  phase: SleepPhase;
+  detail: string;
+  cancelRequested: boolean;
+  startedAt: number;
+  finishedAt: number;
+  error: string;
+  lastReport: SpiritSleepReport | null;
+}
+
+/** 洞察的对外视图（主题视图卡片与冲突清单共用；evidence 回指工作记忆条目）。 */
+export interface SpiritInsightView {
+  id: string;
+  topicId: string;
+  text: string;
+  status: string;
+  evidenceIds: string[];
+  createdAt: number;
+}
+
+/** 碰撞人工裁决请求：「信这条」= keep 胜方、supersede 败方；机器不自动删的纪律在人机上同样成立。 */
+export interface SpiritInsightResolveRequest {
+  winnerId: string;
+  loserId: string;
 }
 
 // ─────────────────────────────────────────────────────────── 配置（单源）
@@ -349,6 +759,63 @@ export interface SpiritConfig {
     timeoutMs: number;
   };
   /**
+   * 星海的**老化尺度**（v0.3 新键）。与 `recall.fadeHalfLifeMs` 故意分开：
+   *
+   * 后者是“注意力窗口”尺度（小时），用来决定“这条还上不上卡”；而星海要展示的
+   * 是一段一段经历**在半年里怎么沉下去**。拿小时尺度去算跨月的库，结果是全图
+   * freshness≈0 ⇒ 所有点都是暗星（真浏览器实测到过：1000 点 0/0/1000）。
+   * 所以图上亮度用天尺度，而 `tier` 仍用注入侧的小时尺度（两者语义不同）。
+   */
+  sea: {
+    /** 星海亮度半衰期（ms）；0 = 关闭老化（全部按最新亮度画）。 */
+    agingHalfLifeMs: number;
+  };
+  /**
+   * 主人背景档案（v0.3.2）。同步链对 prime-memory 是**纯消费方**：
+   * 未装/未启图 ⇒ 探测失败 ⇒ 同步跳过且不清旧段，功能整体休眠不报错。
+   */
+  owner: {
+    /** 定时同步周期（ms）；面板「立即同步」与 ping 不受此限，但共用去重窗。 */
+    syncIntervalMs: number;
+    /** 主人段进系统提示的字节顶；**独立于 persona.budgetBytes**（人格预算不该被档案挤占）。 */
+    budgetBytes: number;
+    /** 显式基址；留空走 trustedHosts → 宿主 webServer 端口 → 8080（同 DRSC 口径）。 */
+    baseUrl: string;
+    /** 探测结果缓存 TTL；缺席判定的新鲜度就靠它。 */
+    probeCacheTtlMs: number;
+  };
+  /**
+   * 做梦（v0.3.3）：确定性本地整理 pass（查重合并+归档+报告），零模型调用、零 DRSC 依赖。
+   * 缺省日级（与 owner 同步同拍：白天随时打盹，晚上睡长觉）；手动按钮与定时器共用去重窗。
+   */
+  dream: {
+    enabled: boolean;
+    intervalMs: number;
+  };
+  /**
+   * 长觉（v0.3.5）：异步 LLM 归纳 pass（归题/洞察/因果边/碰撞判定）。
+   * 缺省关（新能力灰度 + 花真 token）；模型 fail-closed：显式配了就用，留空跟宿主默认，
+   * 两者都拿不到 ⇒ 拒蒸不隐式改选（G13）。向量能力位缺省关（实测不达标才补，同不建 FTS5 决策法）。
+   */
+  distill: {
+    enabled: boolean;
+    provider: string;
+    model: string;
+    reasoningEffort: string;
+    intervalMs: number;
+    batchMin: number;
+    maxInputChars: number;
+    maxOutputTokens: number;
+    timeoutMs: number;
+    vector: {
+      enabled: boolean;
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+      dimensions: number;
+    };
+  };
+  /**
    * 运行时可热更的开关节（整个对象标一次 `.volatile()`，⚠️ 节内不得再标——
    * volatile 嵌套 volatile 会被宿主拒绝）。
    */
@@ -380,6 +847,10 @@ export interface SpiritLiveSettings {
   fadeHalfLifeMs: number;
   /** 人工反馈重排热更（只重排不回灌；闸关=卡片序与闸开前一致）。 */
   feedbackEnabled: boolean;
+  /** 做梦开关热更（v0.3.4）：关掉后定时器每轮现判直接空转，手动「让鱼睡一觉」也拒——设置面可见即此键。 */
+  dreamEnabled: boolean;
+  /** 长觉开关热更（v0.3.5 扁平键：嵌套 volatile 会被宿主拒）。关 ⇒ 定时器空转、sleep-run 拒并指路。 */
+  distillEnabled: boolean;
 }
 
 /**
@@ -425,6 +896,23 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
   journal: { retentionDays: SPIRIT_DEFAULTS_RETENTION_DAYS, dryRun: true },
   capture: { userSnippet: false, maxQuoteChars: 160, gapThresholdMs: 180_000 },
   drsc: { enabled: true, baseUrl: '', probeCacheTtlMs: 15_000, timeoutMs: 5_000 },
+  // 7 天：缺省下“上周的事”约半亮，“上月的事”接近沉底，与“星海看长时段”的用途对得上。
+  sea: { agingHalfLifeMs: 604_800_000 },
+  // 同步缺省日级；预算 400B 约容“自述两句 + 同步清单五行”，装不下就截整行（宁缺勿断）。
+  owner: { syncIntervalMs: 86_400_000, budgetBytes: 400, baseUrl: '', probeCacheTtlMs: 300_000 },
+  dream: { enabled: true, intervalMs: 86_400_000 },
+  distill: {
+    enabled: false,
+    provider: '',
+    model: '',
+    reasoningEffort: '',
+    intervalMs: 21_600_000,
+    batchMin: 12,
+    maxInputChars: 4_000,
+    maxOutputTokens: 2_000,
+    timeoutMs: 30_000,
+    vector: { enabled: false, baseUrl: '', apiKey: '', model: '', dimensions: 0 },
+  },
   live: {
     enabled: true,
     personaEnabled: true,
@@ -443,6 +931,8 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
     fadeEnabled: false,
     fadeHalfLifeMs: 5_400_000,
     feedbackEnabled: true,
+    dreamEnabled: true,
+    distillEnabled: false,
   },
 };
 
@@ -469,6 +959,17 @@ export const SPIRIT_RANGES: Record<string, readonly [number, number]> = {
   'drsc.timeoutMs': [200, 20_000],
   'ledger.maxAgeMs': [0, 2_592_000_000],
   'bias.halfLifeMs': [0, 604_800_000],
+  'sea.agingHalfLifeMs': [0, 7_776_000_000],
+  'owner.syncIntervalMs': [60_000, 604_800_000],
+  'owner.budgetBytes': [0, 2_000],
+  'owner.probeCacheTtlMs': [1_000, 3_600_000],
+  'dream.intervalMs': [60_000, 604_800_000],
+  'distill.intervalMs': [300_000, 604_800_000],
+  'distill.batchMin': [4, 48],
+  'distill.maxInputChars': [800, 32_000],
+  'distill.maxOutputTokens': [256, 8_000],
+  'distill.timeoutMs': [2_000, 120_000],
+  'distill.vector.dimensions': [0, 4096],
 };
 
 /** 单轮淡出形态分布（stats/ab 的计数原料；都是整数计数，无对外数值语义）。 */
@@ -483,11 +984,17 @@ export interface FadeStats {
 
 // ─────────────────────────────────────────────────────────── 版本与文件
 
-/** SQLite schema 版本；跨版本打开明确拒绝，不静默改库（v1→v2 提供正向迁移）。 */
-export const SPIRIT_DB_SCHEMA_VERSION = 2;
+/** SQLite schema 版本；跨版本打开明确拒绝，不静默改库（v1→v2 加列、v2→v3 人设两表、v3→v4 主人档案、v4→v5 藏起列与分页索引、v5→v6 长觉阶梯五表，均正向迁移）。 */
+export const SPIRIT_DB_SCHEMA_VERSION = 6;
 /** `persona.json` 文件形状版本。 */
 export const SPIRIT_PERSONA_FILE_VERSION = 1;
+/** `owner.json` 文件形状版本（db=null 降级面；与 persona 分键，形状互不牵连）。 */
+export const SPIRIT_OWNER_FILE_VERSION = 1;
 /** `session-modes.json` 文件形状版本。 */
 export const SPIRIT_MODES_FILE_VERSION = 1;
 /** 插件版本（与 package.json / dsh.plugin.json 同串，由门禁核对）。 */
-export const SPIRIT_VERSION = '0.2.0';
+export const SPIRIT_VERSION = '0.3.0-local.16';
+
+
+
+

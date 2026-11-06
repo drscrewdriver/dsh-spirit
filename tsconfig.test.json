@@ -5,7 +5,10 @@
     "noEmit": true,
     "declaration": false,
     "sourceMap": false,
-    "types": ["node"]
+    "types": ["node"],
+    // v0.3：星海的布局/投影单测直接 import client 半（纯函数），需要 DOM 类型面
+    // （SeaRenderer 接口里有 HTMLCanvasElement）。仅类型，不影响运行时。
+    "lib": ["ES2022", "DOM"]
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"],
   "exclude": ["dist", "node_modules"]

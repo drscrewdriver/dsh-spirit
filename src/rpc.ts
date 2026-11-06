@@ -17,15 +17,26 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, SPIRIT_RANGES, type SpiritConfig, type SpiritExportResult, type SpiritFeedbackRequest, type SpiritJournalPage, type SpiritLiveSettings, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats, type SpiritSettingsView } from './contract.js';
+import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, SPIRIT_RANGES, type SpiritConfig, type SpiritExportResult, type SpiritFeedbackRequest, type SpiritJournalPage, type SpiritJournalRow, type SpiritLiveSettings, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats, type SpiritSettingsView } from './contract.js';
 import type { Spirit } from './spirit.js';
 import type { SpiritStats } from './stats.js';
 import type { SessionModeStore } from './store/session-modes.js';
 import type { PersonaStore } from './persona/store.js';
+import type { OwnerProfileStore } from './store/owner.js';
+import type { OwnerSyncService } from './prime/sync.js';
+import type { DreamRunner } from './dream/dream.js';
+import type { RuminateRunner } from './distill/ruminate.js';
+import type { TopicStore } from './store/topics.js';
+import type { InsightStore } from './store/insights.js';
+import type { EdgeStore } from './store/edges.js';
 import { composePersonaText } from './persona/render.js';
+import { parsePersonaMarkdown, renderPersonaMarkdown } from './persona/markdown.js';
+import { SEA_WINDOW_LIMIT, buildSeaScene } from './sea/scene.js';
 import { exportSessionEntries } from './store/journal-retention.js';
 import type { ExperienceStore } from './store/experience.js';
-import type { SpiritVerdict } from './types.js';
+import { LANES, TRIGGER_KINDS, type SpiritVerdict } from './types.js';
+import type { ExperienceEntry, PersonaCard } from './types.js';
+import { validatePersona } from './persona/types.js';
 import { getService } from './capability.js';
 
 /** 端点全路径（`dsh-spirit/session-stats` ⇄ `/dsh-spirit/rpc/session-stats`）；路由根单源见 `SPIRIT_RPC_ROUTE`。 */
@@ -80,6 +91,21 @@ export interface RpcDeps {
   /** DRSC 探测结论（面板要如实显示 skipped/warn，不当故障也不当正常）。 */
   drscVerdict: () => SpiritVerdict;
   /**
+   * 主人背景档案面（存储 + 同步引擎）；省略 ⇒ 四端点报 `unavailable` 不炸——
+   * "每端点可分发"的门禁用例拿的就是不含 owner 的最小 deps。
+   */
+  owner?: { store: OwnerProfileStore; sync: OwnerSyncService };
+  /**
+   * 做梦面（v0.3.3）：省略 ⇒ dream-run/dream-report 报 `unavailable` 不炸
+   * （同 owner 装配腿口径：每端点可分发，未装配是诚实状态不是 404）。
+   */
+  dream?: DreamRunner;
+  /**
+   * 长觉阶梯（v0.3.5）：sleep 族/topics/insight-resolve 六端的装配面；省略 ⇒ unavailable。
+   * llm 服务缺席时装配仍在（runner 自带 supported:false 降级信封）。
+   */
+  ladder?: { sleep: RuminateRunner; topics: TopicStore; insights: InsightStore; edges: EdgeStore };
+  /**
    * 拿到 webServer 时回调它的监听端口（拿不到形状 ⇒ undefined）。
    * 为什么递出去：collector 的 API 挂在同一个 webServer 上，而 `dsh web` 的端口是挑的；
    * 历史路缺省基址必须跟着这个端口，否则非 8080 部署上它永远 warn（真宿主实测）。
@@ -96,6 +122,75 @@ function str(value: unknown, fallback = ''): string {
 }
 function int(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : fallback;
+}
+
+/**
+ * 条目行投影（journal-tail 与翻阅 tab 的 entries-list 共用）：搜索/浏览回同一形状，
+ * 不分两套字段——prime 旧缺陷（检索命中只带部分列致锚点恒空）的反面教材。
+ * cues 同批取：证据面不能靠前端再发一次请求拼；≤4 条预算见 v0.3 卡片纪律。
+ */
+function entryRow(entry: ExperienceEntry, cueMap: Map<string, string[]>): SpiritJournalRow {
+  return {
+    id: entry.id,
+    tsMs: entry.tsMs,
+    turnSeq: entry.turnSeq,
+    trigger: entry.trigger,
+    notice: entry.notice,
+    reaction: entry.reaction,
+    text: entry.text,
+    lane: entry.lane,
+    sourceRef: entry.sourceRef ?? null,
+    // v0.2 淡出可见性：面板要能区分“库里有但不在焦点”与“没记”
+    gist: entry.gist ?? null,
+    salience: entry.salience ?? null,
+    feedbackScore: entry.feedbackScore ?? null,
+    cues: (cueMap.get(entry.id) ?? []).slice(0, 4),
+    sessionId: entry.sessionId,
+    // v0.3.3：翻阅 tab 要解释幽灵与藏行（缺省视图里恒为 null，不增字节语义也直白）
+    supersededBy: entry.supersededBy ?? null,
+    hiddenAt: entry.hiddenAt ?? null,
+  };
+}
+
+/** 人设视图（get / set / restore 共用一份形状，不在三个 case 里各抄一遍）。 */
+function personaView(card: PersonaCard, budgetBytes: number): SpiritPersonaView {
+  return {
+    id: card.id,
+    revision: card.revision,
+    name: card.name,
+    aliases: [...card.aliases],
+    selfNames: [...card.selfNames],
+    voice: card.voice,
+    salience: { ...card.salience },
+    focus: [...card.focus],
+    values: [...card.values],
+    boundaries: [...card.boundaries],
+    projectedText: composePersonaText(card, budgetBytes),
+  };
+}
+
+/** 可改字段白名单：`id` / `revision` 外部给什么都不收（revision 由 store 单调推进）。 */
+const PERSONA_PATCH_KEYS = ['name', 'aliases', 'selfNames', 'voice', 'salience', 'focus', 'values', 'boundaries'] as const;
+
+function mergePersonaPatch(current: PersonaCard, raw: unknown): Record<string, unknown> {
+  const patch = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
+  const next: Record<string, unknown> = {
+    id: current.id,
+    revision: current.revision,
+    name: current.name,
+    aliases: [...current.aliases],
+    selfNames: [...current.selfNames],
+    voice: current.voice,
+    salience: { ...current.salience },
+    focus: [...current.focus],
+    values: [...current.values],
+    boundaries: [...current.boundaries],
+  };
+  for (const key of PERSONA_PATCH_KEYS) {
+    const value = patch[key];
+    if (value !== undefined) next[key] = value;
+  }
+  return next;
 }
 
 /** 单个端点的分发（与 HTTP 层解耦，便于单测直调）。 */
@@ -125,26 +220,14 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         int(payload['limit'], 30),
         payload['includeSuperseded'] === true,
       );
+      // 线索与行同批取：手记卡片的“证据面”不能靠前端再发一次请求拼
+      const cueMap = deps.store.cuesFor(result.rows.map((row) => row.id));
       return ok({
         ...page,
         total: result.total,
         offset: int(payload['offset'], 0),
         limit: int(payload['limit'], 30),
-        rows: result.rows.map((entry) => ({
-          id: entry.id,
-          tsMs: entry.tsMs,
-          turnSeq: entry.turnSeq,
-          trigger: entry.trigger,
-          notice: entry.notice,
-          reaction: entry.reaction,
-          text: entry.text,
-          lane: entry.lane,
-          sourceRef: entry.sourceRef ?? null,
-          // v0.2 淡出可见性：面板要能区分“库里有但不在焦点”与“没记”
-          gist: entry.gist ?? null,
-          salience: entry.salience ?? null,
-          feedbackScore: entry.feedbackScore ?? null,
-        })),
+        rows: result.rows.map((entry) => entryRow(entry, cueMap)),
       } satisfies SpiritJournalPage);
     }
     case 'journal-export': {
@@ -187,19 +270,210 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
     }
     case 'persona-get': {
       const card = deps.personas.current();
-      const cfg = deps.cfg();
-      const view: SpiritPersonaView = {
-        id: card.id,
-        revision: card.revision,
-        name: card.name,
-        voice: card.voice,
-        salience: { ...card.salience },
-        focus: [...card.focus],
-        values: [...card.values],
-        boundaries: [...card.boundaries],
-        projectedText: composePersonaText(card, cfg.persona.budgetBytes),
-      };
-      return ok(view);
+      return ok(personaView(card, deps.cfg().persona.budgetBytes));
+    }
+    case 'persona-preview': {
+      // 不写盘：面板要在点「保存」之前看到“这段话会怎么进系统提示、多长”
+      const budgetBytes = deps.cfg().persona.budgetBytes;
+      const merged = mergePersonaPatch(deps.personas.current(), payload['patch']);
+      const checked = validatePersona(merged);
+      if (!checked.ok) return err('bad-request', checked.reason);
+      const projectedText = composePersonaText(checked.persona, budgetBytes);
+      const bytes = Buffer.byteLength(projectedText, 'utf8');
+      return ok({ projectedText, bytes, budgetBytes, overBudget: bytes > budgetBytes });
+    }
+    case 'persona-set': {
+      const current = deps.personas.current();
+      const expected = int(payload['expectedRevision'], -1);
+      if (expected < 1) return err('bad-request', 'expectedRevision 必填（先拉 persona-get）');
+      // 乐观并发：不匹配就拒写。静默覆盖别人改过的人设是最难查的那类丢数据
+      if (expected !== current.revision) return err('conflict', `人设已在别处改动（当前 revision ${current.revision}）`);
+      const merged = mergePersonaPatch(current, payload['patch']);
+      const saved = deps.personas.save(merged);
+      if (!saved.ok) return err('save-failed', saved.reason);
+      return ok(personaView(saved.persona, deps.cfg().persona.budgetBytes));
+    }
+    case 'persona-history': {
+      const items = deps.personas
+        .history(int(payload['limit'], 20))
+        .map((card) => ({ revision: card.revision, name: card.name, voice: card.voice }));
+      return ok({ current: deps.personas.current().revision, items });
+    }
+    case 'persona-restore': {
+      const revision = int(payload['revision'], -1);
+      if (revision < 1) return err('bad-request', 'revision 非法');
+      const found = deps.personas.findRevision(revision);
+      if (found === undefined) return err('not-found', `历史里没有 revision ${revision}`);
+      // 回退也是追加：拿旧卡内容写一版**新** revision，历史一行都不动
+      const saved = deps.personas.save({ ...found });
+      if (!saved.ok) return err('save-failed', saved.reason);
+      return ok(personaView(saved.persona, deps.cfg().persona.budgetBytes));
+    }
+    case 'persona-export-md': {
+      // 单层人话备份：主人可读可改；改完拿 persona-import-md 贴回来
+      const card = deps.personas.current();
+      return ok({ text: renderPersonaMarkdown(card), revision: card.revision });
+    }
+    case 'persona-import-md': {
+      // 恢复走 save() 唯一写路径：校验/revision 推进/历史追加/md 重生全套纪律免费获得；
+      // 解析失败**不写盘**——半恢复比不恢复危险
+      const text = str(payload['text']);
+      if (text === '') return err('bad-request', 'text 必填（人设页「查看备份」可导出参考格式）');
+      const parsed = parsePersonaMarkdown(text);
+      if (!parsed.ok) return err('bad-request', parsed.reason);
+      const saved = deps.personas.save(parsed.persona);
+      if (!saved.ok) return err('save-failed', saved.reason);
+      return ok(personaView(saved.persona, deps.cfg().persona.budgetBytes));
+    }
+    case 'owner-get': {
+      if (deps.owner === undefined) return err('unavailable', '主人档案未装配');
+      const row = deps.owner.store.get();
+      return ok({
+        syncText: row.syncText,
+        selfText: row.selfText,
+        syncMeta: row.syncMeta,
+        revision: row.revision,
+        primeStatus: await deps.owner.sync.probe(),
+      });
+    }
+    case 'owner-set-self': {
+      if (deps.owner === undefined) return err('unavailable', '主人档案未装配');
+      const text = str(payload['text']);
+      const expected = int(payload['expectedRevision'], -1);
+      if (expected < 1) return err('bad-request', 'expectedRevision 必填（先拉 owner-get）');
+      const saved = deps.owner.store.setSelf(text, expected);
+      if (!saved.ok) return err('save-failed', saved.reason);
+      return ok({
+        syncText: saved.row.syncText,
+        selfText: saved.row.selfText,
+        syncMeta: saved.row.syncMeta,
+        revision: saved.row.revision,
+        primeStatus: await deps.owner.sync.probe(),
+      });
+    }
+    case 'owner-sync-now': {
+      if (deps.owner === undefined) return err('unavailable', '主人档案未装配');
+      return ok(await deps.owner.sync.sync());
+    }
+    case 'owner-sync-ping': {
+      // 事件接收预备（prime 侧后续推送打这里）：只触发一次带去重的同步，不接收任何内容。
+      // 受理与否都回 200——拒接不是错误，让推送方把它当失败重试只会放大风暴。
+      if (deps.owner === undefined) return err('unavailable', '主人档案未装配');
+      const outcome = await deps.owner.sync.sync();
+      return ok({ accepted: outcome.updated });
+    }
+    case 'entries-list': {
+      // 翻阅 tab 主查询：全库跨会话筛选+分页（store.listAdmin 承担形状纪律，这里只做入参守卫）
+      const offset = Math.max(0, int(payload['offset'], 0));
+      const trigger = str(payload['trigger']);
+      const lane = str(payload['lane']);
+      // 非法枚举拒收不静默空查：筛选器值来自首屏 catalogs，拼错了是调用方的 bug
+      if (trigger !== '' && !(TRIGGER_KINDS as readonly string[]).includes(trigger)) {
+        return err('bad-request', `trigger 非法：${trigger}`);
+      }
+      if (lane !== '' && !(LANES as readonly string[]).includes(lane)) {
+        return err('bad-request', `lane 非法：${lane}`);
+      }
+      const result = deps.store.listAdmin({
+        ...(str(payload['query']) === '' ? {} : { query: str(payload['query']) }),
+        ...(trigger === '' ? {} : { trigger }),
+        ...(lane === '' ? {} : { lane }),
+        ...(payload['marked'] === true ? { marked: true } : {}),
+        ...(payload['includeGhosts'] === true ? { includeGhosts: true } : {}),
+        ...(payload['hiddenOnly'] === true ? { hiddenOnly: true } : {}),
+        ...(str(payload['sessionId']) === '' ? {} : { sessionId: str(payload['sessionId']) }),
+        offset,
+        limit: int(payload['limit'], 50),
+      });
+      const cueMap = deps.store.cuesFor(result.rows.map((row) => row.id));
+      return ok({
+        rows: result.rows.map((entry) => entryRow(entry, cueMap)),
+        hasMore: result.hasMore,
+        truncated: result.truncated,
+        offset,
+        // 首屏下发 slug 目录：client 拿自己的 label 单源翻译，枚举新增值不用改两端
+        ...(offset === 0 ? { catalogs: { triggers: [...TRIGGER_KINDS], lanes: [...LANES] } } : {}),
+      });
+    }
+    case 'entries-hide':
+    case 'entries-unhide': {
+      const raw = Array.isArray(payload['ids']) ? payload['ids'] : [];
+      const ids = raw.filter((x): x is string => typeof x === 'string' && x !== '');
+      if (ids.length === 0) return err('bad-request', 'ids 需为非空字符串数组');
+      return ok({ changed: deps.store.setHidden(ids, name === 'entries-hide') });
+    }
+    case 'entries-update': {
+      // 更正式编辑：插新行+旧行置取代（纪律与★继承在 store.reviseEntry 里，这里只守入参）
+      const entryId = str(payload['entryId']);
+      if (entryId === '') return err('bad-request', 'entryId 必填');
+      const hasText = typeof payload['text'] === 'string';
+      const hasGist = typeof payload['gist'] === 'string';
+      const hasSalience = typeof payload['salience'] === 'number';
+      if (!hasText && !hasGist && !hasSalience) return err('bad-request', '没有要改的字段（text/gist/salience 至少一项）');
+      if (hasText && str(payload['text']).trim() === '') return err('bad-request', 'text 不能空');
+      if (hasSalience) {
+        const s = int(payload['salience'], -1);
+        if (s < 0 || s > 2) return err('bad-request', 'salience 需在 0..2');
+      }
+      const revised = deps.store.reviseEntry(entryId, {
+        ...(hasText ? { text: str(payload['text']) } : {}),
+        ...(hasGist ? { gist: str(payload['gist']) } : {}),
+        ...(hasSalience ? { salience: int(payload['salience'], 0) } : {}),
+      });
+      if (revised === null) return err('not-found', '条目不存在，或已被取代/已藏起，不可改');
+      return ok(entryRow(revised, deps.store.cuesFor([revised.id])));
+    }
+    case 'dream-run': {
+      if (deps.dream === undefined) return err('unavailable', '做梦未装配');
+      // 双闸拒（eff().dream.enabled：部署面总闸 ∧ live 热更闸）——设置面关掉后按钮不再是后门
+      if (!(deps.eff ?? deps.cfg)().dream.enabled) return ok({ updated: false, reason: 'disabled' as const });
+      return ok(deps.dream.run());
+    }
+    case 'dream-report': {
+      if (deps.dream === undefined) return err('unavailable', '做梦未装配');
+      return ok({ report: deps.dream.lastReport() });
+    }
+    case 'sleep-run': {
+      if (deps.ladder === undefined) return err('unavailable', '长觉未装配');
+      const result = deps.ladder.sleep.run();
+      return ok('accepted' in result ? result : { accepted: false });
+    }
+    case 'sleep-status': {
+      if (deps.ladder === undefined) {
+        return ok({ supported: false, running: false, phase: 'idle', detail: '', cancelRequested: false, startedAt: 0, finishedAt: 0, error: '', lastReport: null });
+      }
+      return ok(deps.ladder.sleep.status());
+    }
+    case 'sleep-cancel': {
+      if (deps.ladder === undefined) return ok({ requested: false });
+      deps.ladder.sleep.requestCancel();
+      return ok({ requested: true });
+    }
+    case 'sleep-report': {
+      if (deps.ladder === undefined) return err('unavailable', '长觉未装配');
+      return ok({ report: deps.ladder.sleep.status().lastReport });
+    }
+    case 'topics-get': {
+      if (deps.ladder === undefined) return err('unavailable', '主题分区未装配');
+      const topics = deps.ladder.topics.topicsWithCounts().map((t) => ({
+        id: t.topic.id,
+        name: t.topic.name,
+        origin: t.topic.origin,
+        entries: t.entries,
+        insights: t.insights,
+        // 每主题带前 5 条非 superseded 洞察（视图展开不再单独发 op；计数与内容同源）
+        insightRows: deps.ladder !== undefined ? deps.ladder.insights.byTopic(t.topic.id).slice(0, 5).map((row) => ({ id: row.id, topicId: row.topicId, text: row.text, status: row.status, evidenceIds: row.evidenceIds, createdAt: row.createdAt })) : [],
+      }));
+      const conflicts = deps.ladder.insights.conflictList().map((row) => ({ id: row.id, topicId: row.topicId, text: row.text, status: row.status, evidenceIds: row.evidenceIds, createdAt: row.createdAt }));
+      return ok({ topics, conflicts });
+    }
+    case 'insight-resolve': {
+      // 碰撞人工裁决（机器不自动删的纪律在人机上同样成立）：只改派生表状态位
+      if (deps.ladder === undefined) return err('unavailable', '主题分区未装配');
+      const winnerId = str(payload['winnerId']);
+      const loserId = str(payload['loserId']);
+      if (loserId === '') return err('bad-request', 'loserId 必填（winnerId 可空 = 都收起来）');
+      return ok({ resolved: deps.ladder.insights.resolveKeep(winnerId, loserId, Date.now()) });
     }
     case 'session-mode-get': {
       // 只读：不碰写入面（写端点"两个字段都省"语义是清除覆盖，混用会抹掉用户设置）
@@ -247,16 +521,20 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         fadeEnabled: live.fadeEnabled,
         fadeHalfLifeMs: live.fadeHalfLifeMs,
         feedbackEnabled: live.feedbackEnabled,
+        dreamEnabled: live.dreamEnabled,
+        distillEnabled: live.distillEnabled,
         hotUpdatable: typeof deps.liveRaw?.()?.update === 'function',
       } satisfies SpiritSettingsView);
     }
     case 'settings-set': {
-      // 只收面板可调的三键；区间单源 SPIRIT_RANGES（与 schema 同一张表，不抄第二份）
+      // 只收面板可调的四键；区间单源 SPIRIT_RANGES（与 schema 同一张表，不抄第二份）
       const ref = deps.liveRaw?.();
       if (ref === undefined || typeof ref.update !== 'function') return err('no-volatile', '宿主 volatile 写通道不可用，改值需重启');
       const patch: Partial<SpiritConfig['live']> = {};
       if (typeof payload['fadeEnabled'] === 'boolean') patch.fadeEnabled = payload['fadeEnabled'];
       if (typeof payload['feedbackEnabled'] === 'boolean') patch.feedbackEnabled = payload['feedbackEnabled'];
+      if (typeof payload['dreamEnabled'] === 'boolean') patch.dreamEnabled = payload['dreamEnabled'];
+      if (typeof payload['distillEnabled'] === 'boolean') patch.distillEnabled = payload['distillEnabled'];
       const half = payload['fadeHalfLifeMs'];
       if (typeof half === 'number' && Number.isFinite(half)) {
         const [lo, hi] = SPIRIT_RANGES['recall.fadeHalfLifeMs'] ?? [0, 0];
@@ -264,7 +542,7 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         if (v < lo || v > hi) return err('bad-request', `fadeHalfLifeMs 只接受 ${lo}..${hi}`);
         patch.fadeHalfLifeMs = v;
       }
-      if (Object.keys(patch).length === 0) return err('bad-request', '没有可应用的合法键（只收 fadeEnabled/fadeHalfLifeMs/feedbackEnabled）');
+      if (Object.keys(patch).length === 0) return err('bad-request', '没有可应用的合法键（只收 fadeEnabled/fadeHalfLifeMs/feedbackEnabled/dreamEnabled/distillEnabled）');
       try {
         await Promise.resolve(ref.update(patch));
       } catch (err2) {
@@ -275,8 +553,60 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         fadeEnabled: live.fadeEnabled,
         fadeHalfLifeMs: live.fadeHalfLifeMs,
         feedbackEnabled: live.feedbackEnabled,
+        dreamEnabled: live.dreamEnabled,
+        distillEnabled: live.distillEnabled,
         hotUpdatable: true,
       } satisfies SpiritSettingsView);
+    }
+    case 'sea-graph': {
+      // 只读投影：不提供任何写入口（图上唯一的写动作是 experience-feedback，走它自己的端点）
+      const cfg = (deps.eff ?? deps.cfg)();
+      const scope = str(payload['scope'], 'all') === 'session' ? 'session' : 'all';
+      const sessionId = str(payload['sessionId']);
+      if (scope === 'session' && sessionId === '') return err('bad-request', 'scope=session 时 sessionId 必填');
+      // limit 先钳再取：NaN / 负数 / 超大值都不允许把库一次搬空
+      const window = Math.max(1, Math.min(SEA_WINDOW_LIMIT, int(payload['limit'], SEA_WINDOW_LIMIT)));
+      // includeSuperseded：取代链的两端都得在窗里，否则 `kind:'supersede'` 永远画不出来；
+      // 幽灵点在图上不发光、降亮度（见 sea-render-2d），不会与“作数的条目”混读。
+      const entries = deps.store.listRecent(window, {
+        ...(scope === 'session' ? { sessionId } : {}),
+        includeSuperseded: true,
+      });
+      const cues = deps.store.cuesFor(entries.map((entry) => entry.id));
+      // 情绪档只取"最近有活动的会话"：跨会话星海没有单一 agent，拿不到就给空串（不编造）
+      const latest = deps.stats.latest();
+      const moodLabel =
+        latest === null
+          ? ''
+          : (deps.stats.snapshot(latest.agentId, {
+              off: deps.modes.isOff(latest.sessionId),
+              bypass: deps.modes.isBypass(latest.sessionId),
+            })?.moodLabel ?? '');
+      // 近因高亮：会话内最近 recentK 条（与卡片的「刚刚」段同源，不另起一套口径）
+      const focusSession = scope === 'session' ? sessionId : (latest?.sessionId ?? entries[entries.length - 1]?.sessionId ?? '');
+      const focusIds = focusSession === '' ? [] : deps.store.recent(focusSession, cfg.card.recentK).map((entry) => entry.id);
+      const graph = buildSeaScene(entries, {
+        now: Date.now(),
+        // 两把尺子：图上亮度用天尺度（星海看的是长时段），淡出档位用注入侧的小时尺度
+        halfLifeMs: cfg.sea.agingHalfLifeMs,
+        tierHalfLifeMs: cfg.recall.fadeHalfLifeMs,
+        total: scope === 'session' ? deps.store.count(sessionId) : deps.store.countAll(),
+        moodLabel,
+        degraded: !deps.store.persistent,
+        window,
+        cues,
+        // 因果边（v0.3.5）：装配在位才并；只读派生表，不碰工作记忆
+        ...(deps.ladder === undefined ? {} : { causalEdges: deps.ladder.edges.forSea().map((e) => ({ from: e.fromEntry, to: e.toEntry, relation: e.relation })) }),
+        fade: {
+          enabled: cfg.recall.fadeEnabled,
+          fullMinScore: cfg.recall.fadeFullMinScore,
+          gistMinScore: cfg.recall.fadeGistMinScore,
+          gistMinSalience: cfg.recall.gistMinSalience,
+        },
+        focusIds,
+      });
+      // 顶栏短提示的判定单源在探测面（deps.drscVerdict），装配点补进响应——场景几何不掺探测事实
+      return ok({ ...graph, drscVerdict: deps.drscVerdict() });
     }
     default:
       return err('not-found', `unknown endpoint ${endpoint}`);

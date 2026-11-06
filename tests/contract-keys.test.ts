@@ -12,6 +12,9 @@ import { describe, expect, it } from 'vitest';
 
 import { SPIRIT_DEFAULTS, SPIRIT_RANGES, SPIRIT_VERSION } from '../src/contract.js';
 import { RANGE_KEYS, SCHEMA_FIELD_KEYS } from '../src/config.js';
+import { NOTICE_WORDS_ZH, TRIGGER_WORDS_ZH, VOICE_WORDS } from '../src/words.js';
+import { VOICE_TIERS } from '../src/types.js';
+import { zh } from '../client/src/copy.js';
 
 /** 把嵌套 defaults 展平成点分键。数组与标量都算叶子。 */
 function flatten(value: unknown, prefix = ''): string[] {
@@ -79,5 +82,40 @@ describe('版本号同串', () => {
     const lines = pkg.engines.dsh.split('||').map((s) => s.trim());
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) expect(line.startsWith('0.2.'), line).toBe(true);
+  });
+});
+
+/**
+ * markdown 备份的词表漂移门禁：`words.ts` 的 UI 中文与面板徽章（copy.ts zh）必须逐字同串。
+ *
+ * 为什么值得钉：`persona.md` 的节内容是人手可读可改的，解析靠中文 label 反查 slug；
+ * 若面板把「结项」改成「收尾」而 words 没跟着改，旧备份文件恢复时会被当成未知词拒绝——
+ * 这种断裂没有任何报错能提前发现，只有主人拿备份碰壁时才暴露。
+ */
+describe('words.ts UI 中文 ⇄ copy.ts zh 字典逐键一致', () => {
+  it('TRIGGER_WORDS_ZH 六键与 sea.trig* 同串', () => {
+    expect(TRIGGER_WORDS_ZH.user_interruption).toBe(zh['sea.trigUserInterruption']);
+    expect(TRIGGER_WORDS_ZH.tool_failure).toBe(zh['sea.trigToolFailure']);
+    expect(TRIGGER_WORDS_ZH.recovery).toBe(zh['sea.trigRecovery']);
+    expect(TRIGGER_WORDS_ZH.task_close).toBe(zh['sea.trigTaskClose']);
+    expect(TRIGGER_WORDS_ZH.long_gap).toBe(zh['sea.trigLongGap']);
+    expect(TRIGGER_WORDS_ZH.neutral).toBe(zh['sea.trigNeutral']);
+  });
+
+  it('NOTICE_WORDS_ZH 七键与 sea.notice* 同串', () => {
+    expect(NOTICE_WORDS_ZH.self_mistake).toBe(zh['sea.noticeSelfMistake']);
+    expect(NOTICE_WORDS_ZH.user_state).toBe(zh['sea.noticeUserState']);
+    expect(NOTICE_WORDS_ZH.task_progress).toBe(zh['sea.noticeTaskProgress']);
+    expect(NOTICE_WORDS_ZH.task_stall).toBe(zh['sea.noticeTaskStall']);
+    expect(NOTICE_WORDS_ZH.being_ignored).toBe(zh['sea.noticeBeingIgnored']);
+    expect(NOTICE_WORDS_ZH.being_acknowledged).toBe(zh['sea.noticeBeingAcknowledged']);
+    expect(NOTICE_WORDS_ZH.environment).toBe(zh['sea.noticeEnvironment']);
+  });
+
+  it('VOICE_WORDS 三档在 copy 里有同串对应（面板下拉用）', () => {
+    // 语气当前没有独立 sea 键（下拉直接吃 VOICE_WORDS），但必须与投射文本同源：
+    // 投射里的「[语气] 平实」与下拉/备份是同一个 VOICE_WORDS；键集与 VOICE_TIERS 单源比对（扩列不再改闸）
+    expect(Object.keys(VOICE_WORDS).sort()).toEqual([...VOICE_TIERS].sort());
+    expect(Object.values(VOICE_WORDS).every((w) => typeof w === 'string' && w.length > 0)).toBe(true);
   });
 });

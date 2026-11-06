@@ -86,7 +86,7 @@ describe('settings-get/set 写腿（volatile 六腿的 rpc 腿）', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       modes: { isOff: () => false, isBypass: () => false, set: () => false } as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      personas: { current: () => ({ id: '', revision: 0, name: '', voice: 'plain', salience: {}, focus: [], values: [], boundaries: [] }) } as any,
+      personas: { current: () => ({ id: '', revision: 0, name: '', aliases: [], selfNames: [], voice: 'plain', salience: {}, focus: [], values: [], boundaries: [] }) } as any,
       dataDir: '',
       cfg: () => cfg,
       eff: () => cfg,
@@ -121,6 +121,18 @@ describe('settings-get/set 写腿（volatile 六腿的 rpc 腿）', () => {
     const deps = makeDeps(live, { updatable: true });
     const r = await handleEndpoint('dsh-spirit/settings-set', { fadeHalfLifeMs: 999_999_999_999 }, deps);
     expect(!r.ok && r.error.code).toBe('bad-request');
+  });
+
+  it('做梦开关（v0.3.4 设置面可见性）：settings-set 写 dreamEnabled 并回显；settings-get 读得到', async () => {
+    const live: SpiritLiveSettings = { ...SPIRIT_DEFAULTS.live }; // 缺省 true
+    const applied: Partial<SpiritLiveSettings>[] = [];
+    const deps = makeDeps(live, { updatable: true, onApply: (p) => applied.push(p) });
+    const off = await handleEndpoint('dsh-spirit/settings-set', { dreamEnabled: false }, deps);
+    expect(off.ok).toBe(true);
+    if (off.ok) expect(off.value).toMatchObject({ dreamEnabled: false, hotUpdatable: true });
+    expect(applied[0]).toMatchObject({ dreamEnabled: false });
+    const g = await handleEndpoint('dsh-spirit/settings-get', {}, deps);
+    expect(g.ok && g.value).toMatchObject({ dreamEnabled: false });
   });
 });
 

@@ -52,6 +52,41 @@ export const MIGRATIONS: readonly MigrationStep[] = [
       // 这里不重复建（同一语句跑两遍是噪音不是保险）。
     },
   },
+  {
+    from: 2,
+    to: 3,
+    note: '人设进库：persona_current / persona_revision 两张新表（整表新增，交给 SCHEMA_STATEMENTS 幂等建表）',
+    run: () => {
+      // 故意 no-op：v3 只加两张新表，建表由 applySchema 统一做；
+      // 这一步的存在是为了版本链不断（缺登记 ⇒ planMigration 链断 ⇒ 老库整体拒读）。
+    },
+  },
+  {
+    from: 3,
+    to: 4,
+    note: '主人背景档案进库：owner_profile 单行表（整表新增，交给 SCHEMA_STATEMENTS 幂等建表）',
+    run: () => {
+      // 故意 no-op：同 v2→v3 先例——纯加表由幂等建表覆盖，链步只保版本链不断。
+    },
+  },
+  {
+    from: 4,
+    to: 5,
+    note: '翻阅 tab：experience 加藏起标记列 hidden_at（可覆写可清空，行永不物理删；新索引交给幂等建表）',
+    run: (db) => {
+      addColumnIfMissing(db, 'experience', 'hidden_at', 'hidden_at INTEGER');
+      // exp_ts / exp_trigger_ts 是纯加索引：SCHEMA_STATEMENTS 的 IF NOT EXISTS 统一覆盖，
+      // 这里不重复建（同 v2→v3 加表先例：链步只保列不缺，索引交给幂等面）。
+    },
+  },
+  {
+    from: 5,
+    to: 6,
+    note: '长觉阶梯：topic/experience_topic/insight/causal_edge/sleep_run 五张派生表（整表新增，交给幂等建表；派生可重建定性见 schema 头注）',
+    run: () => {
+      // 故意 no-op：同 v2→v3/v3→v4 先例——纯加表由幂等建表覆盖，链步只保版本链不断。
+    },
+  },
 ];
 
 /**

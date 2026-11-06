@@ -22,15 +22,26 @@ import {
   REACTION_MILD,
   REACTION_NONE,
   REACTION_STRONG,
+  TRIGGER_LONG_GAP,
+  TRIGGER_NEUTRAL,
+  TRIGGER_RECOVERY,
+  TRIGGER_TASK_CLOSE,
+  TRIGGER_TOOL_FAILURE,
+  TRIGGER_USER_INTERRUPT,
   VALENCE_NEG,
   VALENCE_MID,
   VALENCE_PLUS,
+  VOICE_BLUNT,
+  VOICE_HUSH,
+  VOICE_LIVELY,
   VOICE_PLAIN,
+  VOICE_POETIC,
   VOICE_TERSE,
   VOICE_WARM,
   type ArousalTier,
   type NoticeKind,
   type ReactionTier,
+  type TriggerKind,
   type ValenceTier,
   type VoiceTier,
 } from './types.js';
@@ -69,4 +80,34 @@ export const VOICE_WORDS: Readonly<Record<VoiceTier, string>> = {
   [VOICE_PLAIN]: '平实',
   [VOICE_TERSE]: '简短',
   [VOICE_WARM]: '温和',
+  [VOICE_LIVELY]: '俏皮',
+  [VOICE_HUSH]: '安静',
+  [VOICE_BLUNT]: '直白',
+  [VOICE_POETIC]: '诗意',
+};
+
+/**
+ * UI 侧短语（与面板徽章同串）：`NOTICE_WORDS` 是给模型读的第一人称口语
+ * （“我出了错”），主人面用的是名词短语（“自己的失误”）——两套各有读者，
+ * markdown 备份属主人面，所以另立一套而不是复用注入词。
+ * ⚠️ 这里的值必须与 `client/src/copy.ts` 的 zh 字典逐字一致，
+ * 由 `tests/contract-keys.test.ts` 的门禁钉住漂移。
+ */
+export const TRIGGER_WORDS_ZH: Readonly<Record<TriggerKind, string>> = {
+  [TRIGGER_USER_INTERRUPT]: '被打断',
+  [TRIGGER_TOOL_FAILURE]: '工具失败',
+  [TRIGGER_RECOVERY]: '刚恢复',
+  [TRIGGER_TASK_CLOSE]: '结项',
+  [TRIGGER_LONG_GAP]: '隔了很久',
+  [TRIGGER_NEUTRAL]: '平常一轮',
+};
+
+export const NOTICE_WORDS_ZH: Readonly<Record<NoticeKind, string>> = {
+  [NOTICE_SELF_MISTAKE]: '自己的失误',
+  [NOTICE_USER_STATE]: '主人的状态',
+  [NOTICE_TASK_PROGRESS]: '任务推进',
+  [NOTICE_TASK_STALL]: '任务卡住',
+  [NOTICE_BEING_IGNORED]: '被忽视',
+  [NOTICE_BEING_ACKNOWLEDGED]: '被认可',
+  [NOTICE_ENVIRONMENT]: '环境',
 };

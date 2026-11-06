@@ -72,6 +72,8 @@ function liveSettingsSchema(): VolatileRef<SpiritLiveSettings> {
     fadeEnabled: bool(d.fadeEnabled),
     fadeHalfLifeMs: num('recall.fadeHalfLifeMs', d.fadeHalfLifeMs),
     feedbackEnabled: bool(d.feedbackEnabled),
+    dreamEnabled: bool(d.dreamEnabled),
+    distillEnabled: bool(d.distillEnabled),
   });
   const maybe = node as unknown as { volatile?: () => unknown };
   return (typeof maybe.volatile === 'function' ? maybe.volatile() : node) as VolatileRef<SpiritLiveSettings>;
@@ -128,6 +130,42 @@ export const spiritSchema: ConfigSchema = Schema.object({
     probeCacheTtlMs: num('drsc.probeCacheTtlMs', SPIRIT_DEFAULTS.drsc.probeCacheTtlMs),
     timeoutMs: num('drsc.timeoutMs', SPIRIT_DEFAULTS.drsc.timeoutMs),
   }),
+  // 星海老化尺度（图上亮度专用，与注入侧的注意力尺度分开；理由见 contract.ts 的注释）
+  sea: Schema.object({
+    agingHalfLifeMs: num('sea.agingHalfLifeMs', SPIRIT_DEFAULTS.sea.agingHalfLifeMs),
+  }),
+  // 主人背景档案（同步周期/预算/基址/探测缓存；prime 缺席整节休眠，见 contract.ts owner 注释）
+  owner: Schema.object({
+    syncIntervalMs: num('owner.syncIntervalMs', SPIRIT_DEFAULTS.owner.syncIntervalMs),
+    budgetBytes: num('owner.budgetBytes', SPIRIT_DEFAULTS.owner.budgetBytes),
+    baseUrl: str(SPIRIT_DEFAULTS.owner.baseUrl),
+    probeCacheTtlMs: num('owner.probeCacheTtlMs', SPIRIT_DEFAULTS.owner.probeCacheTtlMs),
+  }),
+  // 做梦（v0.3.3）：确定性整理 pass 的开关与节奏；手动按钮不受周期限制，共用去重窗
+  dream: Schema.object({
+    enabled: bool(SPIRIT_DEFAULTS.dream.enabled),
+    intervalMs: num('dream.intervalMs', SPIRIT_DEFAULTS.dream.intervalMs),
+  }),
+  // 长觉（v0.3.5）：异步 LLM 归纳 pass；缺省关，模型 fail-closed（留空跟宿主默认，配错拒蒸不隐式改选）
+  distill: Schema.object({
+    enabled: bool(SPIRIT_DEFAULTS.distill.enabled),
+    provider: str(SPIRIT_DEFAULTS.distill.provider),
+    model: str(SPIRIT_DEFAULTS.distill.model),
+    reasoningEffort: str(SPIRIT_DEFAULTS.distill.reasoningEffort),
+    intervalMs: num('distill.intervalMs', SPIRIT_DEFAULTS.distill.intervalMs),
+    batchMin: num('distill.batchMin', SPIRIT_DEFAULTS.distill.batchMin),
+    maxInputChars: num('distill.maxInputChars', SPIRIT_DEFAULTS.distill.maxInputChars),
+    maxOutputTokens: num('distill.maxOutputTokens', SPIRIT_DEFAULTS.distill.maxOutputTokens),
+    timeoutMs: num('distill.timeoutMs', SPIRIT_DEFAULTS.distill.timeoutMs),
+    // 向量能力位（缺省关）；apiKey 属机密：不回读明文、不落日志、不进导出（G24）
+    vector: Schema.object({
+      enabled: bool(SPIRIT_DEFAULTS.distill.vector.enabled),
+      baseUrl: str(SPIRIT_DEFAULTS.distill.vector.baseUrl),
+      apiKey: str(SPIRIT_DEFAULTS.distill.vector.apiKey),
+      model: str(SPIRIT_DEFAULTS.distill.vector.model),
+      dimensions: num('distill.vector.dimensions', SPIRIT_DEFAULTS.distill.vector.dimensions),
+    }),
+  }),
   // 运行时开关：整个 volatile 节，设置页自动成表。
   live: liveSettingsSchema(),
 }) as unknown as ConfigSchema;
@@ -168,6 +206,27 @@ export const SCHEMA_FIELD_KEYS: readonly string[] = [
   'drsc.enabled',
   'drsc.baseUrl',
   'drsc.probeCacheTtlMs',
+  'sea.agingHalfLifeMs',
+  'owner.syncIntervalMs',
+  'owner.budgetBytes',
+  'owner.baseUrl',
+  'owner.probeCacheTtlMs',
+  'dream.enabled',
+  'dream.intervalMs',
+  'distill.enabled',
+  'distill.provider',
+  'distill.model',
+  'distill.reasoningEffort',
+  'distill.intervalMs',
+  'distill.batchMin',
+  'distill.maxInputChars',
+  'distill.maxOutputTokens',
+  'distill.timeoutMs',
+  'distill.vector.enabled',
+  'distill.vector.baseUrl',
+  'distill.vector.apiKey',
+  'distill.vector.model',
+  'distill.vector.dimensions',
   'drsc.timeoutMs',
   'live.enabled',
   'live.personaEnabled',
@@ -186,6 +245,8 @@ export const SCHEMA_FIELD_KEYS: readonly string[] = [
   'live.fadeEnabled',
   'live.fadeHalfLifeMs',
   'live.feedbackEnabled',
+  'live.dreamEnabled',
+  'live.distillEnabled',
 ];
 
 /** 数值键区间表覆盖检查用的键集（`num()` 引用的键必须都在 SPIRIT_RANGES 里）。 */
@@ -241,6 +302,8 @@ export function resolveLive(raw: unknown): SpiritLiveSettings {
     fadeEnabled: flag('fadeEnabled', d.fadeEnabled),
     fadeHalfLifeMs: int('fadeHalfLifeMs', d.fadeHalfLifeMs),
     feedbackEnabled: flag('feedbackEnabled', d.feedbackEnabled),
+    dreamEnabled: flag('dreamEnabled', d.dreamEnabled),
+    distillEnabled: flag('distillEnabled', d.distillEnabled),
   };
 }
 
@@ -280,6 +343,10 @@ export function effectiveCfg(cfg: SpiritConfig, live?: SpiritLiveSettings): Spir
     bias: { ...cfg.bias, enabled: cfg.bias.enabled && live.fadeEnabled },
     tier: { ...cfg.tier, stepCap: live.tierStepCap, staleAfterMs: live.staleAfterMs },
     journal: { ...cfg.journal, retentionDays: live.retentionDays },
+    // 做梦双闸：部署面总闸与 volatile 热更闸取与（照 ledger/bias 先例；关任一 ⇒ 定时器与手动都拒）
+    dream: { ...cfg.dream, enabled: cfg.dream.enabled && live.dreamEnabled },
+    // 长觉双闸同理：live.distillEnabled 关 ⇒ sleep-run 拒、定时器空转
+    distill: { ...cfg.distill, enabled: cfg.distill.enabled && live.distillEnabled },
     live,
   };
 }
