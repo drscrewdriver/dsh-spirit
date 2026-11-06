@@ -65,7 +65,8 @@
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
-    "access": "public"
+    "access": "public",
+    "tag": "latest"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4"
