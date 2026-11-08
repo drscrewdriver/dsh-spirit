@@ -11,6 +11,7 @@
       "default": "./dist/index.js"
     },
     "./client": "./dist/client.js",
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "dsh": {
@@ -44,7 +45,8 @@
     "CHANGELOG.md",
     "CHANGELOG.en.md",
     "cordis.patch.yml",
-    "dsh.plugin.json"
+    "dsh.plugin.json",
+    "locale"
   ],
   "license": "MIT",
   "repository": {

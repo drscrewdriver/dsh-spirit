@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "First-person experience journal",
+    "description": "Compiles process events into the character's lived moments, derives a mood tier from them, and injects the current state before each model step."
+  }
+}
