@@ -304,6 +304,34 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS eval_ts ON evaluation (ts_ms)`,
   `CREATE INDEX IF NOT EXISTS eval_workspace_ts ON evaluation (workspace_id, ts_ms)`,
   `CREATE INDEX IF NOT EXISTS eval_superseded ON evaluation (superseded_by)`,
+  // ── v9：模型可写记忆（两本账 + 日记追加）与目的层 ──
+  // scope：life（生涯/人格面：心里话、约定）/ work（长期工作：事实/决定/偏好/约定）/ diary（日记，追加型、不自动注入）
+  `CREATE TABLE IF NOT EXISTS model_memory (
+     id TEXT PRIMARY KEY,
+     scope TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     text TEXT NOT NULL,
+     workspace_id TEXT NOT NULL DEFAULT '',
+     session_id TEXT NOT NULL DEFAULT '',
+     pinned INTEGER NOT NULL DEFAULT 0,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL,
+     forgotten_at INTEGER
+   )`,
+  `CREATE INDEX IF NOT EXISTS mm_scope_updated ON model_memory (scope, updated_at)`,
+  `CREATE INDEX IF NOT EXISTS mm_ws_updated ON model_memory (workspace_id, updated_at)`,
+  // 目的层：惦记的事（open/done/dropped）；workspace_id 空 = 跨工作区
+  `CREATE TABLE IF NOT EXISTS goal (
+     id TEXT PRIMARY KEY,
+     title TEXT NOT NULL,
+     status TEXT NOT NULL DEFAULT 'open',
+     why TEXT NOT NULL DEFAULT '',
+     workspace_id TEXT NOT NULL DEFAULT '',
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL,
+     done_at INTEGER
+   )`,
+  `CREATE INDEX IF NOT EXISTS goal_status_updated ON goal (status, updated_at)`,
 ];
 
 /**
@@ -320,6 +348,11 @@ export const V7_TXN_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((st
  */
 export const V8_ONTOLOGY_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
   /entity|task|evaluation/u.test(statement),
+);
+
+/** v9 新增语句子集（迁移链步 8→9 执行）：模型可写记忆 model_memory + 目的层 goal。 */
+export const V9_MEMORY_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
+  /model_memory|goal/u.test(statement),
 );
 
 /** `meta` 里的 schema 版本键。 */

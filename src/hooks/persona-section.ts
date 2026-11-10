@@ -18,12 +18,18 @@ import type {} from '@deepseek-ai/dsh-agent'; // agent/created 事件名声明
 
 import { SPIRIT_SECTION_NAME, SPIRIT_SECTION_ORDER, type SpiritConfig } from '../contract.js';
 import type { PersonaStore } from '../persona/store.js';
+import type { PersonaPresetStore } from '../persona/presets.js';
 import { composeOwnerText, composePersonaText } from '../persona/render.js';
 import type { OwnerProfileStore } from '../store/owner.js';
 import { getService, type HostCapabilities } from '../capability.js';
+import { sessionIdOfSession, workspaceIdOfAgent } from '../util/host-shape.js';
 
 export interface PersonaSectionDeps {
   personas: PersonaStore;
+  /** 人格预设库（v0.7）：按 agent 的工作区/会话解析作用域覆盖；省略 ⇒ 只用全局当前卡。 */
+  presets?: PersonaPresetStore;
+  /** 生涯账（v0.8）：pinned 心里话/约定行（已拼好）；省略/空 ⇒ 不追加。 */
+  lifeMemory?: () => string;
   /**
    * 主人背景档案（v0.3.2）：同一稳定区内拼 persona 文本 + 主人段（各用各预算键）。
    * 省略 ⇒ 只拼人格区（老宿主/测试代理的形态）。
@@ -56,20 +62,31 @@ export function registerPersonaSection(ctx: Context, deps: PersonaSectionDeps): 
     registered.add(agent);
     const agentCtx = (agent as { ctx?: { systemPrompt?: { section?: unknown } } }).ctx;
     if (typeof agentCtx?.systemPrompt?.section !== 'function') return;
-    // 缓存键 = 人格 revision + 档案 revision + 同步时刻：三者都没动字节才准复用——
-    // 只看 persona.revision 会把"后台同步更新了主人段"当成没变化，新段永远进不了提示。
+    // v0.7：作用域解析的坐标在注册时定下（agent 的 workspace/session 不会变）
+    const workspaceId = workspaceIdOfAgent(agent);
+    const sessionId = sessionIdOfSession((agent as { session?: unknown }).session);
+    // 缓存键 = 人格 revision + 命中预设 id + 档案 revision + 同步时刻：四者都没动字节才准复用——
+    // 只看 persona.revision 会把"后台同步更新了主人段"当成没变化，新段永远进不了提示；
+    // 少了 presetId 则作用域切换后旧文本会被复用（同 revision 不同卡）。
     let cacheKey = '';
     let cacheText = '';
     const text = (): string => {
       const cfg = deps.eff();
       if (!cfg.enabled || !cfg.persona.enabled || !cfg.live.personaEnabled) return '';
-      const persona = deps.personas.current();
+      const current = deps.personas.current();
+      const resolved = deps.presets === undefined
+        ? { card: current, presetId: '' }
+        : (() => {
+            const r = deps.presets.resolve({ ...(workspaceId === '' ? {} : { workspaceId }), ...(sessionId === '' ? {} : { sessionId }), current });
+            return { card: r.card, presetId: r.presetId ?? '' };
+          })();
       const ownerRow = deps.owner?.get();
-      const key = `${persona.revision}:${ownerRow?.revision ?? 0}:${ownerRow?.syncMeta.syncedAt ?? 0}`;
+      const lifeText = deps.lifeMemory?.() ?? '';
+      const key = `${resolved.card.revision}:${resolved.presetId}:${ownerRow?.revision ?? 0}:${ownerRow?.syncMeta.syncedAt ?? 0}:${lifeText}`;
       if (cacheKey === key && cacheText !== '') return cacheText;
-      const personaText = composePersonaText(persona, cfg.persona.budgetBytes);
+      const personaText = composePersonaText(resolved.card, cfg.persona.budgetBytes);
       const ownerText = ownerRow === undefined ? '' : composeOwnerText(ownerRow, cfg.owner.budgetBytes);
-      cacheText = [personaText, ownerText].filter((part) => part !== '').join('\n');
+      cacheText = [personaText, ownerText, lifeText].filter((part) => part !== '').join('\n');
       cacheKey = key;
       return cacheText;
     };

@@ -12,7 +12,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 import { SPIRIT_DB_SCHEMA_VERSION } from '../contract.js';
-import { V7_TXN_STATEMENTS, V8_ONTOLOGY_STATEMENTS } from './schema.js';
+import { V7_TXN_STATEMENTS, V8_ONTOLOGY_STATEMENTS, V9_MEMORY_STATEMENTS } from './schema.js';
 
 /** `from → to` 的单步正向迁移（to = from + 1，链条不允许跳号）。 */
 export interface MigrationStep {
@@ -110,6 +110,15 @@ export const MIGRATIONS: readonly MigrationStep[] = [
       addColumnIfMissing(db, 'txn_entry', 'turn_start_ms', 'turn_start_ms INTEGER');
       addColumnIfMissing(db, 'txn_entry', 'turn_end_ms', 'turn_end_ms INTEGER');
       for (const statement of V8_ONTOLOGY_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    from: 8,
+    to: 9,
+    note: '模型可写记忆与目的层：model_memory（scope=life/work/diary）+ goal 两张表（整表新增走幂等建表）',
+    run: (db) => {
+      // 纯加表：显式执行 v9 子集（IF NOT EXISTS 幂等，与 applySchema 同一份语句）
+      for (const statement of V9_MEMORY_STATEMENTS) db.exec(statement);
     },
   },
 ];

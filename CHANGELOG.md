@@ -17,6 +17,50 @@
   把静默为空读成了功能正常。不升 `warn`（那会造一屏假故障），只把 0 显示出来；未探到 ⇒ 不显示
   （**未知不当 0**）。
 
+## 0.8.0
+
+模型可写记忆 + 目的层（user 点单：对标 agent-soul 的 soul_memory，但**两本账必须分清**）：
+
+### 两本账（schema v9：model_memory）
+- **生涯账（scope=life）**：心里话、与主人的约定——全局，跟人格连续性走；pinned 以「心里记着：…」进**人格区**（稳定区，不逐轮变）。kind：bond/promise。
+- **工作账（scope=work）**：长期工作的事实/决定/偏好/约定——**按工作区隔离**（workspace_id 空=跨区）；pinned 只进对应工作区的**事务卡「记着」段**（最多 2 条）。kind：fact/decision/preference/promise。
+- **日记（scope=diary）**：按条追加、**不写 md、不自动注入**；需要时工具 `recall` 按词取（或面板看）——按用户要求不落档，靠回响/检索通道调取。
+- 纪律：写前脱敏（含密整条拒）、text 钳 200 字、同 scope 同文幂等（撞 id 只刷时间）、forget 置标记不物理删、kind 越界拒写。
+
+### 目的层（goal）
+- 惦记的事（open/done/dropped），按工作区隔离；open 目标以「惦记：…」段进事务卡（最多 3 条）；同标的重开会复用行。
+
+### 工具面（部署总闸关 ⇒ 不注册）
+- `spirit_memory`：write/pin/unpin/forget/recall/list（scope 必选，描述里写明两本账边界）。
+- `spirit_goal`：add/done/drop/list。
+
+### 观测与面板
+- 新端点 `memory-list`（life/work/diary/goals 四组）；翻阅·本体新增「记着」子页；回响页新增「生涯记忆补充（pinned）」段——回响通道能调到生涯记忆。
+- 卡新段：「记着」（工作账 pinned）/「惦记」（open 目标），优先级在反馈/线程之后、事务之前；指纹随之扩展（关时逐字节不变）。
+
+### 迁移
+- schema v8→v9：两张纯新表（model_memory + goal），老库走迁移链自动建。
+
+## 0.7.0
+
+对表 dsh-soul / dsh-agent-soul 的三项能力补齐（用户点单）：
+
+### 人格配置编译器（对表 dsh-soul）
+- **预设库**：5 张内置预设（安静记录者/如实记事/直白工程师/俏皮同伴/诗意守夜人）+ 自建预设（存/删，内置保护）。
+- **激活 = 写正式人设**：走 `PersonaStore.save()` 唯一写路径（revision 推进/历史留档/md 重生全继承）；预设库只记 activeId。
+- **作用域覆盖（只读投影）**：会话 > 工作区 > 激活 > 当前卡；会话绑定 30 天回收（照 dsh-soul 的 sidecar 纪律）；注入侧按 agent 的 workspace/session 实时解析，缓存键含命中预设 id。
+- **审计**：activate/bind/unbind/preset-save/delete 追加 `persona-audit.jsonl`（面板回显尾部 20 条）。
+- 面板：人设页新增预设行（选/激活/删/另存）+ 本会话绑定 + 生效来源徽标。
+- 六新端点：`persona-presets / persona-activate / persona-preset-save / persona-preset-delete / persona-bind / persona-effective`。
+
+### 注入回响面（对表 prime-memory 的 memory 激活槽位）
+- 每轮 pre-step 落一条快照：注入了什么（全文 + 指纹 + 分段行数）或为什么没注入（门名）；进程内环形缓冲 200 条，不落库。
+- 新端点 `inject-echo`；翻阅面新增「回响」子视图（时间/注入或跳过/门名/指纹/分段 chips/卡全文）+ 头部刷新接入。
+
+### 规则打分（对表 dsh-agent-soul，叠加在四级 salience 上）
+- `recall/txn-score.ts`：档位基底(100/70/40/20) + 来源加分(user_explicit +20) + 结构加分(cue +10/summary +8) + 近因微调(24h 内 ≤ +12) - 噪声罚分(短句 -10)；确定性、零 LLM、可重算不落库。
+- 交付卡行从「最新一条」改为「窗口 12 条内取分最高」，同分仍新者胜；注入面仍只读 card_line 不进 summary。
+
 ## 0.6.1
 
 - **本体面可搜**（用户点单：本体类为什么不能搜索）：「翻阅 · 本体」的实体/任务线子页新增搜索框（Enter 提交）——实体按名字/别名 LIKE、任务线按标题 LIKE；空词回全量，切子页自动清。反馈面是追加型真源，无搜索词表不提供。

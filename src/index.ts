@@ -54,6 +54,11 @@ import { createLlmChannel, type DistillRoute, type LlmChannel, type LlmRuntimeLi
 import { readRuntimeRoute, writeRuntimeRoute } from './distill/runtime-route.js';
 import { Spirit } from './spirit.js';
 import { registerPersonaSection } from './hooks/persona-section.js';
+import { PersonaPresetStore } from './persona/presets.js';
+import { EchoLog } from './echo-log.js';
+import { pickBest } from './recall/txn-score.js';
+import { ModelMemoryStore, GoalStore } from './memory/store.js';
+import { registerMemoryTools } from './tools/memory.js';
 import { registerCardPreStep } from './hooks/card-pre-step.js';
 import { registerCardObserve } from './hooks/card-observe.js';
 import { registerTxnObserve } from './hooks/txn-observe.js';
@@ -94,6 +99,13 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   }
 
   const personas = new PersonaStore({ dataDir, logger, db });
+  // v0.7 人格预设库：文件型（激活=走 personas.save 写入；作用域覆盖=只读投影）
+  const personaPresets = new PersonaPresetStore({ dataDir, logger });
+  // v0.7 注入回响面：进程内环形缓冲（观测面，不落库）
+  const echoLog = new EchoLog();
+  // v0.8 模型可写记忆（两本账+日记）与目的层
+  const modelMemory = new ModelMemoryStore({ db: () => db, logger });
+  const goals = new GoalStore({ db: () => db, logger });
   const modes = new SessionModeStore({ dataDir, logger });
   const store = new ExperienceStore({ db, logger });
   // v0.2 两张新面：未竟账（append-only 真源）与条件化（派生缓存，定性见 store/bias.ts）
@@ -208,7 +220,13 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
       recentEntries: (sessionId, k) => store.recent(sessionId, k),
       // 事务轨注入面（Phase 4）：关轨 ⇒ undefined（卡不带事务段、指纹不变，零副作用）；
       // 开轨只读最近一条 card_line（绝不读 summary——那是衍生物，禁入注入）。
-      recentTxnCardLine: (sessionId) => (eff().txn.enabled ? txnStore.listRecent(1, { sessionId, excludeBackfill: true })[0]?.cardLine : undefined),
+      // 交付卡行改用规则打分选优（v0.7）：同档内“更有分量”的交付胜最新一条；窗口 12 条内取分，
+      // 规则确定性可重算，不落库——同分仍以新者胜（时间序不变）。
+      recentTxnCardLine: (sessionId) => {
+        if (!eff().txn.enabled) return undefined;
+        const window = txnStore.listRecent(12, { sessionId, excludeBackfill: true });
+        return pickBest(window, { now: Date.now() })?.cardLine;
+      },
       // 本体层注入读面（Phase C）：只给稳定 gist（kind+锁定交付 card_line / 活跃任务行），不含 id/ts/原文；关轨⇒undefined。
       recentFeedbackLine: (sessionId) => {
         if (!eff().ontology.enabled) return undefined;
@@ -224,6 +242,15 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
         if (active === undefined) return undefined;
         const word = active.status === 'progress' ? '进行中' : active.status === 'stalled' ? '卡住' : '刚起';
         return active.nextStep !== undefined ? `${active.title} · ${word} · 下一步：${active.nextStep}` : `${active.title} · ${word}`;
+      },
+      // 记着/惦记（v0.8）：模型主动写的长期工作记忆（本区+全局）与目的层 open 目标
+      workMemoryLine: (workspaceId) => {
+        const rows = modelMemory.pinnedWork(workspaceId, 2);
+        return rows.length === 0 ? undefined : rows.map((row) => row.text).join('；');
+      },
+      goalLine: (workspaceId) => {
+        const rows = goals.openFor(workspaceId, 3);
+        return rows.length === 0 ? undefined : rows.map((goal) => goal.title).join('；');
       },
       previousEntries: (workspaceId, sessionId, m) => store.previousSessionEntries(workspaceId, sessionId, m),
       // 刀3：新会话首轮带出一行未竟账（过期/无账/关闸 ⇒ undefined，整行不出现）
@@ -248,7 +275,12 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     return undefined;
   });
 
-  registerPersonaSection(ctx, { personas, owner: ownerStore, eff, caps, logger });
+  registerPersonaSection(ctx, { personas, presets: personaPresets, owner: ownerStore, eff, caps, logger,
+    // 生涯账：pinned 的心理话/约定进人格区（全局，不按工作区分账）
+    lifeMemory: () => {
+      const rows = modelMemory.pinnedLife(3);
+      return rows.length === 0 ? '' : `心里记着：${rows.map((row) => row.text).join('；')}`;
+    } });
   registerCardObserve(ctx, { spirit, logger });
   // 事务轨：旁路观察 + 入队，不挂进 pre-step 串行链。关时根本不注册（零副作用纪律）——
   // 与"关时零落库"的灰度承诺成对：不注册 ⇒ 不采集 ⇒ 不入队 ⇒ countAll() 恒为 0。
@@ -259,12 +291,18 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   // 自称工具（v0.3.4）：模型可自己增删自称列表（人设面唯一对模型开放的写字段）；
   // 部署总闸关 ⇒ 根本不注册（关闸时模型看不见这个工具，零副作用纪律）。
   if (config.enabled) registerSelfNameTool(ctx, { personas, logger });
+  // v0.8 模型可写记忆工具（两本账+日记）与目的层工具：部署总闸关 ⇒ 不注册（零副作用纪律）
+  if (config.enabled) registerMemoryTools(ctx, { memory: modelMemory, goals, logger });
   registerSpiritRpc(ctx, {
     spirit,
     stats,
     store,
     modes,
     personas,
+    presets: personaPresets,
+    echo: echoLog,
+    memory: modelMemory,
+    goals,
     dataDir,
     cfg,
     eff,
@@ -340,6 +378,12 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
         degraded: !store.persistent,
         ...(diag.tendency !== undefined ? { tendency: diag.tendency } : {}),
       });
+      // 回响面（v0.7）：注入/跳过都留一条快照——"这轮为什么没卡"正是最难查的那类
+      if (outcome.kind === 'injected') {
+        echoLog.record({ at: input.now, agentId: input.agentId, sessionId: input.sessionId, workspaceId: input.workspaceId, kind: 'injected', fingerprint: outcome.fingerprint, text: outcome.text });
+      } else {
+        echoLog.record({ at: input.now, agentId: input.agentId, sessionId: input.sessionId, workspaceId: input.workspaceId, kind: 'skipped', reason: String(outcome.reason) });
+      }
     },
   });
 

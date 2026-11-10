@@ -13,7 +13,7 @@
  */
 import { createElement, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 
-import type { SpiritJournalRow, SpiritTxnRow, SpiritTaskRow, SpiritEntityNode, SpiritEvaluationRow } from '../../../src/contract.js';
+import type { SpiritJournalRow, SpiritTxnRow, SpiritTaskRow, SpiritEntityNode, SpiritEvaluationRow, SpiritEchoSnapshot, SpiritMemoryListResult } from '../../../src/contract.js';
 import { copyOf } from '../copy.js';
 import type { RpcFn } from '../rpc.js';
 import { SeaTopics } from './sea-topics.js';
@@ -65,18 +65,23 @@ export function SeaRecords(props: SeaRecordsProps) {
   const [hiddenView, setHiddenView] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // 子视图（v0.3.5）：条目流 ⇄ 线索头（主题分区 + 碰撞裁决）；v0.4 加本周事务——同一 tab 三面，不加第五 tab
-  const [view, setView] = useState<'entries' | 'topics' | 'week' | 'onto'>('entries');
+  const [view, setView] = useState<'entries' | 'topics' | 'week' | 'onto' | 'echo'>('entries');
   // 本周事务（timeline-query）：切到该面时拉一次，不轮询
   const [weekRows, setWeekRows] = useState<SpiritTxnRow[]>([]);
   const [weekBusy, setWeekBusy] = useState(false);
   // 本体面（v0.5）：任务线 / 实体 / 反馈 三视图 + 点开看做成明细；切到该面时各拉一次
-  const [ontoTab, setOntoTab] = useState<'tasks' | 'entities' | 'feedback'>('tasks');
+  const [ontoTab, setOntoTab] = useState<'tasks' | 'entities' | 'feedback' | 'memory'>('tasks');
   const [ontoTasks, setOntoTasks] = useState<SpiritTaskRow[]>([]);
   const [ontoEntities, setOntoEntities] = useState<SpiritEntityNode[]>([]);
   const [ontoEvals, setOntoEvals] = useState<SpiritEvaluationRow[]>([]);
   const [ontoDetail, setOntoDetail] = useState<{ label: string; rows: SpiritTxnRow[] } | null>(null);
   const [ontoBusy, setOntoBusy] = useState(false);
   const [ontoBackfilling, setOntoBackfilling] = useState(false);
+  // 回响面（v0.7）：每轮注入/跳过快照（进程内环形缓冲；重启归零属正常）
+  const [echoRows, setEchoRows] = useState<SpiritEchoSnapshot[]>([]);
+  const [echoBusy, setEchoBusy] = useState(false);
+  // 模型可写记忆（v0.8）：两本账+日记+目的（本体「记着」子页 / 回响页生涯补充）
+  const [memoryView, setMemoryView] = useState<SpiritMemoryListResult | null>(null);
   // 本体面搜索（v0.6.1）：输入与生效值分开（Enter 提交，照条目流口径）
   const [ontoQueryInput, setOntoQueryInput] = useState('');
   const [ontoQuery, setOntoQuery] = useState('');
@@ -169,7 +174,9 @@ export function SeaRecords(props: SeaRecordsProps) {
         rpc('entity-graph', { limit: 60 }),
         rpc('evaluation-list', { limit: 100 }),
       ]);
+      const mem = await rpc('memory-list', { limit: 50 }).catch(() => ({ ok: false }) as const);
       if (token !== seqRef.current) return;
+      if (mem.ok) setMemoryView(mem.value);
       if (tasks.ok) setOntoTasks(tasks.value.tasks);
       if (graph.ok) setOntoEntities(graph.value.nodes);
       if (evals.ok) setOntoEvals(evals.value.rows);
@@ -219,12 +226,40 @@ export function SeaRecords(props: SeaRecordsProps) {
     if (view === 'onto') void fetchOnto();
   }, [view, fetchOnto]);
 
+  /** 回响面：拉最近 50 轮快照（跨会话；重启后为空属正常）。 */
+  const fetchEcho = useCallback(async () => {
+    if (rpc === undefined) return;
+    const token = ++seqRef.current;
+    setEchoBusy(true);
+    setError(null);
+    try {
+      const result = await rpc('inject-echo', { limit: 50 });
+      if (token !== seqRef.current) return;
+      if (!result.ok) { setError(result.error.message); return; }
+      setEchoRows(result.value.items);
+      // 生涯补充（v0.8）：pinned 的心里话/约定也在这儿露一眼（这就是「回响通道调生涯记忆」）
+      const mem = await rpc('memory-list', { limit: 20 }).catch(() => ({ ok: false }) as const);
+      if (token !== seqRef.current) return;
+      if (mem.ok) setMemoryView(mem.value);
+    } catch (err) {
+      if (token !== seqRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEchoBusy(false);
+    }
+  }, [rpc]);
+
+  useEffect(() => {
+    if (view === 'echo') void fetchEcho();
+  }, [view, fetchEcho]);
+
   // 头部刷新令牌（v0.5.9）：重建期间不离开翻阅面也能拉新——按当前视图重取，条目流永远重取（它背后是热路）。
   useEffect(() => {
     if (refreshToken === undefined || refreshToken === 0) return;
     reload();
     if (view === 'week') void fetchWeek();
     if (view === 'onto') void fetchOnto();
+    if (view === 'echo') void fetchEcho();
     // 依赖只跟令牌：视图切换自身的 effect 已负责拉新，这里不重复挂 view
   }, [refreshToken]);
 
@@ -292,12 +327,13 @@ export function SeaRecords(props: SeaRecordsProps) {
 
   const editable = (row: SpiritJournalRow): boolean => row.supersededBy === null && row.hiddenAt === null;
 
-  /** 三面切换行（条目流 / 线索头 / 本周）：当前面高亮。 */
-  const switchTabs = (active: 'entries' | 'topics' | 'week' | 'onto'): ReturnType<typeof createElement>[] => [
+  /** 五面切换行（条目流 / 线索头 / 本周 / 本体 / 回响）：当前面高亮。 */
+  const switchTabs = (active: 'entries' | 'topics' | 'week' | 'onto' | 'echo'): ReturnType<typeof createElement>[] => [
     createElement('button', { key: 'e', type: 'button', style: active === 'entries' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('entries') }, copy['panel.recent']),
     createElement('button', { key: 't', type: 'button', style: active === 'topics' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('topics') }, copy['topic.view']),
     createElement('button', { key: 'w', type: 'button', style: active === 'week' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('week') }, copy['rec.weekView']),
     createElement('button', { key: 'o', type: 'button', style: active === 'onto' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('onto') }, copy['onto.tab']),
+    createElement('button', { key: 'h', type: 'button', style: active === 'echo' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('echo') }, copy['rec.echo']),
   ];
 
   if (view === 'week') {
@@ -339,10 +375,82 @@ export function SeaRecords(props: SeaRecordsProps) {
     );
   }
 
+  if (view === 'echo') {
+    return createElement(
+      'div',
+      { style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, colorScheme: 'dark' } },
+      createElement(
+        'header',
+        { style: HEAD_STYLE },
+        ...switchTabs('echo'),
+        createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => void fetchEcho() }, copy['sea.refresh']),
+      ),
+      error !== null ? createElement('p', { style: { margin: '8px 14px', color: '#ff9a9a', fontSize: 12 } }, `${copy['sea.loadFailed']}: ${error}`) : null,
+      // 生涯补充（v0.8）：pinned 的心里话/约定——回响页也能调生涯记忆
+      (memoryView?.life ?? []).some((row) => row.pinned)
+        ? createElement(
+          'div',
+          { style: { padding: '6px 14px', borderBottom: '1px solid rgba(120,160,255,.12)' } },
+          createElement('div', { style: { fontSize: 12, color: '#8e9ab5' } }, copy['echo.lifeNote']),
+          ...(memoryView?.life ?? []).filter((row) => row.pinned).map((row) =>
+            createElement('div', { key: row.id, style: { ...MUTED_STYLE, marginTop: 2, whiteSpace: 'pre-wrap' } }, `· ${row.text}`),
+          ),
+        )
+        : null,
+      echoRows.length === 0 && !echoBusy
+        ? createElement('p', { style: { margin: '18px 14px', ...MUTED_STYLE } }, copy['echo.empty'])
+        : createElement(
+          'div',
+          { style: { overflowY: 'auto', flex: '1 1 auto', minHeight: 0, padding: '8px 14px' } },
+          ...echoRows.map((item) => createElement(
+            'div',
+            { key: `${item.at}-${item.fingerprint}-${item.sessionId}`, style: { border: '1px solid rgba(120,160,255,.14)', borderRadius: 8, padding: '8px 10px', marginBottom: 8, background: 'rgba(10,14,26,.45)' } },
+            createElement(
+              'div',
+              { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 } },
+              createElement('span', { style: { color: '#8e9ab5' } }, new Date(item.at).toLocaleString()),
+              createElement('span', { style: { color: item.kind === 'injected' ? '#8fe0b0' : '#e8c07f' } }, item.kind === 'injected' ? copy['echo.injected'] : `${copy['echo.skipped']} · ${item.reason}`),
+              item.kind === 'injected'
+                ? createElement('span', { style: MUTED_STYLE }, `${item.bytes}B · ${copy['echo.fp']} ${item.fingerprint.slice(0, 12)}`)
+                : null,
+              ...item.segments.map((seg) => createElement('span', { key: seg.name, style: CUE_STYLE }, `${seg.name} ${seg.lines}`)),
+            ),
+            item.text !== ''
+              ? createElement('div', { style: { marginTop: 6, fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#e8eeff' } }, item.text)
+              : null,
+          )),
+        ),
+    );
+  }
+
   if (view === 'onto') {
-    const innerTab = (k: 'tasks' | 'entities' | 'feedback', label: string): ReturnType<typeof createElement> =>
+    // 记忆分组渲染（v0.8）：生涯/工作/目的/日记共用一套行形（kind 徽标 + pinned 标记）
+    const memGroup = (title: string, rows: Array<{ id: string; kind: string; text: string; pinned: boolean }>): ReturnType<typeof createElement> =>
+      createElement(
+        'div',
+        { key: title, style: { marginTop: 10 } },
+        createElement('div', { style: { fontSize: 12, color: '#8e9ab5' } }, `${title}（${rows.length}）`),
+        rows.length === 0
+          ? createElement('div', { style: { ...MUTED_STYLE, marginTop: 4 } }, copy['memory.empty'])
+          : createElement(
+            'ul',
+            { style: LIST_STYLE },
+            ...rows.map((row) => createElement(
+              'li',
+              { key: row.id, style: ITEM_STYLE },
+              createElement(
+                'div',
+                { style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' } },
+                createElement('span', { style: BADGE_STYLE }, row.kind),
+                row.pinned ? createElement('span', { style: CUE_STYLE }, copy['memory.pinned']) : null,
+              ),
+              createElement('div', { style: { fontSize: 13, lineHeight: 1.6, color: '#e8eeff', marginTop: 4, whiteSpace: 'pre-wrap' } }, row.text),
+            )),
+          ),
+      );
+    const innerTab = (k: 'tasks' | 'entities' | 'feedback' | 'memory', label: string): ReturnType<typeof createElement> =>
       createElement('button', { key: k, type: 'button', style: ontoTab === k ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => { setOntoTab(k); setOntoDetail(null); setOntoQuery(''); setOntoQueryInput(''); void fetchOnto(); } }, label);
-    const empty = ontoTab === 'tasks' ? ontoTasks.length === 0 : ontoTab === 'entities' ? ontoEntities.length === 0 : ontoEvals.length === 0;
+    const empty = ontoTab === 'tasks' ? ontoTasks.length === 0 : ontoTab === 'entities' ? ontoEntities.length === 0 : ontoTab === 'memory' ? (memoryView === null || memoryView.life.length + memoryView.work.length + memoryView.diary.length + memoryView.goals.length === 0) : ontoEvals.length === 0;
     return createElement(
       'div',
       { style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, colorScheme: 'dark' } },
@@ -353,6 +461,7 @@ export function SeaRecords(props: SeaRecordsProps) {
         innerTab('tasks', copy['onto.tasks']),
         innerTab('entities', copy['onto.entities']),
         innerTab('feedback', copy['onto.feedback']),
+        innerTab('memory', copy['onto.memory']),
         ontoTab === 'feedback'
           ? null
           : createElement('input', {
@@ -449,7 +558,8 @@ export function SeaRecords(props: SeaRecordsProps) {
               ),
             ),
           )
-        : createElement(
+        : ontoTab === 'feedback'
+        ? createElement(
             'ul',
             { style: LIST_STYLE },
             ontoEvals.map((ev) =>
@@ -470,6 +580,18 @@ export function SeaRecords(props: SeaRecordsProps) {
                 ),
               ),
             ),
+          )
+        : createElement(
+            'div',
+            { style: { padding: '4px 14px 18px', overflowY: 'auto', flex: '1 1 auto', minHeight: 0 } },
+            ...(memoryView === null
+              ? [createElement('p', { style: MUTED_STYLE }, copy['memory.empty'])]
+              : [
+                memGroup(copy['memory.life'], memoryView.life.map((m) => ({ id: m.id, kind: m.kind, text: m.text, pinned: m.pinned }))),
+                memGroup(copy['memory.work'], memoryView.work.map((m) => ({ id: m.id, kind: m.kind, text: m.text, pinned: m.pinned }))),
+                memGroup(copy['memory.goals'], memoryView.goals.map((g) => ({ id: g.id, kind: g.status, text: g.title, pinned: false }))),
+                memGroup(copy['memory.diary'], memoryView.diary.map((m) => ({ id: m.id, kind: m.kind, text: m.text, pinned: m.pinned }))),
+              ]),
           ),
     );
   }

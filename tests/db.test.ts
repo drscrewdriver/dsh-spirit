@@ -106,7 +106,7 @@ describe('openSpiritDb', () => {
   it('planMigration：v2→v7 登记在链上（缺登记就是链断、老库拒读）；当前版自身零步', () => {
     const up = planMigration(2);
     expect(up.ok).toBe(true);
-    if (up.ok) expect(up.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['2→3', '3→4', '4→5', '5→6', '6→7', '7→8']);
+    if (up.ok) expect(up.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['2→3', '3→4', '4→5', '5→6', '6→7', '7→8', '8→9']);
     const same = planMigration(SPIRIT_DB_SCHEMA_VERSION);
     expect(same.ok).toBe(true);
     if (same.ok) expect(same.steps).toHaveLength(0);
@@ -329,11 +329,11 @@ describe('planMigration', () => {
     expect(planMigration(SPIRIT_DB_SCHEMA_VERSION)).toEqual({ ok: true, steps: [] });
   });
 
-  it('v1 ⇒ 有正向链（1→2→3→4→5→6→7→8，带人话 note）', () => {
+  it('v1 ⇒ 有正向链（1→2→3→4→5→6→7→8→9，带人话 note）', () => {
     const plan = planMigration(1);
     expect(plan.ok).toBe(true);
     if (plan.ok) {
-      expect(plan.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['1→2', '2→3', '3→4', '4→5', '5→6', '6→7', '7→8']);
+      expect(plan.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['1→2', '2→3', '3→4', '4→5', '5→6', '6→7', '7→8', '8→9']);
       expect(plan.steps[0]?.note.length).toBeGreaterThan(0);
     }
   });

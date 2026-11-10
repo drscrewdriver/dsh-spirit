@@ -17,7 +17,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, SPIRIT_RANGES, type SpiritConfig, type SpiritExportResult, type SpiritFeedbackRequest, type SpiritJournalPage, type SpiritJournalRow, type SpiritLiveSettings, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats, type SpiritSettingsView, type SpiritTimelineResult, type SpiritResourceResult, type SpiritTxnRow, type SpiritDistillRouteView, type SpiritDistillModelListResult, type SpiritDistillModelSetResult, type SpiritEvaluationRow, type SpiritEvaluationListResult, type SpiritEntityGraphResult, type SpiritEntityNode, type SpiritEntityLookupResult, type SpiritTaskListResult, type SpiritTaskRow, type SpiritTaskDetailResult, type SpiritBackfillRunResult } from './contract.js';
+import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, SPIRIT_RANGES, type SpiritConfig, type SpiritExportResult, type SpiritFeedbackRequest, type SpiritJournalPage, type SpiritJournalRow, type SpiritLiveSettings, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats, type SpiritSettingsView, type SpiritTimelineResult, type SpiritResourceResult, type SpiritTxnRow, type SpiritDistillRouteView, type SpiritDistillModelListResult, type SpiritDistillModelSetResult, type SpiritEvaluationRow, type SpiritEvaluationListResult, type SpiritEntityGraphResult, type SpiritEntityNode, type SpiritEntityLookupResult, type SpiritTaskListResult, type SpiritTaskRow, type SpiritTaskDetailResult, type SpiritBackfillRunResult, type SpiritInjectEchoResult, type SpiritMemoryRow, type SpiritMemoryListResult } from './contract.js';
 import type { Spirit } from './spirit.js';
 import type { SpiritStats } from './stats.js';
 import type { SessionModeStore } from './store/session-modes.js';
@@ -37,6 +37,9 @@ import type { ExperienceStore } from './store/experience.js';
 import type { TxnStore, TxnEntry } from './store/transaction.js';
 import type { OntologyStore, OntologyEvaluation } from './store/ontology.js';
 import type { BackfillRunner } from './ontology/backfill.js';
+import type { PersonaPresetStore } from './persona/presets.js';
+import type { EchoLog } from './echo-log.js';
+import type { ModelMemoryStore, GoalStore } from './memory/store.js';
 import { LANES, TRIGGER_KINDS, type EntityKind, type SpiritVerdict } from './types.js';
 import type { ExperienceEntry, PersonaCard } from './types.js';
 import { validatePersona } from './persona/types.js';
@@ -84,6 +87,14 @@ export interface RpcDeps {
   store: ExperienceStore;
   modes: SessionModeStore;
   personas: PersonaStore;
+  /** 人格预设库（v0.7）；省略 ⇒ 预设类端点报 unavailable（老装配兼容）。 */
+  presets?: PersonaPresetStore;
+  /** 注入回响面（v0.7）：每轮注入/跳过快照；省略 ⇒ inject-echo 报 unavailable。 */
+  echo?: EchoLog;
+  /** 模型可写记忆（v0.8）：两本账+日记；省略 ⇒ memory-list 报 unavailable。 */
+  memory?: ModelMemoryStore;
+  /** 目的层（v0.8）：惦记的事；省略 ⇒ memory-list 的 goals 回空。 */
+  goals?: GoalStore;
   /** 导出件写到哪（数据目录本身）；由 index 传入，不从配置重算。 */
   dataDir: string;
   cfg: () => SpiritConfig;
@@ -411,6 +422,95 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       const saved = deps.personas.save(parsed.persona);
       if (!saved.ok) return err('save-failed', saved.reason);
       return ok(personaView(saved.persona, deps.cfg().persona.budgetBytes));
+    }
+    // ── v0.7 人格预设库（对表 dsh-soul 的人格配置编译器）──
+    case 'persona-presets': {
+      if (deps.presets === undefined) return err('unavailable', '预设库未装配');
+      return ok(deps.presets.view());
+    }
+    case 'persona-activate': {
+      if (deps.presets === undefined) return err('unavailable', '预设库未装配');
+      const presetId = str(payload['presetId']);
+      if (presetId === '') return err('bad-request', 'presetId 必填');
+      const marked = deps.presets.markActive(presetId);
+      if (!marked.ok) return err('not-found', marked.reason);
+      // 激活 = 把预设卡写进正式人设（save() 唯一写路径：revision 推进/历史留档/md 重生）
+      const saved = deps.personas.save(marked.preset.card);
+      if (!saved.ok) return err('save-failed', saved.reason);
+      return ok({ ok: true, persona: personaView(saved.persona, deps.cfg().persona.budgetBytes) });
+    }
+    case 'persona-preset-save': {
+      if (deps.presets === undefined) return err('unavailable', '预设库未装配');
+      const name = str(payload['name']);
+      const got = deps.presets.savePreset(name, deps.personas.current());
+      if (!got.ok) return err('bad-request', got.reason);
+      return ok({ ok: true, presetId: got.preset.id });
+    }
+    case 'persona-preset-delete': {
+      if (deps.presets === undefined) return err('unavailable', '预设库未装配');
+      const got = deps.presets.deletePreset(str(payload['presetId']));
+      if (!got.ok) return err('bad-request', got.reason);
+      return ok({ ok: true });
+    }
+    case 'persona-bind': {
+      if (deps.presets === undefined) return err('unavailable', '预设库未装配');
+      const scope = str(payload['scope']);
+      if (scope !== 'workspace' && scope !== 'session') return err('bad-request', 'scope 必为 workspace/session');
+      const rawPreset = payload['presetId'];
+      const got = deps.presets.bind({
+        scope,
+        ...(typeof payload['workspaceId'] === 'string' ? { workspaceId: payload['workspaceId'] } : {}),
+        ...(typeof payload['sessionId'] === 'string' ? { sessionId: payload['sessionId'] } : {}),
+        presetId: typeof rawPreset === 'string' && rawPreset !== '' ? rawPreset : null,
+      });
+      if (!got.ok) return err('bad-request', got.reason);
+      return ok({ ok: true });
+    }
+    case 'persona-effective': {
+      const card = deps.personas.current();
+      const resolved = deps.presets === undefined
+        ? { card, source: 'current' as const }
+        : deps.presets.resolve({
+            ...(typeof payload['workspaceId'] === 'string' ? { workspaceId: payload['workspaceId'] } : {}),
+            ...(typeof payload['sessionId'] === 'string' ? { sessionId: payload['sessionId'] } : {}),
+            current: card,
+          });
+      return ok({
+        source: resolved.source,
+        ...(resolved.presetId === undefined ? {} : { presetId: resolved.presetId }),
+        ...(resolved.presetName === undefined ? {} : { presetName: resolved.presetName }),
+        revision: resolved.card.revision,
+        name: resolved.card.name,
+        voice: resolved.card.voice,
+        projectedText: composePersonaText(resolved.card, deps.cfg().persona.budgetBytes),
+      });
+    }
+    case 'inject-echo': {
+      if (deps.echo === undefined) return err('unavailable', '回响面未装配');
+      const sessionId = str(payload['sessionId']);
+      const limit = int(payload['limit'], 20);
+      return ok({
+        items: deps.echo.list({ ...(sessionId === '' ? {} : { sessionId }), limit }),
+        total: deps.echo.size(),
+      } satisfies SpiritInjectEchoResult);
+    }
+    case 'memory-list': {
+      if (deps.memory === undefined) return err('unavailable', '记忆库未装配');
+      const ws = str(payload['workspaceId']);
+      const limit = int(payload['limit'], 50);
+      const opts = { ...(ws === '' ? {} : { workspaceId: ws }), limit };
+      const memoryRows = (scope: 'life' | 'work' | 'diary'): SpiritMemoryRow[] =>
+        deps.memory!.recent({ scope, ...opts }).map((row) => ({
+          id: row.id, scope: row.scope, kind: row.kind, text: row.text, workspaceId: row.workspaceId, pinned: row.pinned, createdAt: row.createdAt, updatedAt: row.updatedAt,
+        }));
+      return ok({
+        life: memoryRows('life'),
+        work: memoryRows('work'),
+        diary: memoryRows('diary'),
+        goals: (deps.goals?.list(opts) ?? []).map((goal) => ({
+          id: goal.id, title: goal.title, status: goal.status, why: goal.why, workspaceId: goal.workspaceId, createdAt: goal.createdAt, updatedAt: goal.updatedAt,
+        })),
+      } satisfies SpiritMemoryListResult);
     }
     case 'owner-get': {
       if (deps.owner === undefined) return err('unavailable', '主人档案未装配');

@@ -52,6 +52,10 @@ export const SPIRIT_OPS = [
   'session-stats',
   'journal-tail',
   'journal-export',
+  // v0.7 注入回响面（对表 prime-memory 的 memory 激活槽位）：每轮注入/跳过快照
+  'inject-echo',
+  // v0.8 模型可写记忆（两本账+日记）与目的层
+  'memory-list',
   'persona-get',
   'session-mode',
   'session-mode-get',
@@ -68,6 +72,13 @@ export const SPIRIT_OPS = [
   // v0.3.1 人设 markdown 备份（导出可读单层 md；导入走 save() 唯一写路径 = 追加新 revision）
   'persona-export-md',
   'persona-import-md',
+  // v0.7 人格预设库（对表 dsh-soul 的人格配置编译器）：预设/激活/作用域绑定/生效解析
+  'persona-presets',
+  'persona-activate',
+  'persona-preset-save',
+  'persona-preset-delete',
+  'persona-bind',
+  'persona-effective',
   // v0.3.2 主人背景档案（双段：prime-memory 同步段 + 主人自述段；ping 为事件接收预备）
   'owner-get',
   'owner-set-self',
@@ -196,6 +207,14 @@ export interface SpiritRequestMap {
   'persona-restore': SpiritPersonaRestoreRequest;
   'persona-export-md': Record<string, never>;
   'persona-import-md': { text: string };
+  'persona-presets': Record<string, never>;
+  'persona-activate': SpiritPersonaActivateRequest;
+  'persona-preset-save': SpiritPersonaPresetSaveRequest;
+  'persona-preset-delete': SpiritPersonaPresetDeleteRequest;
+  'persona-bind': SpiritPersonaBindRequest;
+  'persona-effective': SpiritPersonaEffectiveRequest;
+  'inject-echo': SpiritInjectEchoRequest;
+  'memory-list': SpiritMemoryListRequest;
   'owner-get': Record<string, never>;
   'owner-set-self': SpiritOwnerSetSelfRequest;
   'owner-sync-now': Record<string, never>;
@@ -248,6 +267,14 @@ export interface SpiritResponseMap {
   'persona-restore': SpiritPersonaView;
   'persona-export-md': SpiritPersonaMarkdown;
   'persona-import-md': SpiritPersonaView;
+  'persona-presets': SpiritPersonaPresetsView;
+  'persona-activate': SpiritPersonaActivateResult;
+  'persona-preset-save': SpiritPersonaPresetSaveResult;
+  'persona-preset-delete': SpiritPersonaPresetDeleteResult;
+  'persona-bind': SpiritPersonaBindResult;
+  'persona-effective': SpiritPersonaEffectiveResult;
+  'inject-echo': SpiritInjectEchoResult;
+  'memory-list': SpiritMemoryListResult;
   'owner-get': SpiritOwnerProfile;
   'owner-set-self': SpiritOwnerProfile;
   'owner-sync-now': SpiritOwnerSyncResult;
@@ -566,6 +593,113 @@ export interface SpiritPersonaView {
   values: string[];
   boundaries: string[];
   /** 当前会被注入系统提示的原文（与注入同源，可核对）。 */
+  projectedText: string;
+}
+
+// ── v0.7 人格预设库（对表 dsh-soul 的人格配置编译器）──
+
+/** 预设库视图：预设清单 + 激活 + 作用域绑定 + 审计尾部（面板一屏拉齐）。 */
+export interface SpiritPersonaPresetsView {
+  activeId: string;
+  activeName: string;
+  presets: Array<{ id: string; name: string; builtin: boolean; revision: number }>;
+  /** workspaceId → presetId。 */
+  workspaces: Record<string, string>;
+  /** sessionId → 临时覆盖（ 30 天回收，面板展示时已过滤）。 */
+  sessions: Array<{ sessionId: string; presetId: string; at: number }>;
+  audit: Array<{ at: number; action: string; detail: string }>;
+}
+
+export interface SpiritPersonaActivateRequest {
+  presetId: string;
+}
+
+export interface SpiritPersonaActivateResult {
+  ok: boolean;
+  reason?: string;
+  /** 激活成功后人设已写入的视图（可直接渲染）。 */
+  persona?: SpiritPersonaView;
+}
+
+export interface SpiritPersonaPresetSaveRequest {
+  name: string;
+}
+
+export interface SpiritPersonaPresetSaveResult {
+  ok: boolean;
+  reason?: string;
+  presetId?: string;
+}
+
+export interface SpiritPersonaPresetDeleteRequest {
+  presetId: string;
+}
+
+export interface SpiritPersonaPresetDeleteResult {
+  ok: boolean;
+  reason?: string;
+}
+
+export interface SpiritPersonaBindRequest {
+  scope: 'workspace' | 'session';
+  workspaceId?: string;
+  sessionId?: string;
+  /** null/省略 = 解绑（回到上一级）。 */
+  presetId?: string | null;
+}
+
+export interface SpiritPersonaBindResult {
+  ok: boolean;
+  reason?: string;
+}
+
+export interface SpiritPersonaEffectiveRequest {
+  workspaceId?: string;
+  sessionId?: string;
+}
+
+// ── v0.7 注入回响面（inject-echo；对表 prime-memory 的 memory 激活槽位）──
+export interface SpiritEchoSegment {
+  name: string;
+  lines: number;
+}
+
+/** 一轮 pre-step 的注入/跳过快照（进程内环形缓冲，最新在前回给面板）。 */
+export interface SpiritEchoSnapshot {
+  at: number;
+  agentId: string;
+  sessionId: string;
+  workspaceId: string;
+  kind: 'injected' | 'skipped';
+  /** skipped 时的门名（no-new-user / duplicate-fingerprint …）；injected 为空串。 */
+  reason: string;
+  fingerprint: string;
+  /** 注入卡全文（skipped 为空串）。 */
+  text: string;
+  bytes: number;
+  segments: SpiritEchoSegment[];
+}
+
+/** sessionId 空 = 跨会话最近若干轮。 */
+export interface SpiritInjectEchoRequest {
+  sessionId?: string;
+  limit?: number;
+}
+
+export interface SpiritInjectEchoResult {
+  items: SpiritEchoSnapshot[];
+  /** 缓冲区当前总条数（不只本次返回的）。 */
+  total: number;
+}
+
+export interface SpiritPersonaEffectiveResult {
+  /** session > workspace > active > current（非覆盖层）。 */
+  source: 'session' | 'workspace' | 'active' | 'current';
+  presetId?: string;
+  presetName?: string;
+  revision: number;
+  name: string;
+  voice: string;
   projectedText: string;
 }
 
@@ -1287,10 +1421,57 @@ export interface FadeStats {
   marked: number;
 }
 
+// ── v0.8 模型可写记忆（两本账 + 日记）与目的层 ──
+
+/** 记忆范围：life=生涯/人格面（心里话、约定）；work=长期工作（事实/决定/偏好）；diary=日记（追加、不自动注入）。 */
+export const SPIRIT_MEMORY_SCOPES = ['life', 'work', 'diary'] as const;
+export type SpiritMemoryScope = (typeof SPIRIT_MEMORY_SCOPES)[number];
+/** 各范围允许的 kind（越界拒写；kind 是给主人看的分类，不参与注入决策）。 */
+export const SPIRIT_MEMORY_KINDS: Record<SpiritMemoryScope, readonly string[]> = {
+  life: ['bond', 'promise'],
+  work: ['fact', 'decision', 'preference', 'promise'],
+  diary: ['note'],
+};
+
+export interface SpiritMemoryRow {
+  id: string;
+  scope: SpiritMemoryScope;
+  kind: string;
+  text: string;
+  workspaceId: string;
+  pinned: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SpiritGoalRow {
+  id: string;
+  title: string;
+  status: 'open' | 'done' | 'dropped';
+  why: string;
+  workspaceId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SpiritMemoryListRequest {
+  /** 空 = 全部工作区（面板「记着」页）；非空 = 限定工作区（含全局行）。 */
+  workspaceId?: string;
+  /** 每本账最多返回多少条（有顶）。 */
+  limit?: number;
+}
+
+export interface SpiritMemoryListResult {
+  life: SpiritMemoryRow[];
+  work: SpiritMemoryRow[];
+  diary: SpiritMemoryRow[];
+  goals: SpiritGoalRow[];
+}
+
 // ─────────────────────────────────────────────────────────── 版本与文件
 
-/** SQLite schema 版本；跨版本打开明确拒绝，不静默改库（v1→v2 加列、v2→v3 人设两表、v3→v4 主人档案、v4→v5 藏起列与分页索引、v5→v6 长觉阶梯五表、v6→v7 事务轨两张表、v7→v8 本体层（扩 txn_entry + 六表），均正向迁移）。 */
-export const SPIRIT_DB_SCHEMA_VERSION = 8;
+/** SQLite schema 版本；跨版本打开明确拒绝，不静默改库（v1→v2 加列、v2→v3 人设两表、v3→v4 主人档案、v4→v5 藏起列与分页索引、v5→v6 长觉阶梯五表、v6→v7 事务轨两张表、v7→v8 本体层（扩 txn_entry + 六表）、v8→v9 模型可写记忆与目的层，均正向迁移）。 */
+export const SPIRIT_DB_SCHEMA_VERSION = 9;
 /** `persona.json` 文件形状版本。 */
 export const SPIRIT_PERSONA_FILE_VERSION = 1;
 /** `owner.json` 文件形状版本（db=null 降级面；与 persona 分键，形状互不牵连）。 */
@@ -1298,7 +1479,7 @@ export const SPIRIT_OWNER_FILE_VERSION = 1;
 /** `session-modes.json` 文件形状版本。 */
 export const SPIRIT_MODES_FILE_VERSION = 1;
 /** 插件版本（与 package.json / dsh.plugin.json 同串，由门禁核对）。 */
-export const SPIRIT_VERSION = '0.6.1';
+export const SPIRIT_VERSION = '0.8.0';
 
 
 

@@ -88,6 +88,10 @@ export interface SpiritDeps {
   recentFeedbackLine?(sessionId: string): string | undefined;
   /** 本体层任务线程读面（Phase C / tier2）：当前活跃任务的 title·status·next 行。 */
   recentThreadLine?(workspaceId: string): string | undefined;
+  /** 记着（v0.8）：工作账 pinned 长期记忆（本区 + 全局）——模型主动写的「长期工作 memory」。 */
+  workMemoryLine?(workspaceId: string): string | undefined;
+  /** 惦记（v0.8）：目的层 open 目标行（≤3 条）。 */
+  goalLine?(workspaceId: string): string | undefined;
   /** 取上一会话末尾条目（跨会话基调）。 */
   previousEntries(workspaceId: string, sessionId: string, m: number): ExperienceEntry[];
   /** 未竟账读面（刀3）：新会话首轮带出一行；省略/空 ⇒ 整段不出现。 */
@@ -261,6 +265,8 @@ export class Spirit {
       // 本体层注入（Phase C）：反馈(tier1) + 线程(tier2)，均为稳定 gist（新评价/新任务才变，不逐轮）。
       const feedbackLine = this.deps.recentFeedbackLine?.(input.sessionId) ?? '';
       const threadLine = this.deps.recentThreadLine?.(input.workspaceId) ?? '';
+      const workMemory = this.deps.workMemoryLine?.(input.workspaceId) ?? '';
+      const goalLine = this.deps.goalLine?.(input.workspaceId) ?? '';
       const baseFingerprint = fade.fadeEnabled
         ? `${mood.revision}|${recentTexts.join('#')}|${formsDigest(formed)}`
         : `${mood.revision}|${recentTexts.join('#')}`;
@@ -269,6 +275,8 @@ export class Spirit {
       if (transactionLine !== '') fingerprint += `|txn:${transactionLine}`;
       if (threadLine !== '') fingerprint += `|th:${threadLine}`;
       if (feedbackLine !== '') fingerprint += `|fb:${feedbackLine}`;
+      if (workMemory !== '') fingerprint += `|mem:${workMemory}`;
+      if (goalLine !== '') fingerprint += `|gl:${goalLine}`;
       if (fade.fadeEnabled) this.deps.onFadeStats?.(input.agentId, fadeStatsOf(formed, entries));
       if (!changed && fingerprint === runtime.lastFingerprint) {
         this.runtimes.set(input.agentId, { ...runtime, mood, firstTurnDone: true });
@@ -326,6 +334,8 @@ export class Spirit {
         recalled,
         ...(feedbackLine !== '' ? { feedback: feedbackLine } : {}),
         ...(threadLine !== '' ? { thread: threadLine } : {}),
+        ...(workMemory !== '' ? { memory: workMemory } : {}),
+        ...(goalLine !== '' ? { goal: goalLine } : {}),
         ...(transactionLine !== '' ? { transaction: transactionLine } : {}),
         ...(tone !== '' ? { tone } : {}),
         ...(tendencyOverride !== undefined ? { tendencyOverride } : {}),

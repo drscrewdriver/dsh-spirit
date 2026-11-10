@@ -265,7 +265,7 @@ export function SeaPanel(props: SeaPanelProps) {
       : null,
     tab === 'persona'
       // 人设面占满主体区：它是个表单，不需要画布背板
-      ? createElement('div', { style: { flex: '1 1 auto', overflowY: 'auto' } }, createElement(SeaPersona, { rpc }))
+      ? createElement('div', { style: { flex: '1 1 auto', overflowY: 'auto' } }, createElement(SeaPersona, { rpc, sessionId: seatSessionId }))
       : tab === 'records'
         // 翻阅面同样占满主体区：长列表需要确定高度链（布局①同源纪律），不叠画布背板
         ? createElement('div', { style: { flex: '1 1 auto', minHeight: 0, display: 'flex' } }, createElement(SeaRecords, { rpc, refreshToken }))

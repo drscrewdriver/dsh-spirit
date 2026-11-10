@@ -10,7 +10,7 @@
  */
 import { createElement, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 
-import type { SpiritPersonaHistoryPage, SpiritPersonaPatch, SpiritPersonaPreview, SpiritPersonaView, SpiritOwnerProfile } from '../../../src/contract.js';
+import type { SpiritPersonaHistoryPage, SpiritPersonaPatch, SpiritPersonaPreview, SpiritPersonaView, SpiritOwnerProfile, SpiritPersonaPresetsView, SpiritPersonaEffectiveResult } from '../../../src/contract.js';
 import { NOTICE_KINDS, VOICE_TIERS } from '../../../src/types.js';
 import type { NoticeKind, VoiceTier } from '../../../src/types.js';
 import { VOICE_WORDS } from '../../../src/words.js';
@@ -19,6 +19,7 @@ import type { RpcFn } from '../rpc.js';
 import { NOTICE_LABEL, TRIGGER_LABEL, TRIGGER_ORDER } from './sea-labels.js';
 
 const H_STYLE: CSSProperties = { margin: '0 0 6px', fontSize: 13, color: '#9fc1ff' };
+const BTN_STYLE: CSSProperties = { padding: '3px 10px', borderRadius: 6, border: '1px solid rgba(120,160,255,.28)', background: 'rgba(20,28,48,.7)', color: '#cfe0ff', fontSize: 12, cursor: 'pointer' };
 const ROW_STYLE: CSSProperties = { display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' };
 const LABEL_STYLE: CSSProperties = { fontSize: 12, color: '#8e9ab5', minWidth: 96 };
 const INPUT_STYLE: CSSProperties = { flex: '1 1 180px', padding: '4px 8px', borderRadius: 6, border: '1px solid rgba(120,160,255,.22)', background: 'rgba(8,11,20,.6)', color: '#e8eeff', fontSize: 12 };
@@ -57,13 +58,19 @@ function textToLines(text: string): string[] {
     .filter((line) => line !== '');
 }
 
-export function SeaPersona(props: { rpc?: RpcFn }) {
-  const { rpc } = props;
+export function SeaPersona(props: { rpc?: RpcFn; sessionId?: string }) {
+  const { rpc, sessionId } = props;
   const copy = copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
   const [card, setCard] = useState<SpiritPersonaView | null>(null);
   const [draft, setDraft] = useState<SpiritPersonaPatch>({});
   const [preview, setPreview] = useState<SpiritPersonaPreview | null>(null);
   const [history, setHistory] = useState<SpiritPersonaHistoryPage | null>(null);
+  // v0.7 人格预设库：库视图 + 生效解析（来源徽标） + 选择态
+  const [presets, setPresets] = useState<SpiritPersonaPresetsView | null>(null);
+  const [effective, setEffective] = useState<SpiritPersonaEffectiveResult | null>(null);
+  const [presetPick, setPresetPick] = useState('');
+  const [presetName, setPresetName] = useState('');
+  const [presetBusy, setPresetBusy] = useState(false);
   /** 主人档案（v0.3.2）：`owner` 是服务端实态，`ownerSelf` 是自述段的编辑草稿。 */
   const [owner, setOwner] = useState<SpiritOwnerProfile | null>(null);
   const [ownerSelf, setOwnerSelf] = useState('');
@@ -92,11 +99,14 @@ export function SeaPersona(props: { rpc?: RpcFn }) {
     if (rpc === undefined) return;
     setError(null);
     try {
-      const [got, hist, own] = await Promise.all([
+      const [got, hist, own, pres, eff] = await Promise.all([
         rpc('persona-get', {}),
         rpc('persona-history', { limit: 20 }),
         // 档案拉失败（老宿主报 unavailable）不拖挂人设主面：单独退 null，面板如实标
         rpc('owner-get', {}).catch(() => ({ ok: false }) as { ok: false; value?: SpiritOwnerProfile; error?: { code: string; message: string } }),
+        // 预设库拉失败（老装配）不拖挂主面：退 null
+        rpc('persona-presets', {}).catch(() => ({ ok: false }) as { ok: false; value?: SpiritPersonaPresetsView; error?: { code: string; message: string } }),
+        rpc('persona-effective', sessionId === undefined || sessionId === '' ? {} : { sessionId }).catch(() => ({ ok: false }) as { ok: false; value?: SpiritPersonaEffectiveResult; error?: { code: string; message: string } }),
       ]);
       if (!mountedRef.current) return;
       if (!got.ok) {
@@ -111,11 +121,18 @@ export function SeaPersona(props: { rpc?: RpcFn }) {
       } else {
         setOwner(null);
       }
+      if (pres.ok) {
+        setPresets(pres.value ?? null);
+        setPresetPick((prev) => (prev !== '' ? prev : (pres.value?.presets[0]?.id ?? '')));
+      } else {
+        setPresets(null);
+      }
+      setEffective(eff.ok ? (eff.value ?? null) : null);
     } catch (err) {
       if (!mountedRef.current) return;
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [rpc, fillFrom]);
+  }, [rpc, fillFrom, sessionId]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -289,6 +306,76 @@ export function SeaPersona(props: { rpc?: RpcFn }) {
     return () => clearTimeout(timer);
   }, [rpc, card, doPreview]);
 
+  const reloadPresets = useCallback(async (): Promise<void> => {
+    if (rpc === undefined) return;
+    const [pres, eff] = await Promise.all([
+      rpc('persona-presets', {}).catch(() => ({ ok: false }) as const),
+      rpc('persona-effective', sessionId === undefined || sessionId === '' ? {} : { sessionId }).catch(() => ({ ok: false }) as const),
+    ]);
+    if (!mountedRef.current) return;
+    if (pres.ok) setPresets(pres.value);
+    if (eff.ok) setEffective(eff.value);
+  }, [rpc, sessionId]);
+
+  /** 预设动作统一流程：禁双击 → 落错到 error → 成功 note + 重拉库/生效视图。 */
+  const runPresetAction = useCallback((label: string, action: () => Promise<{ ok: boolean; error?: { message: string } }>): void => {
+    if (rpc === undefined || presetBusy) return;
+    setPresetBusy(true);
+    setNote(null);
+    setError(null);
+    void action()
+      .then(async (result) => {
+        if (!mountedRef.current) return;
+        if (!result.ok) {
+          setError(result.error?.message ?? '操作失败');
+          return;
+        }
+        setNote(label);
+        await reloadPresets();
+      })
+      .catch((err) => {
+        if (mountedRef.current) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (mountedRef.current) setPresetBusy(false);
+      });
+  }, [rpc, presetBusy, reloadPresets]);
+
+  const doActivate = (): void => {
+    if (rpc === undefined || presetPick === '') return;
+    runPresetAction(copy['sea.presetActivated'], async () => {
+      const result = await rpc('persona-activate', { presetId: presetPick });
+      if (result.ok && result.value.ok && result.value.persona !== undefined) fillFrom(result.value.persona);
+      return result.ok ? { ok: result.value.ok, ...(result.value.reason === undefined ? {} : { error: { message: result.value.reason } }) } : result;
+    });
+  };
+
+  const doSavePreset = (): void => {
+    if (rpc === undefined || presetName.trim() === '') return;
+    const name = presetName.trim();
+    runPresetAction(copy['sea.presetSaved'], async () => {
+      const result = await rpc('persona-preset-save', { name });
+      if (result.ok && result.value.ok) setPresetName('');
+      return result.ok ? { ok: result.value.ok, ...(result.value.reason === undefined ? {} : { error: { message: result.value.reason } }) } : result;
+    });
+  };
+
+  const doDeletePreset = (): void => {
+    if (rpc === undefined || presetPick === '') return;
+    runPresetAction(copy['sea.presetDeleted'], async () => {
+      const result = await rpc('persona-preset-delete', { presetId: presetPick });
+      return result.ok ? { ok: result.value.ok, ...(result.value.reason === undefined ? {} : { error: { message: result.value.reason } }) } : result;
+    });
+  };
+
+  const doBindSession = (presetId: string | null): void => {
+    if (rpc === undefined || sessionId === undefined || sessionId === '') return;
+    runPresetAction(presetId === null ? copy['sea.presetUnbound'] : copy['sea.presetBound'], async () => {
+      const result = await rpc('persona-bind', { scope: 'session', sessionId, presetId });
+      return result.ok ? { ok: result.value.ok, ...(result.value.reason === undefined ? {} : { error: { message: result.value.reason } }) } : result;
+    });
+  };
+
   return createElement(
     'div',
     { style: { padding: '12px 16px', overflowY: 'auto' } },
@@ -298,6 +385,33 @@ export function SeaPersona(props: { rpc?: RpcFn }) {
         'div',
         null,
         createElement('h4', { style: H_STYLE }, `${copy['sea.personaName']} · revision ${card.revision}`),
+        // v0.7 预设库：选 → 激活（写正式人设）；另存为预设；当前会话可临时绑定
+        presets === null ? null : createElement(
+          'div',
+          { style: ROW_STYLE },
+          createElement('span', { style: LABEL_STYLE }, copy['sea.presets']),
+          createElement(
+            'select',
+            { style: { ...INPUT_STYLE, flex: '0 0 auto', minWidth: 120 }, value: presetPick, onChange: (event: { target: { value: string } }) => setPresetPick(event.target.value) },
+            ...presets.presets.map((preset) => createElement('option', { key: preset.id, value: preset.id }, `${preset.name}${preset.builtin ? ` · ${copy['sea.presetBuiltin']}` : ''}`)),
+          ),
+          createElement('button', { type: 'button', style: BTN_STYLE, disabled: presetBusy || presetPick === '', onClick: () => doActivate() }, copy['sea.presetActivate']),
+          createElement('button', { type: 'button', style: BTN_STYLE, disabled: presetBusy || presetPick === '', onClick: () => doDeletePreset() }, copy['sea.presetDelete']),
+          createElement('input', { style: { ...INPUT_STYLE, flex: '0 0 120px' }, placeholder: copy['sea.presetSaveName'], value: presetName, onChange: (event: { target: { value: string } }) => setPresetName(event.target.value) }),
+          createElement('button', { type: 'button', style: BTN_STYLE, disabled: presetBusy || presetName.trim() === '', onClick: () => doSavePreset() }, copy['sea.presetSave']),
+        ),
+        sessionId === undefined || sessionId === '' || presets === null ? null : createElement(
+          'div',
+          { style: ROW_STYLE },
+          createElement('span', { style: LABEL_STYLE }, copy['sea.presetScope']),
+          createElement('button', { type: 'button', style: BTN_STYLE, disabled: presetBusy || presetPick === '', onClick: () => doBindSession(presetPick) }, copy['sea.presetBindSession']),
+          createElement('button', { type: 'button', style: BTN_STYLE, disabled: presetBusy, onClick: () => doBindSession(null) }, copy['sea.presetUnbindSession']),
+        ),
+        effective === null ? null : createElement(
+          'div',
+          { style: { ...MUTED_STYLE, marginTop: 6 } },
+          `${copy['sea.presetEffective']}：${effective.source === 'session' ? copy['sea.presetSourceSession'] : effective.source === 'workspace' ? copy['sea.presetSourceWorkspace'] : effective.source === 'active' ? copy['sea.presetSourceActive'] : copy['sea.presetSourceCurrent']}${effective.presetName !== undefined ? `（${effective.presetName}）` : ''}`,
+        ),
         createElement(
           'div',
           { style: ROW_STYLE },

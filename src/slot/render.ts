@@ -47,6 +47,10 @@ export interface CardInput {
   feedback?: string;
   /** 线程段（tier2：当前活跃任务的 title·status·next）；省略/空 ⇒ 不带。 */
   thread?: string;
+  /** 记着（v0.8：工作账 pinned 的长期工作记忆；本工作区 + 全局）；省略/空 ⇒ 不带。 */
+  memory?: string;
+  /** 惦记（v0.8：目的层 open 目标，≤3 条）；省略/空 ⇒ 不带。 */
+  goal?: string;
   /** 事务段（做成：工作记忆 delivery card_line，≤60 字）；省略/空 ⇒ 卡不带事务段（关轨口径）。 */
   transaction?: string;
   /** 检索路片段（历史/DRSC）。 */
@@ -70,7 +74,7 @@ export interface CardResult {
    * 各段实际进卡的条数（面板与门禁核对用）。
    * `feedback`/`thread`/`transaction` 仅在卡真带该段时出现（关轨时省略该键，保持旧四段对账口径不变）。
    */
-  used: { status: 0 | 1; recent: number; recalled: number; tone: 0 | 1; feedback?: 0 | 1; thread?: 0 | 1; transaction?: 0 | 1 };
+  used: { status: 0 | 1; recent: number; recalled: number; tone: 0 | 1; feedback?: 0 | 1; thread?: 0 | 1; memory?: 0 | 1; goal?: 0 | 1; transaction?: 0 | 1 };
   /** 被预算挤掉的段数（>0 说明字节顶偏小，面板应提示）。 */
   dropped: number;
 }
@@ -99,7 +103,7 @@ export function renderCard(input: CardInput): CardResult {
   const assemble = (body: readonly string[]): string => [...head, ...body, ...closeTail].join('\n');
 
   const body: string[] = [];
-  const used: { status: 0 | 1; recent: number; recalled: number; tone: 0 | 1; feedback?: 0 | 1; thread?: 0 | 1; transaction?: 0 | 1 } = { status: 0, recent: 0, recalled: 0, tone: 0 };
+  const used: { status: 0 | 1; recent: number; recalled: number; tone: 0 | 1; feedback?: 0 | 1; thread?: 0 | 1; memory?: 0 | 1; goal?: 0 | 1; transaction?: 0 | 1 } = { status: 0, recent: 0, recalled: 0, tone: 0 };
   let dropped = 0;
 
   /** 逐行实测：装不下就不加（不截半句、不预留估算）。 */
@@ -119,7 +123,7 @@ export function renderCard(input: CardInput): CardResult {
   if (cell.soft && !pushIfFits(escapeFrame(NON_MEDICAL_NOTE))) dropped += 1;
 
   // 本体层注入按 salience 逆序丢尾：预算紧时先丢低 tier（开场→想起→刚刚→做成→线程），反馈(tier1)最晚被丢。
-  // 填装顺序即优先级：反馈 > 线程 > 做成(事务) > 刚刚 > 想起 > 开场。
+  // 填装顺序即优先级：反馈 > 线程 > 记着/惦记 > 做成(事务) > 刚刚 > 想起 > 开场。
   if (input.feedback !== undefined && input.feedback !== '') {
     const text = clipLine(input.feedback, maxCharsPerEntry);
     if (text !== '') {
@@ -131,6 +135,21 @@ export function renderCard(input: CardInput): CardResult {
     const text = clipLine(input.thread, maxCharsPerEntry);
     if (text !== '') {
       if (pushIfFits(`线程：${escapeFrame(text)}`)) used.thread = 1;
+      else dropped += 1;
+    }
+  }
+  // 记着/惦记（v0.8）：模型主动写的长期工作记忆与目的——跟线程同级（比事务略重）。
+  if (input.memory !== undefined && input.memory !== '') {
+    const text = clipLine(input.memory, maxCharsPerEntry);
+    if (text !== '') {
+      if (pushIfFits(`记着：${escapeFrame(text)}`)) used.memory = 1;
+      else dropped += 1;
+    }
+  }
+  if (input.goal !== undefined && input.goal !== '') {
+    const text = clipLine(input.goal, maxCharsPerEntry);
+    if (text !== '') {
+      if (pushIfFits(`惦记：${escapeFrame(text)}`)) used.goal = 1;
       else dropped += 1;
     }
   }

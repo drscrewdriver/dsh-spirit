@@ -82,4 +82,14 @@ describe('契约 op ⇄ 路由白名单', () => {
   it('v0.4 历史回填触发端点在契约里（ontology-backfill-run）', () => {
     expect(SPIRIT_OPS).toContain('ontology-backfill-run');
   });
+
+  it('v0.7 人格预设库六端点（presets/activate/preset-save/preset-delete/bind/effective）', () => {
+    for (const op of ['persona-presets', 'persona-activate', 'persona-preset-save', 'persona-preset-delete', 'persona-bind', 'persona-effective'] as const) {
+      expect(SPIRIT_OPS).toContain(op);
+    }
+  });
+
+  it('v0.7 注入回响面端点在契约里（inject-echo）', () => {
+    expect(SPIRIT_OPS).toContain('inject-echo');
+  });
 });
