@@ -1,10 +1,10 @@
 {
   "id": "dsh-spirit",
   "name": "dsh-spirit",
-  "version": "0.3.0",
+  "version": "0.6.1",
   "description": {
-    "en": "First-person experience journal for DSH: compiles process events into the character's lived moments, derives a mood tier from them, and injects the current state before each model step.",
-    "zh": "DSH 第一人称体验条目插件：把流程事件编译成角色的体验点滴，从中派生情绪档，并在模型步骤前注入「此刻状态 + 刚发生的 + 被勾起的回忆」。"
+    "en": "First-person experience and ontology memory for DSH: compiles process events into the character's lived moments, builds queryable work memory (deliveries / entities / task threads), and injects state, recents and ongoing threads before each model step.",
+    "zh": "DSH 第一人称体验与本体记忆插件：把流程事件编译成角色的体验点滴，并从交付/实体/任务线维度建立可回查的工作记忆，在模型步骤前注入此刻状态、刚发生的、被勾起的回忆与正在推进的事。"
   },
   "homepage": "https://github.com/drscrewdriver/dsh-spirit",
   "repository": {
@@ -13,7 +13,7 @@
   },
   "license": "MIT",
   "engines": {
-    "dsh": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.1 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5 || 0.2.2-rc.1"
+    "dsh": ">=0.2.0-rc.1 <0.3.0"
   },
   "components": {
     "host": "dist/index.js",

@@ -17,6 +17,156 @@
   把静默为空读成了功能正常。不升 `warn`（那会造一屏假故障），只把 0 显示出来；未探到 ⇒ 不显示
   （**未知不当 0**）。
 
+## 0.6.1
+
+- **本体面可搜**（用户点单：本体类为什么不能搜索）：「翻阅 · 本体」的实体/任务线子页新增搜索框（Enter 提交）——实体按名字/别名 LIKE、任务线按标题 LIKE；空词回全量，切子页自动清。反馈面是追加型真源，无搜索词表不提供。
+  - 宿主：`entity-graph`/`task-list` 接受 `q`（LIKE 字面量转义，%/_ 不当通配符；ASCII 大小写不敏感）；顺手接上契约里声明了但一直没接线的 `kind` 过滤。
+- 接 0.6.0：本体交付点入星海（青绿星，只读）；接 0.5.9：头部刷新接通翻阅面。
+
+## 0.6.0
+
+- **本体交付点入星海**（用户点单：本周/本体的内容不渲染到星海是个问题）：`sea-graph` 现在把本体轨交付（`dlv-` 行，上限 500）作为 `kind:'delivery'` 点合入星图——同图异色（青绿）、同尺度老化、同会话时间邻近自动连线。翻阅面（本周/本体）有的记录，星图上也能看见。
+  - 纪律：交付点只读——★反馈仍只写情绪轨（详情卡对 delivery 点隐藏 ★）；写侧 lane 词表不动，`onto` 只在读侧投影；步骤遥测行（tier3）不入图；backfill 行照画（排除只针对注入不针对展示）。
+- 接 0.5.9：头部「刷新/⟲」接通翻阅面（按当前视图重取条目/本周/本体）。
+
+## 0.5.9
+
+- **头部「刷新/⟲」接通翻阅面**（用户实报：重建期间这两个按钮对翻阅/本体面没用）：此前它们只重拉星图（sea-graph）/重置图视图。现新增 refreshToken：「刷新」= 重拉星图 + 按当前视图重取（条目流/本周/本体三面）；「⟲」= 重置图视图 + 同样重取。重建跑着时不离开翻阅面也能拉新。
+
+## 0.5.8
+
+空 workspaceId 的**修复链**（用户点单：fallback 是全局，但理论上得先修复到对应范围）：
+
+- 新增 `resolveWorkspaceId`（ontology/workspace.ts）：候选值（在线 header / 回填 DRSC cwd）非空⇒直用；空⇒反查同会话既有记录（txn_entry→experience，取最近非空非全局的 workspace_id）修到对应范围；仍无从可考⇒落 `ws:global` 全局桶。
+- 全局桶是**兜底不是首选**：数据照落不丢（写侧闸仍拒空串，纪律不变）；翻阅面全局视图（空 workspaceId 查询）含它，注入读面按工作区过滤——归属范围不确定的历史不漏进无关工作区上下文；全局桶值自身不当反查证据二次传播。
+- 接线两处：回填（sessions 无 cwd 时）+ 在线反馈捕获旁路（事件头缺工作区时）。
+
+## 0.5.7
+
+全记忆重建"扫完全程却零记录"的真因修复（真机实锤：水位 132 会话 done、本体表全空）：
+
+- **workspaceId 传空串被 store 闸整批拒收**：回填把每个会话的 workspaceId 写死 `''`，而 `TxnStore.insert` 拒空 workspaceId ⇒ 每条 delivery 都被静默拒，抽取器却仍报 done。现回填透传会话 `cwd`（与在线 `workspaceIdOfAgent` 取 session header.cwd 同源）。
+- **零产出不再当成功**：非空批落库 0 条 ⇒ 如实 failed（区分"回包不可解析/截断"与"全数被拒"两类文案）；旧版回包被 max_tokens 截断后解析 0 行也算"成功"，毒水位就是这么来的。
+- **输出预算随批扩**：固定 1600 token 管 8 行批必截断；改按单行 700 预算×批长，封顶 8000。
+- **水位自愈**：每次重建开场把"done 却库里查无 dlv 行"的毒标记摘掉重进重建——已被旧版误标的 132 个会话不需手动清库即可补回。
+- **主键冲突算已记录**：续跑重扫早先已落库的行不再被误判零产出。
+- 面板无需操作：重启后再点一次「全记忆重建」即自动自愈重跑。
+
+## 0.5.6
+
+全记忆重建跑真机 130 会话 / 912 轮时在中途挂了（报 `This operation was aborted`）。三个真因一并修：
+
+- **超时预算错乘**：本体抽取误用 `txn.collectorTimeoutMs`（30s）——一批要读十几轮正文、吐十几行 JSON，大模型上稳定撑爆。改取 `max(distill.timeoutMs, 180s)`（本体是冷路径，不影响每轮热路）。
+- **abort 原文没法看**：超时自杀抛的是 DOMException(`This operation was aborted`)，面板上等于没说。现换成可读的：`llm 超时被中止（180s，模型 xxx，已收 N 字）`。
+- **一粒老鼠屎坏一锅**：原来一批/一个会话出错就整次重建中止。现在：
+  - 抽取器失败**自动对半拆批重试**（8→4→2→1），把坏轮隔离到最小批，好轮照常落库；配置类错误（无路由/忙）不拆。
+  - 回填单会话失败**不中断**，继续跑后面的；失败会话不标 done ⇒ 再点一次只补它们（已完成的不重做）。
+  - 每会话都刷水位（断点续跑），批从 16 轮缩到 8 轮（单次更快、更不容易撞超时）。
+  - 面板 done 阶段显示「部分会话未完成 N · 再点一次可续跑」，不再把部分失败伪装成完成。
+
+## 0.5.5
+
+- **全记忆重建升成异步任务 + 进度条 + 批次进度管理**（照长觉 sleep-run/sleep-status 范式，对齐 prime-memory）：不再一个哑的「正在重建…」。
+  - `ontology-backfill-run` 改为**立即受理**（返回 accepted），新增 `ontology-backfill-status` 轮询面（phase：scanning/extracting/done/failed + totalSessions/doneSessions/totalTurns/doneTurns）。
+  - 「做梦」页重建块：轮询 1.5s 一轮，画**进度条**（doneSessions/totalSessions）+ 会话/轮次计数；失败直接显真实原因。
+- 后端 `BackfillRunner`：`start()` 异步受理 + `status()` 进度快照；同步占 running 防连点双跑。
+
+## 0.5.4
+
+- **全记忆重建失败不再只说 degraded**：抽取器 `runInner` 的异常现在 `logger.warn` 落日志（此前只塞内存 status），`BackfillRunner` 把 `status.error` 原文上浮到 `SpiritBackfillRunResult.error`，面板直接显示真正原因（路由/超时/解析/忙）。
+- **修掉误报 degraded 的真因之一**：`processBatch` 遇到直播抽取正在跑（`this.running`）时**等它结束**（≤ 60s）再上批，而不是立刻返回一个非 done 状态被判成 degraded。
+
+## 0.5.3
+
+- **「全记忆重建」入口移到「做梦」页**（用户点名：它属记忆蒸馏，应与长觉同居）：放在长觉块/上次长觉下方，与蒸馏同区；撤掉 0.5.2 放错的设置页入口。
+- 「翻阅·本体」里的「回填历史」保留作上下文次级入口。
+
+## 0.5.2
+
+- **全记忆重建真接线**（0.5.1 的「回填历史」其实没生效的根因）：旧实现走异步 `enqueue`，而抽取器 `QUEUE_MAX≈24` + 5 分钟去重窗会把大批静默丢掉、又把会话误标 done ⇒ 点了也白点。现改为回填直接调 `extractor.processBatch`（绕过队列上限/去重窗/**同步 await** 真落库），逐会话按批结束才标 done；失败不标 done（可续跑，delivery id 主键幂等）。
+- **设置页新增「全记忆重建」入口**（面板可见一键）：扫全部历史会话重建本体层，回显已重建/扫会话/入队轮次。此前入口只在「翻阅·本体」深处，用户找不到。
+
+## 0.5.1
+
+本体层**真机可见化**（0.5.0 装了但看不出变化的修复）：
+
+- **本体层缺省开**：`ontology.enabled` 与 `ontology.backfillEnabled` 由 false 改 true（脱敏/来源分级/更正通道三条硬前置已就绪）。此前缺省关 ⇒ 采集/抽取零运行，面板与 0.4.0 毫无差别。
+- **面板真开关**：新增 `live.ontologyEnabled`（volatile，缺省开），设置页有「本体层」勾选框——有效 = 静态总闸 ∧ 本键，不再是后台藏着的阻塞默认。
+- **历史回填按钮**：「翻阅 · 本体」面新增「回填历史」，一键跑 `ontology-backfill-run(dryRun:false)` 把既往会话扫进本体层，回显扫了多少会话/入队多少轮。
+- 面板「本体」面（任务线 / 实体 / 反馈 + 点开看做成）此前已在 0.5.0，但缺省关时是空的，现随总闸开启即长数据。
+
+## 0.5.0
+
+本体层记忆：把 0.4.0 的"事务遥测"升级为"语义本体"——采集对象从"哪个工具报错/哪个 basename"
+换成"从做了什么、聊了什么里抽出交付·实体·关系·任务线"，并用**按来源分级信任**取代旧的
+"绝不读正文"（用户原文/助手动作可读进脱敏层，工具返回外部正文仍禁入）。**缺省关**（`ontology.enabled=false`）：关时零采集零落库零注入。
+
+### 新增
+
+- **四级 salience 分层**：反馈(tier1) > 轮次总结(tier2) > 步骤(tier3) > 被掩埋思考(tier4)。注入丢尾按此逆序；
+  步骤/思考默认不进注入。
+- **评价一等记录 + 锚定**：用户"干的不错/不对"等不再只是埋在批里的意图 bit，而是落 `evaluation` 表并**锚定到具体
+  delivery**（显式 cue→同任务→时间邻近→仍不确定则落 unresolved 悬置池，绝不硬绑），使"上次夸的那回"可解析。
+- **实体注册表 + 关系 + 任务线程**：`entity`（人/项目/模块/概念/资源，五 kind，importance/首末出现/别名）、
+  `delivery_entity`、`entity_edge`、`task`+`task_delivery`（status 生命周期 + next_step）。
+- **OntologyExtractor**：异步批（寄生 collector/ruminate 节律，严禁每轮同步 LLM）读正文语义→产出
+delivery/entities/relations/task；入库前过 secret/PII 脱敏 + INJECTION_PATTERNS。
+- **注入三段位**：卡新增 `反馈：` / `线程：` 段 + 保留 `事务（做成）：`，按 salience 逆序丢尾，指纹只吃稳定 gist。
+- **查询面**：`evaluation-list` / `entity-graph` / `entity-lookup` / `task-list` / `task-detail`；
+  `ontology-backfill-run`（历史回填，缺省 dryRun，产物打 TRUST_BACKFILL 不进注入）。
+- **历史回填**：经 DRSC API 扫既有会话（不直读其 db），确定性 id 幂等，backfillEnabled 门控 + secret 脱敏。
+
+### 变更
+
+- **schema v7→v8**：txn_entry 升格 delivery（+superseded_by/salience_tier/turn 区间）+ 六张本体表。
+- **旧的"绝不读正文"红线细化**：按来源分级（用户/助手可读进脱敏语义层，工具返回正文仍禁）。
+
+## 0.4.0
+
+语义工作记忆：在此前的"情绪日记"（只记结构信号、不读正文）之外，**并行新增一条事务轨**，
+让角色记住"做过什么具体事"——用户态度信号、会话级事务摘要、时间线（上周做了什么）、资源图谱
+（这件事牵涉哪些文件/人/工具）。**双轨物理隔离**：情绪轨（`TurnWatcher → deriveMood → 注入`）
+一字不改，`deriveMood` / 注入指纹 / 防注入三条红线全部不动；事务条目走独立通道、独立表、
+独立注入段位。**缺省关**（`txn.enabled=false`）：关时零采集、零落库、零注入、零副作用。
+
+### 新增
+
+- **存储 schema v6 → v7**：新增两张工作记忆真源表 `txn_entry`（四级形态：`card_line`≤60 字进卡 /
+  `summary`~500 字存库衍生物 / `gist_key` / `semantic_json`）与 `txn_cues`（资源键，只存 basename）。
+  加法迁移，`IF NOT EXISTS` 幂等；老库重开前向迁移，已有数据不回填（缺列即 null）。
+- **事务采集链**：`TransactionWatcher`（与 TurnWatcher 并列 observe 同一事件流，只取 todo 标题 /
+  工具 basename / 意图 bit，**绝不吃工具返回正文**）+ `TxnCollector`（turn/end 后异步攒批、
+  fire-and-forget 调 LLM 出摘要，复用长觉的退避三件套，**严禁每轮同步 LLM**）。
+- **注入卡事务段**：卡新增 `事务：<card_line>` 段（紧跟状态段）。**只有 `card_line` 进卡与进指纹**，
+  `summary` 属 LLM 衍生物，与感受句同守 G15——禁入 `deriveMood`、禁入注入、禁入指纹（否则每轮
+  唯一 ⇒ churn 100%）。关轨时该段整体省略，输出与旧四段形状逐字节相同。
+- **长觉原料混喂**：`card_line` 作为标注上下文喂给归纳 prompt（帮模型理解"最近在推什么事"），
+  但事务 id **不进 `batchIds`**——洞察/主题/因果边的证据永远只接地在体验条目上，防派生域被污染。
+- **查询面两个只读 RPC op**：`timeline-query`（按时间范围/近 N 天查事务，支持 workspace 过滤）
+  与 `resource-lookup`（按 cue basename 等值反查关联事务）。面板「翻阅」tab 新增**「本周」视图**
+  调 `timeline-query{days:7}` 渲染事务清单。
+- **长觉蒸馏模型可在面板选**：「做梦」tab 的长觉块新增常驻的**当前生效路由**（`provider/model` + 来源）
+  与 provider/model 下拉选择（枚举走宿主 `ctx.llm.listProviders/listModels`）。优先级 `部署面 pin >
+  运行时覆盖 > 宿主默认`：部署面 `distill.provider/model` 双配即锁路（选择器禁用）；否则面板选的存
+  `meta` 作运行时覆盖、下次长觉即用（**热生效不重启**，不动 volatile 六腿配置面）。仍是显式选择，不破
+  “绝不隐式改选模型”。新 RPC：`distill-models`/`distill-model-list`/`distill-model-set`。
+- **安全实闸**：`source_trust` 三档标记（`user_explicit|derived_summary|structure_signal`）、
+  `isSemanticAllowed` 采集边界闸（与 `isStructuredOnly` 并联，任一失败整包拒）、
+  `INJECTION_PATTERNS` 落库前黑名单（"ignore previous"/"system:"/"<|"/"覆盖以上"…），
+  以及 gates 静态闸确保 `txn_entry` 不出现在情绪派生输入链的任何文件中。
+
+### 修正
+
+- **补两张表的关键索引**（perf 规模闸实测抓出）：`txn_cues(txn_id)` —— 每个读方法逐行补 cue 的
+  `cuesFor` 此前是 N+1 全表扫（`timeline-query` 返 200 行 ⇒ 4.8s）；`txn_entry(session_id, ts_ms)` ——
+  注入热路径 `listRecent({sessionId})` 此前全表扫。补齐后 60k 行规模闸从 152s 降到 1.7s。
+
+### 变更
+
+- **宿主支持范围改为有界区间**：`engines.dsh` 与 7 个 dsh peer 由逐线枚举改为 `>=0.2.0-rc.1 <0.3.0`（免
+  以后每出一条新 rc 线都要改三处声明）。compat 闸不再拒宽 range，改校“整体落在 0.2.x”（含 0.2.0 起点、
+  不溢出 0.1.x/0.3.0+）；已在真宿主（0.2.1-rc.5）实装验证该区间正常装载、预发布线不被误拒。
+
 ## 0.3.0
 
 记忆星海：把体验库投影成一张能转的三维星图。**只读投影，不是可查询图谱**（不开写图面、

@@ -1,5 +1,5 @@
 /**
- * 迁移登记处 + 正向执行（v1→v2）。
+ * 迁移登记处 + 正向执行（v1→v7）。
  *
  * 纪律（对齐姊妹包的版本闸口径：宁可拒读，不可静默丢数据）：
  * - 迁移只做**加法**（ADD COLUMN），从不改列型、从不 DROP、从不 DELETE；
@@ -12,6 +12,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 import { SPIRIT_DB_SCHEMA_VERSION } from '../contract.js';
+import { V7_TXN_STATEMENTS, V8_ONTOLOGY_STATEMENTS } from './schema.js';
 
 /** `from → to` 的单步正向迁移（to = from + 1，链条不允许跳号）。 */
 export interface MigrationStep {
@@ -85,6 +86,30 @@ export const MIGRATIONS: readonly MigrationStep[] = [
     note: '长觉阶梯：topic/experience_topic/insight/causal_edge/sleep_run 五张派生表（整表新增，交给幂等建表；派生可重建定性见 schema 头注）',
     run: () => {
       // 故意 no-op：同 v2→v3/v3→v4 先例——纯加表由幂等建表覆盖，链步只保版本链不断。
+    },
+  },
+  {
+    from: 6,
+    to: 7,
+    note: '事务轨：txn_entry + txn_cues 两张表（工作记忆真源域，定性见 schema 头注）——本步显式执行 v7 子集，保证老库走迁移路也能建出',
+    run: (db) => {
+      // 与 applySchema 同一份语句（V7_TXN_STATEMENTS 从主数组筛出），IF NOT EXISTS 幂等：
+      // 老库路径 = 迁移先建、建表后到；新库路径 = 建表直接带出。跑两遍不会成炸点。
+      for (const statement of V7_TXN_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    from: 7,
+    to: 8,
+    note: '本体层：txn_entry 加 delivery 列（superseded_by/salience_tier/turn_start_ms/turn_end_ms）+ entity/delivery_entity/entity_edge/task/task_delivery/evaluation 六表（整表新增走幂等建表）',
+    run: (db) => {
+      // 老 v7 库：txn_entry 已存在但缺新列 ⇒ addColumnIfMissing 逐列补上（v1 行取 DEFAULT/NULL，读侧当合法形状）；
+      // 六张本体表是纯新表 ⇒ 显式执行 V8 子集（IF NOT EXISTS 幂等，与 applySchema 同一份语句）。
+      addColumnIfMissing(db, 'txn_entry', 'superseded_by', 'superseded_by TEXT');
+      addColumnIfMissing(db, 'txn_entry', 'salience_tier', 'salience_tier INTEGER NOT NULL DEFAULT 2');
+      addColumnIfMissing(db, 'txn_entry', 'turn_start_ms', 'turn_start_ms INTEGER');
+      addColumnIfMissing(db, 'txn_entry', 'turn_end_ms', 'turn_end_ms INTEGER');
+      for (const statement of V8_ONTOLOGY_STATEMENTS) db.exec(statement);
     },
   },
 ];

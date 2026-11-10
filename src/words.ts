@@ -111,3 +111,60 @@ export const NOTICE_WORDS_ZH: Readonly<Record<NoticeKind, string>> = {
   [NOTICE_BEING_ACKNOWLEDGED]: '被认可',
   [NOTICE_ENVIRONMENT]: '环境',
 };
+
+// ───────────────────────────────────────── 反注入黑名单（v7 事务轨）
+
+/**
+ * 进 prompt 前必须跑一遍的黑名单：事务轨的 `card_line` / `summary` 是"外部文本经记忆回环
+ * 再进 system prompt"的第一条通道——一旦这条文本被采集落库，闭环就成立，所以落库前先拒。
+ *
+ * 判据是形状不是内容：命中即整行拒，不做语义解读（解释黑名单本身会把黑名单变成一个
+ * 可被引用的字符串面，等于给注入让路）。与 `isStructuredOnly` 并联，任一失败整包拒收。
+ */
+export const INJECTION_PATTERNS: readonly RegExp[] = [
+  /ignore\s+(?:all\s+)?(?:previous|above)/iu,
+  /forget\s+(?:all\s+)?previous/iu,
+  /disregard/iu,
+  /system\s*:/iu,
+  /<\|/u,
+  /覆盖以上/u,
+  /忽略(?:以上|之前|前面)/u,
+  /(?:new|real|actual)\s+instruction/iu,
+  /(?:假装|扮演)自己是/u,
+];
+
+/** 单条文本是否命中黑名单（命中即整行拒，不解释内容）。 */
+export function hitsInjection(text: string): boolean {
+  for (const pattern of INJECTION_PATTERNS) {
+    if (pattern.test(text)) return true;
+  }
+  return false;
+}
+
+// ───────────────────────────────────────── 意图词表三组（v7 事务轨）
+
+/**
+ * 意图词表：命中后**只存档位，不存原句**（原句属禁读面，见 experience/events.ts 头注）。
+ * 三组各有读者：反馈档进情绪与事务的"态度面"；指示档只存"存在一次该指令"这个 bit，
+ * 具体内容由主人手动写 owner-profile self 段承担。
+ */
+export const INTENT_FEEDBACK_POSITIVE = /(?<!不)(?:干的不错|做得不错|不错|挺好|很好|可以|对的|真棒|好)|good|nice|great/iu;
+export const INTENT_FEEDBACK_NEGATIVE = /重来|不对|别这样|错了|不行|不好|re-?do|wrong|no good/iu;
+export const INTENT_DIRECTIVE = /记住|以后|下次|以后都|remember|from now on/iu;
+
+export type IntentKind = 'positive' | 'negative' | 'directive';
+
+/** 命中档位：正/负向是效价贡献（+N/-N），指示档是"存在一次"的 bit（不参与效价）。 */
+export const INTENT_BITS: Readonly<Record<IntentKind, number>> = {
+  positive: 2,
+  negative: -1,
+  directive: 1,
+};
+
+/** 先判负向再判正向：「不好」不能被判成"好"，这是词表最便宜的假绿位。 */
+export function matchIntent(text: string): { kind: IntentKind; bit: number } | null {
+  if (INTENT_FEEDBACK_NEGATIVE.test(text)) return { kind: 'negative', bit: INTENT_BITS.negative };
+  if (INTENT_FEEDBACK_POSITIVE.test(text)) return { kind: 'positive', bit: INTENT_BITS.positive };
+  if (INTENT_DIRECTIVE.test(text)) return { kind: 'directive', bit: INTENT_BITS.directive };
+  return null;
+}

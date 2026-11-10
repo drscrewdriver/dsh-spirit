@@ -17,7 +17,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, SPIRIT_RANGES, type SpiritConfig, type SpiritExportResult, type SpiritFeedbackRequest, type SpiritJournalPage, type SpiritJournalRow, type SpiritLiveSettings, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats, type SpiritSettingsView } from './contract.js';
+import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, SPIRIT_RANGES, type SpiritConfig, type SpiritExportResult, type SpiritFeedbackRequest, type SpiritJournalPage, type SpiritJournalRow, type SpiritLiveSettings, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats, type SpiritSettingsView, type SpiritTimelineResult, type SpiritResourceResult, type SpiritTxnRow, type SpiritDistillRouteView, type SpiritDistillModelListResult, type SpiritDistillModelSetResult, type SpiritEvaluationRow, type SpiritEvaluationListResult, type SpiritEntityGraphResult, type SpiritEntityNode, type SpiritEntityLookupResult, type SpiritTaskListResult, type SpiritTaskRow, type SpiritTaskDetailResult, type SpiritBackfillRunResult } from './contract.js';
 import type { Spirit } from './spirit.js';
 import type { SpiritStats } from './stats.js';
 import type { SessionModeStore } from './store/session-modes.js';
@@ -31,10 +31,13 @@ import type { InsightStore } from './store/insights.js';
 import type { EdgeStore } from './store/edges.js';
 import { composePersonaText } from './persona/render.js';
 import { parsePersonaMarkdown, renderPersonaMarkdown } from './persona/markdown.js';
-import { SEA_WINDOW_LIMIT, buildSeaScene } from './sea/scene.js';
+import { SEA_DELIVERY_MAX, SEA_WINDOW_LIMIT, buildSeaScene } from './sea/scene.js';
 import { exportSessionEntries } from './store/journal-retention.js';
 import type { ExperienceStore } from './store/experience.js';
-import { LANES, TRIGGER_KINDS, type SpiritVerdict } from './types.js';
+import type { TxnStore, TxnEntry } from './store/transaction.js';
+import type { OntologyStore, OntologyEvaluation } from './store/ontology.js';
+import type { BackfillRunner } from './ontology/backfill.js';
+import { LANES, TRIGGER_KINDS, type EntityKind, type SpiritVerdict } from './types.js';
 import type { ExperienceEntry, PersonaCard } from './types.js';
 import { validatePersona } from './persona/types.js';
 import { getService } from './capability.js';
@@ -106,6 +109,32 @@ export interface RpcDeps {
    */
   ladder?: { sleep: RuminateRunner; topics: TopicStore; insights: InsightStore; edges: EdgeStore };
   /**
+   * 事务轨查询面（Phase 5）：timeline-query/resource-lookup 的读面；省略 ⇒ 两端点报 unavailable。
+   * 与写侧（collector）分开：本面只读，关轨时表为空⇒返回空数组（不报错，面板显示"暂无"）。
+   */
+  txn?: TxnStore;
+  /**
+   * 本体层查询面（Phase D）：evaluation-list 的读面；省略 ⇒ 报 unavailable。
+   */
+  ontology?: OntologyStore;
+  /** 历史回填触发面（Phase E）：ontology-backfill-run 用；省略 ⇒ 报 unavailable。 */
+  backfill?: BackfillRunner;
+  /**
+   * 长觉模型选择面（面板切蒸馏模型）：枚举宿主供应商/模型 + 读三路（部署pin/运行时覆盖/宿主默认）+ 写覆盖。
+   * 省略 ⇒ distill-models 等三端点报 unavailable（未装配是诚实状态）。
+   */
+  distillRoute?: {
+    /** 部署面 cfg.distill.provider+model 双齐 ⇒ 该路由；否则 null。pin 非空时赢过覆盖与默认。 */
+    deployPin(): { provider: string; model: string } | null;
+    runtimeOverride(): { provider: string; model: string } | null;
+    hostDefault(): { provider: string; model: string } | null;
+    /** 写运行时覆盖（null=清除）；返回是否落盘成功（降级面 false）。 */
+    setRuntimeOverride(route: { provider: string; model: string } | null): boolean;
+    providers(): Array<{ id: string; name: string }>;
+    models(provider: string): Promise<Array<{ id: string; name: string }>>;
+    enumerationSupported(): boolean;
+  };
+  /**
    * 拿到 webServer 时回调它的监听端口（拿不到形状 ⇒ undefined）。
    * 为什么递出去：collector 的 API 挂在同一个 webServer 上，而 `dsh web` 的端口是挑的；
    * 历史路缺省基址必须跟着这个端口，否则非 8080 部署上它永远 warn（真宿主实测）。
@@ -116,6 +145,9 @@ export interface RpcDeps {
 
 const ok = <T>(value: T): RpcResult<T> => ({ ok: true, value });
 const err = (code: string, message: string): RpcResult<never> => ({ ok: false, error: { code, message } });
+
+/** entity-lookup 按名/id 扫描实体表的顶（实体表有上限，扫这么多足够定位；不走全表无界）。 */
+const ONT_LOOKUP_SCAN = 200;
 
 function str(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
@@ -149,6 +181,61 @@ function entryRow(entry: ExperienceEntry, cueMap: Map<string, string[]>): Spirit
     // v0.3.3：翻阅 tab 要解释幽灵与藏行（缺省视图里恒为 null，不增字节语义也直白）
     supersededBy: entry.supersededBy ?? null,
     hiddenAt: entry.hiddenAt ?? null,
+  };
+}
+
+/**
+ * 事务行投影（timeline-query / resource-lookup 共用）：与注入卡 reader 不同，
+ * 本面是只读面板——summary 可随详情下发（面板不是 system prompt 注入路）。
+ * cues 取归一后的 basename（写入侧已剥目录）；topics 取语义安全子集。
+ */
+function txnRow(entry: TxnEntry): SpiritTxnRow {
+  return {
+    id: entry.id,
+    sessionId: entry.sessionId,
+    workspaceId: entry.workspaceId,
+    tsMs: entry.tsMs,
+    turnSeq: entry.turnSeq,
+    cardLine: entry.cardLine,
+    ...(entry.gistKey !== undefined ? { gistKey: entry.gistKey } : {}),
+    ...(entry.summary !== undefined ? { summary: entry.summary } : {}),
+    sourceTrust: entry.sourceTrust,
+    topics: entry.semantic?.topics ?? [],
+    cues: entry.cues.map((c) => c.cue).slice(0, 8),
+  };
+}
+
+/**
+ * 蒸馏路由视图（distill-models / -set 共用）：一次算全 pin>覆盖>宿主默认，面板据此重绘。
+ * providers 读取失败（枚举面抛）退空数组不抛穿；enumerationSupported 由装配方按宿主能力报。
+ */
+function distillRouteView(dr: NonNullable<RpcDeps['distillRoute']>): SpiritDistillRouteView {
+  const pin = dr.deployPin();
+  const override = dr.runtimeOverride();
+  const host = dr.hostDefault();
+  let effective: SpiritDistillRouteView['effective'] = null;
+  if (pin !== null) effective = { ...pin, source: 'deployPinned' };
+  else if (override !== null) effective = { ...override, source: 'runtimeOverride' };
+  else if (host !== null) effective = { ...host, source: 'hostDefault' };
+  let providers: Array<{ id: string; name: string }>;
+  try {
+    providers = dr.providers();
+  } catch {
+    providers = [];
+  }
+  return { effective, pinned: pin !== null, runtimeOverride: override, hostDefault: host, providers, enumerationSupported: dr.enumerationSupported() };
+}
+
+/** 评价行投影（evaluation-list）：只读面板形状；user_line 可缺。 */
+function evaluationRow(row: OntologyEvaluation): SpiritEvaluationRow {
+  return {
+    id: row.id,
+    deliveryId: row.deliveryId,
+    kind: row.kind,
+    anchorMode: row.anchorMode,
+    anchorConfidence: row.anchorConfidence,
+    ...(row.userLine !== undefined ? { userLine: row.userLine } : {}),
+    tsMs: row.tsMs,
   };
 }
 
@@ -475,6 +562,146 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       if (loserId === '') return err('bad-request', 'loserId 必填（winnerId 可空 = 都收起来）');
       return ok({ resolved: deps.ladder.insights.resolveKeep(winnerId, loserId, Date.now()) });
     }
+    case 'timeline-query': {
+      if (deps.txn === undefined) return err('unavailable', '事务轨未装配');
+      const now = Date.now();
+      const hasRange = typeof payload['from'] === 'number' && typeof payload['to'] === 'number';
+      const to = hasRange ? int(payload['to'], now) : now;
+      const days = Math.max(1, Math.min(365, int(payload['days'], 7)));
+      // 显式 from 优先；否则按 days 回推（闭区间两端交给 store.timelineQuery）。
+      const from = typeof payload['from'] === 'number' ? int(payload['from'], to - days * 86_400_000) : to - days * 86_400_000;
+      const workspaceId = str(payload['workspaceId']) || undefined;
+      const rows = deps.txn.timelineQuery(from, to, workspaceId, int(payload['limit'], 200)).map(txnRow);
+      return ok({ rows, from, to } satisfies SpiritTimelineResult);
+    }
+    case 'resource-lookup': {
+      if (deps.txn === undefined) return err('unavailable', '事务轨未装配');
+      const cue = str(payload['cue']);
+      if (cue === '') return err('bad-request', 'cue 不能为空');
+      const hits = deps.txn.resourceLookup(cue, int(payload['limit'], 100))
+        .map((h) => ({ row: txnRow(h.entry), matchedCue: h.matchedCue, matchedKind: h.matchedKind }));
+      return ok({ hits } satisfies SpiritResourceResult);
+    }
+    case 'distill-models': {
+      if (deps.distillRoute === undefined) return err('unavailable', '长觉模型选择未装配');
+      return ok(distillRouteView(deps.distillRoute));
+    }
+    case 'distill-model-list': {
+      if (deps.distillRoute === undefined) return err('unavailable', '长觉模型选择未装配');
+      const provider = str(payload['provider']);
+      if (provider === '') return err('bad-request', 'provider 不能为空');
+      try {
+        const models = await deps.distillRoute.models(provider);
+        return ok({ provider, models } satisfies SpiritDistillModelListResult);
+      } catch (e) {
+        return err('list-failed', e instanceof Error ? e.message : String(e));
+      }
+    }
+    case 'distill-model-set': {
+      if (deps.distillRoute === undefined) return err('unavailable', '长觉模型选择未装配');
+      const dr = deps.distillRoute;
+      // 部署面 pin 赢过一切：此时写覆盖无意义（会被 pin 遮蔽），拒写并如实报因。
+      if (dr.deployPin() !== null) {
+        return ok({ ok: false, reason: 'pinned', route: distillRouteView(dr) } satisfies SpiritDistillModelSetResult);
+      }
+      if (payload['clear'] === true) {
+        const wrote = dr.setRuntimeOverride(null);
+        return ok({ ok: wrote, ...(wrote ? {} : { reason: 'degraded' as const }), route: distillRouteView(dr) } satisfies SpiritDistillModelSetResult);
+      }
+      const provider = str(payload['provider']);
+      const model = str(payload['model']);
+      if (provider === '' || model === '') {
+        return ok({ ok: false, reason: 'half-config', route: distillRouteView(dr) } satisfies SpiritDistillModelSetResult);
+      }
+      const wrote = dr.setRuntimeOverride({ provider, model });
+      return ok({ ok: wrote, ...(wrote ? {} : { reason: 'degraded' as const }), route: distillRouteView(dr) } satisfies SpiritDistillModelSetResult);
+    }
+    case 'evaluation-list': {
+      if (deps.ontology === undefined) return err('unavailable', '本体层未装配');
+      const workspaceId = str(payload['workspaceId']) || undefined;
+      const includeUnresolved = payload['includeUnresolved'] === true;
+      const rows = deps.ontology
+        .listRecentEvaluations(int(payload['limit'], 100), {
+          ...(workspaceId === undefined ? {} : { workspaceId }),
+          ...(includeUnresolved ? {} : { excludeUnresolved: true }),
+        })
+        .map(evaluationRow);
+      return ok({ rows } satisfies SpiritEvaluationListResult);
+    }
+    case 'entity-graph': {
+      if (deps.ontology === undefined) return err('unavailable', '本体层未装配');
+      // q：名字/别名搜索（v0.6.1）；kind 顺手接上（契约声明了但之前漏传）
+      const entityQ = str(payload['q']);
+      const entityKind = str(payload['kind']);
+      const nodes: SpiritEntityNode[] = deps.ontology
+        .listEntities(int(payload['limit'], 60), {
+          ...(entityKind === '' ? {} : { kind: entityKind as EntityKind }),
+          ...(entityQ === '' ? {} : { q: entityQ }),
+        })
+        .map((e) => ({ id: e.id, kind: e.kind, name: e.name, importance: e.importance }));
+      const edges: SpiritEntityGraphResult['edges'] = [];
+      const seen = new Set<string>();
+      for (const node of nodes) {
+        for (const edge of deps.ontology.listEdgesByEntity(node.id, 20)) {
+          if (seen.has(edge.id)) continue;
+          seen.add(edge.id);
+          edges.push(edge);
+        }
+      }
+      return ok({ nodes, edges } satisfies SpiritEntityGraphResult);
+    }
+    case 'entity-lookup': {
+      if (deps.ontology === undefined || deps.txn === undefined) return err('unavailable', '本体层未装配');
+      const entityId = str(payload['entityId']);
+      const name = str(payload['name']);
+      let entity: SpiritEntityNode | null = null;
+      if (entityId !== '') {
+        const hit = deps.ontology.listEntities(ONT_LOOKUP_SCAN).find((e) => e.id === entityId);
+        if (hit !== undefined) entity = { id: hit.id, kind: hit.kind, name: hit.name, importance: hit.importance };
+      } else if (name !== '') {
+        const lower = name.trim().toLowerCase();
+        const hit = deps.ontology.listEntities(ONT_LOOKUP_SCAN).find((e) => e.name.toLowerCase() === lower);
+        if (hit !== undefined) entity = { id: hit.id, kind: hit.kind, name: hit.name, importance: hit.importance };
+      } else {
+        return err('bad-request', 'entityId 或 name 至少给一个');
+      }
+      const deliveryIds = entity === null ? [] : deps.ontology.listDeliveriesByEntity(entity.id, int(payload['limit'], 50));
+      const deliveries = deps.txn.getByIds(deliveryIds).map(txnRow);
+      return ok({ entity, deliveries } satisfies SpiritEntityLookupResult);
+    }
+    case 'task-list': {
+      if (deps.ontology === undefined) return err('unavailable', '本体层未装配');
+      const workspaceId = str(payload['workspaceId']);
+      const status = str(payload['status']) || undefined;
+      const taskQ = str(payload['q']) || undefined;
+      const limit = int(payload['limit'], 50);
+      // 空 workspaceId = 跨工作区全局最近（面板「本体」翻阅用）；非空 = 限定工作区
+      const source = workspaceId === ''
+        ? deps.ontology.listAllTasks({ ...(status === undefined ? {} : { status }), ...(taskQ === undefined ? {} : { q: taskQ }), limit })
+        : deps.ontology.listTasks(workspaceId, { ...(status === undefined ? {} : { status }), ...(taskQ === undefined ? {} : { q: taskQ }), limit });
+      const tasks: SpiritTaskRow[] = source
+        .map((t) => ({ id: t.id, title: t.title, status: t.status, ...(t.nextStep !== undefined ? { nextStep: t.nextStep } : {}), updatedAt: t.updatedAt }));
+      return ok({ tasks } satisfies SpiritTaskListResult);
+    }
+    case 'task-detail': {
+      if (deps.ontology === undefined || deps.txn === undefined) return err('unavailable', '本体层未装配');
+      const taskId = str(payload['taskId']);
+      if (taskId === '') return err('bad-request', 'taskId 必填');
+      const found = deps.ontology.getTask(taskId);
+      const task: SpiritTaskRow | null = found === null ? null : { id: found.id, title: found.title, status: found.status, ...(found.nextStep !== undefined ? { nextStep: found.nextStep } : {}), updatedAt: found.updatedAt };
+      const deliveries = deps.txn.getByIds(deps.ontology.listDeliveriesByTask(taskId)).map(txnRow);
+      return ok({ task, deliveries } satisfies SpiritTaskDetailResult);
+    }
+    case 'ontology-backfill-run': {
+      if (deps.backfill === undefined) return err('unavailable', '历史回填未装配');
+      const dryRun = payload['dryRun'] === false ? false : true; // 缺省干跑
+      // 异步受理：立即返回 accepted，进度走 ontology-backfill-status（照长觉 sleep-run/status）
+      return ok(deps.backfill.start(dryRun) satisfies SpiritBackfillRunResult);
+    }
+    case 'ontology-backfill-status': {
+      if (deps.backfill === undefined) return err('unavailable', '历史回填未装配');
+      return ok(deps.backfill.status());
+    }
     case 'session-mode-get': {
       // 只读：不碰写入面（写端点"两个字段都省"语义是清除覆盖，混用会抹掉用户设置）
       const sessionId = str(payload['sessionId']);
@@ -523,6 +750,7 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         feedbackEnabled: live.feedbackEnabled,
         dreamEnabled: live.dreamEnabled,
         distillEnabled: live.distillEnabled,
+        ontologyEnabled: live.ontologyEnabled,
         hotUpdatable: typeof deps.liveRaw?.()?.update === 'function',
       } satisfies SpiritSettingsView);
     }
@@ -535,6 +763,7 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       if (typeof payload['feedbackEnabled'] === 'boolean') patch.feedbackEnabled = payload['feedbackEnabled'];
       if (typeof payload['dreamEnabled'] === 'boolean') patch.dreamEnabled = payload['dreamEnabled'];
       if (typeof payload['distillEnabled'] === 'boolean') patch.distillEnabled = payload['distillEnabled'];
+      if (typeof payload['ontologyEnabled'] === 'boolean') patch.ontologyEnabled = payload['ontologyEnabled'];
       const half = payload['fadeHalfLifeMs'];
       if (typeof half === 'number' && Number.isFinite(half)) {
         const [lo, hi] = SPIRIT_RANGES['recall.fadeHalfLifeMs'] ?? [0, 0];
@@ -542,7 +771,7 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         if (v < lo || v > hi) return err('bad-request', `fadeHalfLifeMs 只接受 ${lo}..${hi}`);
         patch.fadeHalfLifeMs = v;
       }
-      if (Object.keys(patch).length === 0) return err('bad-request', '没有可应用的合法键（只收 fadeEnabled/fadeHalfLifeMs/feedbackEnabled/dreamEnabled/distillEnabled）');
+      if (Object.keys(patch).length === 0) return err('bad-request', '没有可应用的合法键（只收 fadeEnabled/fadeHalfLifeMs/feedbackEnabled/dreamEnabled/distillEnabled/ontologyEnabled）');
       try {
         await Promise.resolve(ref.update(patch));
       } catch (err2) {
@@ -555,6 +784,7 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         feedbackEnabled: live.feedbackEnabled,
         dreamEnabled: live.dreamEnabled,
         distillEnabled: live.distillEnabled,
+        ontologyEnabled: live.ontologyEnabled,
         hotUpdatable: true,
       } satisfies SpiritSettingsView);
     }
@@ -604,6 +834,17 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
           gistMinSalience: cfg.recall.gistMinSalience,
         },
         focusIds,
+        // 本体交付点（v0.6）：本体层开且事务轨装配才取；翻阅面（本周/本体）有的记录，星图上也该有。
+        // 只取 dlv- 前缀行（交付），不拉 tier3 步骤遥测；backfill 行照画——排除只针对注入，不针对展示。
+        deliveries: cfg.ontology.enabled && deps.txn !== undefined
+          ? deps.txn
+              .listRecent(SEA_DELIVERY_MAX, { ...(scope === 'session' ? { sessionId } : {}) })
+              .filter((row) => row.id.startsWith('dlv-'))
+              .map((row) => ({
+                id: row.id, tsMs: row.tsMs, sessionId: row.sessionId, turnSeq: row.turnSeq,
+                cardLine: row.cardLine, summary: row.summary ?? null,
+              }))
+          : [],
       });
       // 顶栏短提示的判定单源在探测面（deps.drscVerdict），装配点补进响应——场景几何不掺探测事实
       return ok({ ...graph, drscVerdict: deps.drscVerdict() });

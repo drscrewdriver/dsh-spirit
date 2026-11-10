@@ -74,8 +74,20 @@ export interface SpiritDeps {
   modes: { isOff(sessionId: string): boolean; isBypass(sessionId: string): boolean };
   history: HistoryDeps;
   logger: { info(m: string): void; warn(m: string): void };
-  /** 取本会话近因条目（注入 store 依赖以便单测替换）。 */
+  /** 取本会话近因条目（注入 store 依赖以便单测替身）。 */
   recentEntries(sessionId: string, k: number): ExperienceEntry[];
+  /**
+   * 事务轨读面（Phase 4）：取本会话最近一条 `card_line` 进注入卡。省略 / 关轨 ⇒ undefined，
+   * 卡不带事务段、指纹不变。只允许读 `card_line`（`summary` 属衍生物，禁入注入与指纹）。
+   */
+  recentTxnCardLine?(sessionId: string): string | undefined;
+  /**
+   * 本体层反馈读面（Phase C / tier1）：最新一条已锚定评价的 gist（kind + 锁定交付的 card_line）。
+   * 省略 / 关 ⇒ undefined，卡不带反馈段。只给稳定 gist，不给 id/ts/原文。
+   */
+  recentFeedbackLine?(sessionId: string): string | undefined;
+  /** 本体层任务线程读面（Phase C / tier2）：当前活跃任务的 title·status·next 行。 */
+  recentThreadLine?(workspaceId: string): string | undefined;
   /** 取上一会话末尾条目（跨会话基调）。 */
   previousEntries(workspaceId: string, sessionId: string, m: number): ExperienceEntry[];
   /** 未竟账读面（刀3）：新会话首轮带出一行；省略/空 ⇒ 整段不出现。 */
@@ -244,9 +256,19 @@ export class Spirit {
         ? recentForms(entries, { now: input.now, halfLifeMs: cfg.recall.halfLifeMs, limit: recentK, fade })
         : recentForms(entries, { now: input.now, halfLifeMs: cfg.recall.halfLifeMs, limit: recentK });
       const recentTexts = formed.map((item) => item.text);
-      const fingerprint = fade.fadeEnabled
+      // 事务轨：只取 card_line 进卡与进指纹（summary 永不参与，否则每轮唯一 ⇒ churn 100%）。
+      const transactionLine = this.deps.recentTxnCardLine?.(input.sessionId) ?? '';
+      // 本体层注入（Phase C）：反馈(tier1) + 线程(tier2)，均为稳定 gist（新评价/新任务才变，不逐轮）。
+      const feedbackLine = this.deps.recentFeedbackLine?.(input.sessionId) ?? '';
+      const threadLine = this.deps.recentThreadLine?.(input.workspaceId) ?? '';
+      const baseFingerprint = fade.fadeEnabled
         ? `${mood.revision}|${recentTexts.join('#')}|${formsDigest(formed)}`
         : `${mood.revision}|${recentTexts.join('#')}`;
+      // 关轨（三段皆空）⇒ 指纹与旧形状逐字节相同，不挂尾缀；非空才挂对应段（gist 稳定，不逐轮变）。
+      let fingerprint = baseFingerprint;
+      if (transactionLine !== '') fingerprint += `|txn:${transactionLine}`;
+      if (threadLine !== '') fingerprint += `|th:${threadLine}`;
+      if (feedbackLine !== '') fingerprint += `|fb:${feedbackLine}`;
       if (fade.fadeEnabled) this.deps.onFadeStats?.(input.agentId, fadeStatsOf(formed, entries));
       if (!changed && fingerprint === runtime.lastFingerprint) {
         this.runtimes.set(input.agentId, { ...runtime, mood, firstTurnDone: true });
@@ -302,6 +324,9 @@ export class Spirit {
         mood,
         recent: recentTexts,
         recalled,
+        ...(feedbackLine !== '' ? { feedback: feedbackLine } : {}),
+        ...(threadLine !== '' ? { thread: threadLine } : {}),
+        ...(transactionLine !== '' ? { transaction: transactionLine } : {}),
         ...(tone !== '' ? { tone } : {}),
         ...(tendencyOverride !== undefined ? { tendencyOverride } : {}),
         maxBytes: cfg.card.maxBytes,

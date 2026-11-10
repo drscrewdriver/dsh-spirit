@@ -10,6 +10,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { checkCompat } from '../scripts/compat-precheck.mjs';
+
 import { SPIRIT_DEFAULTS, SPIRIT_RANGES, SPIRIT_VERSION } from '../src/contract.js';
 import { RANGE_KEYS, SCHEMA_FIELD_KEYS } from '../src/config.js';
 import { NOTICE_WORDS_ZH, TRIGGER_WORDS_ZH, VOICE_WORDS } from '../src/words.js';
@@ -78,10 +80,10 @@ describe('版本号同串', () => {
     expect(pkg.engines.dsh).toBe(manifest.engines.dsh);
   });
 
-  it('声明线只含已实测的 0.2.x（不抄姊妹包的 19 线宽声明）', () => {
-    const lines = pkg.engines.dsh.split('||').map((s) => s.trim());
-    expect(lines.length).toBeGreaterThan(0);
-    for (const line of lines) expect(line.startsWith('0.2.'), line).toBe(true);
+  it('声明 range 合法且整体落在 0.2.x（委托 compat-precheck 单源，不再复一份枚举）', () => {
+    // 宽 range（如 `>=0.2.0-rc.1 <0.3.0`）的“有界”判定归一交给 checkCompat：
+    // 它同时核“覆盖已测预发布线 + 不溢出 0.1.x/0.3.0+ + peers 逐线满足且标 optional + 版本同串”。
+    expect(checkCompat(pkg as never, manifest as never)).toEqual([]);
   });
 });
 

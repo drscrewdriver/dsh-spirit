@@ -47,7 +47,7 @@ export const SLEEP_BATCH_MAX = 24;
 
 export type SleepRunResult =
   | { accepted: true }
-  | { accepted: false; reason: 'disabled' | 'unsupported' | 'running' | 'dedup-window' | 'backoff' | 'below-batch' | 'degraded' };
+  | { accepted: false; reason: 'disabled' | 'toggle-off' | 'unsupported' | 'running' | 'dedup-window' | 'backoff' | 'below-batch' | 'degraded' };
 
 export interface RuminateDeps {
   db: () => DatabaseSync | null;
@@ -60,6 +60,12 @@ export interface RuminateDeps {
   channel: () => LlmChannel | undefined;
   /** 宿主默认模型（agentDefaultModel 宽容读结果）；distill.provider/model 留空时的唯一合法来源，拿不到 ⇒ fail-closed 拒蒸。 */
   defaultModel?: () => DistillRoute | undefined;
+  /**
+   * 事务轨原料读面（Phase 4 混喂）：返回近期事务 `card_line` 当归纳的上下文。
+   * 省略 / 关轨 ⇒ 返回空数组，长觉照旧只吃体验条目。这些行只进 prompt 当背景，
+   * **不进 batchIds**（不能当 evidence，也不会污染 experience_topic）。
+   */
+  recentTxnForPrompt?: () => string[];
   cfg: () => SpiritConfig;
   logger: MinimalLogger;
 }
@@ -149,7 +155,10 @@ export class RuminateRunner {
 
   private precheck(): SleepRunResult {
     const cfg = this.deps.cfg();
-    if (!cfg.distill.enabled) return { accepted: false, reason: 'disabled' };
+    // 双闸分开报：部署面关（面板改不动）与面板开关关（勾上即可）是两种解法，不能一律归给“部署面总闸”。
+    if (!cfg.distill.enabled) {
+      return { accepted: false, reason: cfg.live?.distillEnabled === false ? 'toggle-off' : 'disabled' };
+    }
     if (this.deps.channel() === undefined) return { accepted: false, reason: 'unsupported' };
     if (this.deps.db() === null) return { accepted: false, reason: 'degraded' };
     if (this.running) return { accepted: false, reason: 'running' };
@@ -205,6 +214,9 @@ export class RuminateRunner {
         factBits: factBits(entry.fact).join('｜'),
       }));
       const batchIds = new Set(batchEntries.map((e) => e.id));
+      // 事务轨混喂（Phase 4）：card_line 当背景喂给归纳，但 ids 不进 batchIds——
+      // 洞察/主题/因果边的证据永远只接地在体验条目上（防 experience_topic 被非体验 id 污染）。
+      const txnContext = cfg.txn.enabled ? (this.deps.recentTxnForPrompt?.() ?? []) : [];
 
       // ② 归纳调用（fail-closed 路由在这里解析——配错根本走不到烧 token）
       this.state = { ...this.state, phase: 'distilling', detail: `梦里回看 ${batchEntries.length} 条` };
@@ -220,7 +232,7 @@ export class RuminateRunner {
         route,
         reasoningEffort: cfg.distill.reasoningEffort,
         system: INDUCTION_PROMPT_SYSTEM,
-        user: buildInductionUser(batchEntries, knownTopics),
+        user: buildInductionUser(batchEntries, knownTopics, txnContext),
         maxTokens: cfg.distill.maxOutputTokens,
         timeoutMs: cfg.distill.timeoutMs,
       });

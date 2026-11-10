@@ -29,6 +29,8 @@ import { registerCardPreStep } from '../src/hooks/card-pre-step.js';
 import { renderCard } from '../src/slot/render.js';
 import { factBits } from '../src/experience/render.js';
 import { extractCues } from '../src/experience/cues.js';
+import { STRUCTURED_BANNED_FIELDS } from '../src/experience/events.js';
+import { SEMANTIC_BANNED_FIELDS } from '../src/transaction/gate.js';
 import { SCHEMA_FIELD_KEYS } from '../src/config.js';
 import { checkCompat } from '../scripts/compat-precheck.mjs';
 
@@ -192,6 +194,57 @@ describe('task_7.3 / 7.3b 解耦与不越界', () => {
   it('spirit 自己不维护会话索引（会话列表是 DRSC 的地盘）', () => {
     const offenders = readSources().filter(({ code }) => /CREATE TABLE[^;]*sessions/u.test(code)).map(({ file }) => file);
     expect(offenders).toEqual([]);
+  });
+
+  it('事务表禁入情绪派生路：deriveMood 输入链与卡装配都不读 txn_entry（G15 同族 · Phase 4 T4.3）', () => {
+    /**
+     * deriveMood 的条目来自 `deps.recentEntries` = `store.recent()`，指纹的近因段同源。
+     * 只要这条链上有文件 SELECT ... FROM txn_entry，事务行就会泄进情绪派生与注入指纹——
+     * 那是把 LLM 衍生物当人格状态输入（G15 红线）。事务段唯一合法入口是 renderCard 的
+     * `transaction` 字符串参（由 spirit 编排层读 card_line 后传入），不是渲染层直连 store。
+     */
+    const derivePath = ['../src/slot/derive.ts', '../src/store/experience.ts', '../src/recall/recent.ts', '../src/recall/history.ts'];
+    for (const rel of derivePath) {
+      const { code } = readSources().find((s) => s.file === rel)!;
+      expect(code, `${rel} 不得读 txn_entry`).not.toContain('txn_entry');
+      expect(code, `${rel} 不得直连事务 store`).not.toMatch(/store\/transaction/u);
+    }
+    // 渲染层保持解耦：拿 card_line 字符串，不 import 事务 store。
+    const render = readSources().find((s) => s.file === '../src/slot/render.ts')!;
+    expect(render.code).not.toMatch(/store\/transaction|txn_entry/u);
+    // 正向对敲：事务表确实只被事务轨自己与注入读面引用（否则上面四条会是"根本没这张表"的假绿）。
+    expect(readSources().some(({ file, code }) => file === '../src/store/transaction.ts' && code.includes('txn_entry'))).toBe(true);
+  });
+
+  it('本体层隔离（Phase A · TA.6）：情绪轨名单⊇事务轨 · recent()可见面不读本体表 · ruminate batchIds 不掺本体 id', () => {
+    /**
+     * 三条泛扫，都不靠固定文件名（新增 ontology/*.ts 不会天然绕过）：
+     * (a) 情绪轨禁读面必须是事务轨的超集——情绪判定绝不比事务轨松（多禁 assistantText）。
+     * (b) 任何读 experience 的文件（即 recent()/deriveMood 可见面）绝不同时也读本体表——
+     *     否则本体行会泄进情绪派生/注入（G15 红线的新表变体）。
+     * (c) ruminate 只从 experience 集 batchIds；混喂的 card_line 是字符串背景，本体表不得进它的源。
+     */
+    // (a) 名单超集
+    for (const field of SEMANTIC_BANNED_FIELDS) {
+      expect(STRUCTURED_BANNED_FIELDS, `情绪轨应同样禁 ${field}`).toContain(field);
+    }
+    expect(STRUCTURED_BANNED_FIELDS).toContain('assistantText');
+    expect(SEMANTIC_BANNED_FIELDS, '事务轨允许带助手动作衍生物，故不禁 assistantText').not.toContain('assistantText');
+
+    // (b) 泛扫：读 experience 的文件不得也读本体表
+    const ontologyTables = ['entity', 'delivery_entity', 'entity_edge', 'task', 'task_delivery', 'evaluation'];
+    for (const { file, code } of readSources()) {
+      if (!/FROM\s+experience\b/u.test(code)) continue;
+      for (const t of ontologyTables) {
+        expect(code, `${file} 读 experience 又读本体表 ${t}（会泄进情绪/注入可见面）`).not.toMatch(new RegExp(`FROM\\s+${t}\\b`, 'u'));
+      }
+    }
+
+    // (c) ruminate 不引用任何本体表（batchIds 只接地 experience）
+    const rumi = readSources().find((s) => s.file === '../src/distill/ruminate.ts')!;
+    for (const t of ontologyTables) {
+      expect(rumi.code, `ruminate 不得引用本体表 ${t}`).not.toMatch(new RegExp(`\\b${t}\\b`, 'u'));
+    }
   });
 });
 
@@ -548,11 +601,11 @@ describe('spirit-sea-admin：写面收敛与风格纪律实闸', () => {
 
   /**
    * G10：契约在、UI 没了——门禁不会替你把关可达性。
-   * 这三个 op 是设置卡瘦身后的「必须还能从 client 摸到」清单（experience-feedback
-   * 迁去翻阅 tab、settings-set/journal-export 留卡内），引用消失即红。
+   * v0.3.3 三 op（experience-feedback 迁去翻阅 tab、settings-set/journal-export 留卡内）；
+   * v0.5 加本体五查询（实体图/实体查询/任务列/任务详情/反馈列表）——「翻阅·本体」面靠它们，引用消失即红。
    */
-  it('G10 UI 可达性：settings-set/journal-export/experience-feedback 在 client 源码有引用', () => {
-    const required = ['settings-set', 'journal-export', 'experience-feedback'];
+  it('G10 UI 可达性：设置/导出/反馈/本体五查询 op 在 client 源码有引用', () => {
+    const required = ['settings-set', 'journal-export', 'experience-feedback', 'entity-graph', 'entity-lookup', 'task-list', 'task-detail', 'evaluation-list'];
     const clientCode = readSources()
       .filter(({ file }) => file.startsWith('../client/src/'))
       .map(({ code }) => code)

@@ -1,11 +1,16 @@
 /**
  * 回忆卡装配：**唯一**的注入出口。
  *
- * 四段形状（丢尾优先级固定：开场 → 想起 → 刚刚，状态段永不丢）：
+ * 五段形状（丢尾优先级固定：开场 → 想起 → 刚刚 → 事务，状态段永不丢）：
  * 1. `状态：<档位词>·<行为倾向>`  ← 必需，这是"入戏"的抓手
- * 2. `刚刚：<体验句>` × ≤K        ← 近因路（零滞后，本会话刚发生的）
- * 3. `想起：<被勾起的历史片段>`   ← 检索路（含 DRSC），无命中就整段不出现
- * 4. `开场：<共同经历基调>`        ← 仅新会话首轮
+ * 2. `事务：<这一轮做了什么>`      ← 工作记忆轨（txn_entry.card_line，≤60 字；关轨时整段不出现）
+ * 3. `刚刚：<体验句>` × ≤K        ← 近因路（零滞后，本会话刚发生的）
+ * 4. `想起：<被勾起的历史片段>`   ← 检索路（含 DRSC），无命中就整段不出现
+ * 5. `开场：<共同经历基调>`        ← 仅新会话首轮
+ *
+ * 事务段只吃 `card_line`（唯一允许进注入面的事务字段）；`summary` 是 LLM 衍生物，
+ * 与感受句同守 G15——绝不进注入、不进指纹。关轨（无 transaction 输入）时本段整体省略，
+ * 输出与四段形状逐字节相同。
  *
  * 三条不能省的形状约束：
  * - **固定声明行**：卡是"角色的体验记录"，不是客观事实、不是用户发言、不覆盖用户指令。
@@ -38,6 +43,12 @@ export interface CardInput {
   mood: Mood;
   /** 近因路体验句（已按 maxCharsPerEntry 之外的规则裁剪过）。 */
   recent: readonly string[];
+  /** 反馈段（tier1：最新一条已锚定评价的 gist）；省略/空 ⇒ 不带（关轨口径）。 */
+  feedback?: string;
+  /** 线程段（tier2：当前活跃任务的 title·status·next）；省略/空 ⇒ 不带。 */
+  thread?: string;
+  /** 事务段（做成：工作记忆 delivery card_line，≤60 字）；省略/空 ⇒ 卡不带事务段（关轨口径）。 */
+  transaction?: string;
   /** 检索路片段（历史/DRSC）。 */
   recalled: readonly string[];
   /** 跨会话基调行（仅首轮给）。 */
@@ -55,8 +66,11 @@ export interface CardInput {
 export interface CardResult {
   text: string;
   bytes: number;
-  /** 各段实际进卡的条数（面板与门禁核对用）。 */
-  used: { status: 0 | 1; recent: number; recalled: number; tone: 0 | 1 };
+  /**
+   * 各段实际进卡的条数（面板与门禁核对用）。
+   * `feedback`/`thread`/`transaction` 仅在卡真带该段时出现（关轨时省略该键，保持旧四段对账口径不变）。
+   */
+  used: { status: 0 | 1; recent: number; recalled: number; tone: 0 | 1; feedback?: 0 | 1; thread?: 0 | 1; transaction?: 0 | 1 };
   /** 被预算挤掉的段数（>0 说明字节顶偏小，面板应提示）。 */
   dropped: number;
 }
@@ -85,7 +99,7 @@ export function renderCard(input: CardInput): CardResult {
   const assemble = (body: readonly string[]): string => [...head, ...body, ...closeTail].join('\n');
 
   const body: string[] = [];
-  const used = { status: 0 as 0 | 1, recent: 0, recalled: 0, tone: 0 as 0 | 1 };
+  const used: { status: 0 | 1; recent: number; recalled: number; tone: 0 | 1; feedback?: 0 | 1; thread?: 0 | 1; transaction?: 0 | 1 } = { status: 0, recent: 0, recalled: 0, tone: 0 };
   let dropped = 0;
 
   /** 逐行实测：装不下就不加（不截半句、不预留估算）。 */
@@ -103,6 +117,32 @@ export function renderCard(input: CardInput): CardResult {
   }
   used.status = 1;
   if (cell.soft && !pushIfFits(escapeFrame(NON_MEDICAL_NOTE))) dropped += 1;
+
+  // 本体层注入按 salience 逆序丢尾：预算紧时先丢低 tier（开场→想起→刚刚→做成→线程），反馈(tier1)最晚被丢。
+  // 填装顺序即优先级：反馈 > 线程 > 做成(事务) > 刚刚 > 想起 > 开场。
+  if (input.feedback !== undefined && input.feedback !== '') {
+    const text = clipLine(input.feedback, maxCharsPerEntry);
+    if (text !== '') {
+      if (pushIfFits(`反馈：${escapeFrame(text)}`)) used.feedback = 1;
+      else dropped += 1;
+    }
+  }
+  if (input.thread !== undefined && input.thread !== '') {
+    const text = clipLine(input.thread, maxCharsPerEntry);
+    if (text !== '') {
+      if (pushIfFits(`线程：${escapeFrame(text)}`)) used.thread = 1;
+      else dropped += 1;
+    }
+  }
+
+  // 做成（事务）段：工作记忆 delivery card_line。
+  if (input.transaction !== undefined && input.transaction !== '') {
+    const text = clipLine(input.transaction, maxCharsPerEntry);
+    if (text !== '') {
+      if (pushIfFits(`事务：${escapeFrame(text)}`)) used.transaction = 1;
+      else dropped += 1;
+    }
+  }
 
   for (const line of input.recent) {
     const text = clipLine(line, maxCharsPerEntry);

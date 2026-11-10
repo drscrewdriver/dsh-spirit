@@ -149,7 +149,7 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
    * 写 volatile 面（六腿的写腿）：淡出两键 + 做梦开关；反馈闸不常改，只随 fadeEnabled 一起开关。
    * 保存后重拉一次 settings-get 回显真值（update 可能被宿主拒 → 面板不能自报已生效）。
    */
-  const saveSettings = (patch: { fadeEnabled?: boolean; fadeHalfLifeMs?: number; dreamEnabled?: boolean; distillEnabled?: boolean }) => {
+  const saveSettings = (patch: { fadeEnabled?: boolean; fadeHalfLifeMs?: number; dreamEnabled?: boolean; distillEnabled?: boolean; ontologyEnabled?: boolean }) => {
     if (rpc === undefined) return;
     setExportNote(null);
     void rpc('settings-set', patch)
@@ -267,6 +267,13 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
           { style: { display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 } },
           createElement('input', { type: 'checkbox', checked: settings.distillEnabled, onChange: (e: { target: { checked: boolean } }) => saveSettings({ distillEnabled: e.target.checked }) }),
           copy['sleep.on'],
+        ),
+        // 本体层热更开关（v0.5）：面板「本体」真实控制线；关 ⇒ 采集/抽取全停（零落库）
+        createElement(
+          'label',
+          { style: { display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 } },
+          createElement('input', { type: 'checkbox', checked: settings.ontologyEnabled, onChange: (e: { target: { checked: boolean } }) => saveSettings({ ontologyEnabled: e.target.checked }) }),
+          copy['panel.ontologyOn'],
         ),
         settings.hotUpdatable
           ? null

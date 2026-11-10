@@ -69,4 +69,20 @@ describe('sea-graph', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('bad-request');
   });
+
+  it('本体层开时交付行进图（v0.6）：dlv- 前缀才画，步骤遥测行不进星图', async () => {
+    const { deps } = makeDeps();
+    (deps as { txn?: unknown }).txn = {
+      listRecent: () => [
+        { id: 'dlv-s1/2', tsMs: 2_500, sessionId: 's1', turnSeq: 2, cardLine: '我交付了 X', summary: '摘要' },
+        { id: 'txn-s1/3', tsMs: 2_600, sessionId: 's1', turnSeq: 3, cardLine: '步骤行不该出现', summary: null },
+      ],
+    };
+    const result = await handleEndpoint(`${SPIRIT_RPC_PREFIX}sea-graph`, {}, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const graph = result.value as { points: Array<{ id: string; kind?: string }> };
+    expect(graph.points.some((p) => p.id === 'dlv-s1/2' && p.kind === 'delivery')).toBe(true);
+    expect(graph.points.some((p) => p.id === 'txn-s1/3'), '非交付行不入图').toBe(false);
+  });
 });

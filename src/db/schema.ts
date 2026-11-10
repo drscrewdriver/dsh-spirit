@@ -1,5 +1,5 @@
 /**
- * SQLite schema 单源（v0.3.5 = schema v6：长觉阶梯五张派生表）。
+ * SQLite schema 单源（v0.3.5 = schema v6：长觉阶梯五张派生表；v7 = 事务轨两张表；v8 = 本体层：扩 txn_entry 为 delivery + 六张实体/关系/任务/评价表）。
  *
  * 三条例外要先说明，避免后来者以为是“没做完”：
  * 1. **不建 FTS5 虚表**：条目规模就是事件数量级（每轮最多一条，且被 salience 筛掉
@@ -190,7 +190,137 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
      vec BLOB NOT NULL,
      updated_at INTEGER NOT NULL
    )`,
+  // ── 事务轨（v7）：txn_entry + txn_cues ──
+  // 定性：`txn_entry` 属**工作记忆真源域**（与 experience 同级），不是派生缓存——它承载
+  // "发生了什么具体事"。但 `summary` 列是 LLM 衍生物，G15 纪律要求 summary 禁入
+  // deriveMood / recent() / 注入指纹；只有 `card_line` 段允许进注入卡（独立于情绪段）。
+  // cues 只允许 basename / entity / 资源 token（禁全路径：spirit 自己产的细节不带目录）。
+  `CREATE TABLE IF NOT EXISTS txn_entry (
+     id TEXT PRIMARY KEY,
+     session_id TEXT NOT NULL,
+     workspace_id TEXT NOT NULL,
+     ts_ms INTEGER NOT NULL,
+     turn_seq INTEGER NOT NULL,
+     card_line TEXT NOT NULL,
+     summary TEXT,
+     gist_key TEXT,
+     semantic_json TEXT,
+     source_trust TEXT NOT NULL,
+     topic_id TEXT,
+     created_at INTEGER NOT NULL,
+     -- v8 本体层：txn_entry 升格为 delivery（有内容的交付）。更正靠插新行+旧行置 superseded_by（补上此前缺口）；
+     -- salience_tier 1反馈/2轮次总结/3步骤/4被掩埋思考（缺省 2）；turn_start/end_ms 圈定交付跨的轮次区间。
+     superseded_by TEXT,
+     salience_tier INTEGER NOT NULL DEFAULT 2,
+     turn_start_ms INTEGER,
+     turn_end_ms INTEGER
+   )`,
+  `CREATE INDEX IF NOT EXISTS txn_ts ON txn_entry (ts_ms)`,
+  // 读侧默认只取未取代行（timelineQuery/listRecent 都带 `superseded_by IS NULL`）：部分索引让
+  // "取活跃 + 时间序"直接吃索引，不靠 txn_ts 命中后再逐行残差过滤（满载下会擦超预算）。
+  `CREATE INDEX IF NOT EXISTS txn_active_ts ON txn_entry (ts_ms) WHERE superseded_by IS NULL`,
+  `CREATE INDEX IF NOT EXISTS txn_workspace_ts ON txn_entry (workspace_id, ts_ms)`,
+  // 注入热路径：listRecent(1, {sessionId}) 每轮 pre-step 都走（开轨后）——无 session 索引会
+  // 随本表只增不删单调全表扫（perf-txn 闸实测 p95 秒级）。(session_id, ts_ms) 让 WHERE+ORDER 都吃索引。
+  `CREATE INDEX IF NOT EXISTS txn_session_ts ON txn_entry (session_id, ts_ms)`,
+  `CREATE INDEX IF NOT EXISTS txn_topic ON txn_entry (topic_id)`,
+  `CREATE TABLE IF NOT EXISTS txn_cues (
+     txn_id TEXT NOT NULL,
+     cue TEXT NOT NULL,
+     kind TEXT NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS txn_cue_value ON txn_cues (cue)`,
+  // 每个读方法都靠 cuesFor 逐行补 cue（`WHERE txn_id = ?`）：无此索引则是 N+1 全表扫
+  //（timelineQuery 返 200 行 ⇒ 200×整表，perf-txn 闸实测 4.8s）。等值命中走它降到 O(log n)。
+  `CREATE INDEX IF NOT EXISTS txn_cue_txn ON txn_cues (txn_id)`,
+  // ── 本体层（v8）：实体注册表 + 关系 + 任务线程 + 评价锚定 ──
+  // 定性：entity/entity_edge/task/task_delivery = **可重算派生缓存**（允许整表重算，防笛卡尔无界增长）；
+  // evaluation = 工作记忆真源域（append + supersede，同 delivery）。均禁入 store.recent()/deriveMood/注入指纹。
+  `CREATE TABLE IF NOT EXISTS entity (
+     id TEXT PRIMARY KEY,
+     kind TEXT NOT NULL,
+     name TEXT NOT NULL,
+     aliases_json TEXT NOT NULL DEFAULT '[]',
+     importance INTEGER NOT NULL DEFAULT 0,
+     first_seen_ms INTEGER NOT NULL,
+     last_seen_ms INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS entity_kind ON entity (kind, last_seen_ms)`,
+  `CREATE INDEX IF NOT EXISTS entity_name ON entity (name)`,
+  `CREATE TABLE IF NOT EXISTS delivery_entity (
+     delivery_id TEXT NOT NULL,
+     entity_id TEXT NOT NULL,
+     role TEXT NOT NULL,
+     ts_ms INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS de_entity ON delivery_entity (entity_id, ts_ms)`,
+  `CREATE INDEX IF NOT EXISTS de_delivery ON delivery_entity (delivery_id)`,
+  `CREATE TABLE IF NOT EXISTS entity_edge (
+     id TEXT PRIMARY KEY,
+     from_entity TEXT NOT NULL,
+     to_entity TEXT NOT NULL,
+     relation TEXT NOT NULL,
+     origin TEXT NOT NULL DEFAULT 'heuristic',
+     evidence_json TEXT NOT NULL DEFAULT '[]',
+     confidence INTEGER NOT NULL DEFAULT 500,
+     created_at INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS entity_edge_from ON entity_edge (from_entity)`,
+  `CREATE INDEX IF NOT EXISTS entity_edge_to ON entity_edge (to_entity)`,
+  `CREATE TABLE IF NOT EXISTS task (
+     id TEXT PRIMARY KEY,
+     title TEXT NOT NULL,
+     status TEXT NOT NULL DEFAULT 'open',
+     next_step TEXT,
+     workspace_id TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS task_workspace_status ON task (workspace_id, status, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS task_delivery (
+     task_id TEXT NOT NULL,
+     delivery_id TEXT NOT NULL,
+     origin TEXT NOT NULL DEFAULT 'heuristic',
+     superseded_at INTEGER,
+     created_at INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS td_task ON task_delivery (task_id, superseded_at)`,
+  `CREATE INDEX IF NOT EXISTS td_delivery ON task_delivery (delivery_id)`,
+  `CREATE TABLE IF NOT EXISTS evaluation (
+     id TEXT PRIMARY KEY,
+     delivery_id TEXT,
+     kind TEXT NOT NULL,
+     anchor_mode TEXT NOT NULL,
+     anchor_confidence INTEGER NOT NULL DEFAULT 0,
+     user_line TEXT,
+     source_trust TEXT NOT NULL,
+     session_id TEXT NOT NULL,
+     workspace_id TEXT NOT NULL,
+     ts_ms INTEGER NOT NULL,
+     superseded_by TEXT,
+     created_at INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS eval_delivery ON evaluation (delivery_id)`,
+  `CREATE INDEX IF NOT EXISTS eval_ts ON evaluation (ts_ms)`,
+  `CREATE INDEX IF NOT EXISTS eval_workspace_ts ON evaluation (workspace_id, ts_ms)`,
+  `CREATE INDEX IF NOT EXISTS eval_superseded ON evaluation (superseded_by)`,
 ];
+
+/**
+ * v7 新增语句子集（迁移链步 6→7 执行的就是这份）：从主数组里筛，不抄第二份字面量，
+ * 单源仍是 `SCHEMA_STATEMENTS`。
+ */
+export const V7_TXN_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
+  /txn_entry|txn_cues/u.test(statement),
+);
+
+/**
+ * v8 新增语句子集（迁移链步 7→8 执行）：六张本体表的建表+索引。单源仍是主数组，不抄第二份。
+ * 注意：txn_entry 的三个新列不在这里（CREATE 语句带新列只对全新库生效），老库靠 migrate 的 addColumnIfMissing。
+ */
+export const V8_ONTOLOGY_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
+  /entity|task|evaluation/u.test(statement),
+);
 
 /** `meta` 里的 schema 版本键。 */
 export const META_KEY_SCHEMA_VERSION = 'db_schema_version';

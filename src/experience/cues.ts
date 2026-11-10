@@ -16,8 +16,9 @@ import type { ExperienceFact } from '../types.js';
 
 export const CUE_LIMITS = { maxPerEntry: 8, maxLen: 40 } as const;
 
-/** 归一化：小写、裁长、去空。空串直接丢。 */
-function normalize(token: string): string {
+/** 归一化：小写、裁长、去空。空串直接丢。导出供写入侧与查询侧共用——同一口径只能有一份
+ * （口径不一致就等于查不到自己写进去的东西）。 */
+export function normalizeCue(token: string): string {
   const clean = token.trim().toLowerCase();
   if (clean === '') return '';
   return clean.length > CUE_LIMITS.maxLen ? clean.slice(0, CUE_LIMITS.maxLen) : clean;
@@ -42,7 +43,7 @@ export function extractCues(fact: ExperienceFact): string[] {
   const tokens: string[] = [];
   if (fact.tool) tokens.push(fact.tool);
   for (const pathBase of fact.pathBases ?? []) tokens.push(baseName(pathBase));
-  const cleaned = tokens.map(normalize).filter((token) => token !== '');
+  const cleaned = tokens.map(normalizeCue).filter((token) => token !== '');
   return [...new Set(cleaned)].slice(0, CUE_LIMITS.maxPerEntry);
 }
 
@@ -53,7 +54,7 @@ const SPLIT_CHARS = /[\s,，。、；;:：()[\]{}<>/\\'"`]+/u;
 export function queryTokens(query: string, limit = 8): string[] {
   const parts = query
     .split(SPLIT_CHARS)
-    .map(normalize)
+    .map(normalizeCue)
     .filter((token) => token !== '' && token.length >= 2);
   return [...new Set(parts)].slice(0, limit);
 }

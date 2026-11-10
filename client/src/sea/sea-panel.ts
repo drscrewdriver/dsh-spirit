@@ -26,7 +26,7 @@ import { loadLayoutMode, saveLayoutMode, type SeaLayoutMode } from './sea-layout
  * 外层给视口锚而不是 `height: 100%`：宿主 `main` 面板不给确定高度，百分比链会断、
  * 画布停在半高（姊妹包真机踩过的坑，见 dsh-prime-memory/docs/explorer-ui-entry-pitfalls.md 布局①）。
  */
-const PAGE_STYLE: CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 'calc(100vh - 48px)', background: '#05060b', color: '#cfd6e4' };
+const PAGE_STYLE: CSSProperties = { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 'calc(100vh - 48px)', background: '#05060b', color: '#cfd6e4', colorScheme: 'dark' };
 const BAR_STYLE: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid rgba(120,160,255,.14)' };
 const TITLE_STYLE: CSSProperties = { margin: 0, fontSize: 15, fontWeight: 600, letterSpacing: '.08em', color: '#9fc1ff' };
 const STAT_STYLE: CSSProperties = { fontSize: 12, color: '#8e9ab5' };
@@ -70,6 +70,9 @@ export function SeaPanel(props: SeaPanelProps) {
   const [layoutMode, setLayoutMode] = useState<SeaLayoutMode>(() => loadLayoutMode(storageRef.current));
   const [focusOnly, setFocusOnly] = useState(false);
   const [resetToken, setResetToken] = useState(0);
+  // 数据刷新令牌（v0.5.9）：头部「刷新/⟲」除了重拉星图，还要通知翻阅面按当前视图重取
+  // ——否则重建期间这两个按钮对翻阅/本体面是死的（用户实报）。
+  const [refreshToken, setRefreshToken] = useState(0);
   const [selected, setSelected] = useState<SpiritSeaPoint | null>(null);
   // 四 tab（v0.3.3）：星海=图、人设=卡、翻阅=条目管理面（设置卡检视段搬入处）、做梦=整理 pass
   const [tab, setTab] = useState<'sea' | 'persona' | 'records' | 'dream'>('sea');
@@ -243,8 +246,8 @@ export function SeaPanel(props: SeaPanelProps) {
         copy['sea.hiGlow'],
       ),
       createElement('button', { type: 'button', style: focusOnly ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setFocusOnly((v) => !v) }, copy['sea.focusOnly']),
-      createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => setResetToken((v) => v + 1) }, '⟲'),
-      createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => void load() }, copy['sea.refresh']),
+      createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => { setResetToken((v) => v + 1); setRefreshToken((v) => v + 1); } }, '⟲'),
+      createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => { void load(); setRefreshToken((v) => v + 1); } }, copy['sea.refresh']),
       props.onClose !== undefined ? createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => props.onClose?.() }, copy['sea.close']) : null,
     ),
     error !== null
@@ -265,7 +268,7 @@ export function SeaPanel(props: SeaPanelProps) {
       ? createElement('div', { style: { flex: '1 1 auto', overflowY: 'auto' } }, createElement(SeaPersona, { rpc }))
       : tab === 'records'
         // 翻阅面同样占满主体区：长列表需要确定高度链（布局①同源纪律），不叠画布背板
-        ? createElement('div', { style: { flex: '1 1 auto', minHeight: 0, display: 'flex' } }, createElement(SeaRecords, { rpc }))
+        ? createElement('div', { style: { flex: '1 1 auto', minHeight: 0, display: 'flex' } }, createElement(SeaRecords, { rpc, refreshToken }))
         : tab === 'dream'
           ? createElement('div', { style: { flex: '1 1 auto', overflowY: 'auto' } }, createElement(SeaDream, { rpc }))
           : createElement(
@@ -314,12 +317,12 @@ export function SeaPanel(props: SeaPanelProps) {
             createElement(
               'div',
               { style: { ...MUTED_STYLE, marginTop: 8 } },
-              `${TRIGGER_LABEL[selected.trigger] !== undefined ? copy[TRIGGER_LABEL[selected.trigger]] : selected.trigger} · ${copy['sea.detailTurn']} ${selected.turnSeq} · ${formatTime(selected.t)}`,
+              `${selected.kind === 'delivery' ? copy['sea.detailDelivery'] : TRIGGER_LABEL[selected.trigger] !== undefined ? copy[TRIGGER_LABEL[selected.trigger]] : selected.trigger} · ${copy['sea.detailTurn']} ${selected.turnSeq} · ${formatTime(selected.t)}`,
             ),
             createElement(
               'div',
               { style: { ...MUTED_STYLE } },
-              `${copy['sea.detailSource']}：${selected.lane === 'drsc' ? copy['sea.sourceDrsc'] : copy['sea.sourceLive']} · ${copy['sea.detailSalience']} ${selected.salience}/2 · ${copy['sea.detailFreshness']} ${Math.round(selected.freshness * 100)}% · ${copy['sea.fadeTiers']} ${selected.tier}`,
+              `${copy['sea.detailSource']}：${selected.lane === 'drsc' ? copy['sea.sourceDrsc'] : selected.lane === 'onto' ? copy['sea.sourceOnto'] : copy['sea.sourceLive']} · ${copy['sea.detailSalience']} ${selected.salience}/2 · ${copy['sea.detailFreshness']} ${Math.round(selected.freshness * 100)}% · ${copy['sea.fadeTiers']} ${selected.tier}`,
             ),
             createElement(
               'div',
@@ -329,9 +332,12 @@ export function SeaPanel(props: SeaPanelProps) {
             createElement(
               'div',
               { style: { display: 'flex', gap: 8, marginTop: 10 } },
-              selected.feedback !== null && selected.feedback > 0
-                ? createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => mark(selected.id, -1) }, copy['sea.unmark'])
-                : createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => mark(selected.id, 5) }, copy['sea.markImportant']),
+              // ★ 反馈只写情绪轨（experience-feedback 的 id 必须是体验条目）；交付点只读
+              selected.kind === 'delivery'
+                ? null
+                : selected.feedback !== null && selected.feedback > 0
+                  ? createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => mark(selected.id, -1) }, copy['sea.unmark'])
+                  : createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => mark(selected.id, 5) }, copy['sea.markImportant']),
             ),
           ),
         createElement('h4', { style: { margin: '16px 0 0', fontSize: 13, color: '#9fc1ff' } }, copy['panel.recent']),

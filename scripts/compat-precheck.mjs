@@ -7,8 +7,9 @@
  *    **只写一处 = 在某条线上静默装不上或被拒载**，所以 peers 与 engines.dsh 都要过。
  * 2. 版本串是人手维护的，漏一条或多一条不会有任何地方报错——只有这条脚本会。
  *
- * 故意写得严格：`<0.2.0-0` 这类"看起来覆盖全部"的宽 range 会被判红，
- * 因为它会连带把未实测的老线承诺出去（比窄而真更坏）。
+ * 声明策略（宽 range 也要有界）：允许 `>=0.2.0-rc.1 <0.3.0` 这类紧凑区间省掉逐线枚举，
+ * 但 range 必须整体落在 0.2.x——不得把未实测的 0.1.x/0.3.0+ 一并承诺出去，也不得漏掉
+ * 0.2.0 起点。越界的"看着覆盖全部"宽 range 仍判红（比窄而真更坏这条没变）。
  */
 
 import { readFileSync } from 'node:fs';
@@ -27,8 +28,17 @@ export const TARGET_HOSTS = [
   '0.2.1-rc.5',
 ];
 
-/** 只有已实测的 0.2.x 线可以承诺；老线缺 producer-owned kind 与 systemPrompt.section。 */
-const ALLOWED_PREFIX = '0.2.';
+/** 只允许承诺 0.2.x：range 必须含 0.2.0 起点、且不得命中下列界外探针（未实测线）。 */
+const IN_SCOPE_PROBE = '0.2.0';
+const OUT_OF_SCOPE_PROBES = ['0.1.9', '0.3.0', '0.4.0'];
+
+/** range 是否整体落在 0.2.x 内（含预发布语义，与宿主裁决口径一致）。 */
+function rangeStaysIn02x(range) {
+  if (!semver.validRange(range)) return false;
+  const opts = { includePrerelease: true };
+  if (!semver.satisfies(IN_SCOPE_PROBE, range, opts)) return false;
+  return OUT_OF_SCOPE_PROBES.every((probe) => !semver.satisfies(probe, range, opts));
+}
 
 export function readManifests(cwd = process.cwd()) {
   const pkg = JSON.parse(readFileSync(new URL('package.json', `file://${cwd}/`), 'utf8'));
@@ -50,8 +60,14 @@ export function checkCompat(pkg, manifest, hosts = TARGET_HOSTS) {
   if (manifestEnginesDsh !== enginesDsh) problems.push('engines.dsh 两文件不同串（部署面按逐字串裁决）');
   if (pkg?.version !== manifest?.version) problems.push(`版本不同串：package.json ${pkg?.version} vs dsh.plugin.json ${manifest?.version}`);
 
-  for (const line of String(enginesDsh ?? '').split('||').map((s) => s.trim()).filter(Boolean)) {
-    if (!line.startsWith(ALLOWED_PREFIX)) problems.push(`engines.dsh 含未实测的宽声明：${line}（只允许承诺 ${ALLOWED_PREFIX}x 已验证线）`);
+  // 界约束取代旧的逐段前缀检查：允许 `>=0.2.0-rc.1 <0.3.0` 这类宽 range，只要整体不溢出 0.2.x。
+  if (!rangeStaysIn02x(String(enginesDsh ?? ''))) {
+    problems.push(`engines.dsh 越界：range 必须整体落在 0.2.x（含 ${IN_SCOPE_PROBE}、不得命中 ${OUT_OF_SCOPE_PROBES.join('/')}）：${enginesDsh}`);
+  }
+  for (const [name, range] of Object.entries(peers)) {
+    if (name.startsWith('@deepseek-ai/dsh') && !rangeStaysIn02x(String(range))) {
+      problems.push(`peer ${name} 的 range 越界（必须整体落在 0.2.x 内）：${range}`);
+    }
   }
 
   for (const host of hosts) {

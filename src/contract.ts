@@ -87,6 +87,21 @@ export const SPIRIT_OPS = [
   'sleep-report',
   'topics-get',
   'insight-resolve',
+  // v0.4 事务轨查询面（Phase 5）：时间线（"上周做了什么"）与资源反查（"这件事还牵涉什么"），只读工作记忆
+  'timeline-query',
+  'resource-lookup',
+  // v0.4 长觉模型选择（面板）：枚举宿主供应商/模型 + 当前路由 + 运行时覆盖写
+  'distill-models',
+  'distill-model-list',
+  'distill-model-set',
+  // v0.4 本体层查询（Phase D）：评价列表（含 unresolved 悬置池）
+  'evaluation-list',
+  'entity-graph',
+  'entity-lookup',
+  'task-list',
+  'task-detail',
+  'ontology-backfill-run',
+  'ontology-backfill-status',
 ] as const;
 export type SpiritOp = (typeof SPIRIT_OPS)[number];
 
@@ -147,6 +162,8 @@ export interface SpiritSettingsRequest {
   dreamEnabled?: boolean;
   /** 长觉热更开关（v0.3.5）：面板一键开；部署面总闸关时它开了也不跑（双闸取与）。 */
   distillEnabled?: boolean;
+  /** 本体层热更开关（v0.5）：面板「本体」开关即此键；=本体采集/抽取总闸。 */
+  ontologyEnabled?: boolean;
 }
 
 export interface SpiritSettingsView {
@@ -155,6 +172,8 @@ export interface SpiritSettingsView {
   feedbackEnabled: boolean;
   dreamEnabled: boolean;
   distillEnabled: boolean;
+  /** 本体层总闸（effective）：面板「本体」开关的真实回显。 */
+  ontologyEnabled: boolean;
   /** 热更通道是否真能落盘（宿主 volatile 不可写时为 false，面板要如实标重启生效）。 */
   hotUpdatable: boolean;
 }
@@ -195,6 +214,21 @@ export interface SpiritRequestMap {
   'sleep-report': Record<string, never>;
   'topics-get': Record<string, never>;
   'insight-resolve': SpiritInsightResolveRequest;
+  // v0.4 事务轨查询面（Phase 5）
+  'timeline-query': SpiritTimelineRequest;
+  'resource-lookup': SpiritResourceRequest;
+  // v0.4 长觉模型选择
+  'distill-models': Record<string, never>;
+  'distill-model-list': SpiritDistillModelListRequest;
+  'distill-model-set': SpiritDistillModelSetRequest;
+  // v0.4 本体层查询
+  'evaluation-list': SpiritEvaluationListRequest;
+  'entity-graph': SpiritEntityGraphRequest;
+  'entity-lookup': SpiritEntityLookupRequest;
+  'task-list': SpiritTaskListRequest;
+  'task-detail': SpiritTaskDetailRequest;
+  'ontology-backfill-run': SpiritBackfillRunRequest;
+  'ontology-backfill-status': Record<string, never>;
 }
 
 export interface SpiritResponseMap {
@@ -230,6 +264,21 @@ export interface SpiritResponseMap {
   'sleep-report': { report: SpiritSleepReport | null };
   'topics-get': { topics: Array<{ id: string; name: string; origin: string; entries: number; insights: number; insightRows: SpiritInsightView[] }>; conflicts: SpiritInsightView[] };
   'insight-resolve': { resolved: boolean };
+  // v0.4 事务轨查询面（Phase 5）
+  'timeline-query': SpiritTimelineResult;
+  'resource-lookup': SpiritResourceResult;
+  // v0.4 长觉模型选择
+  'distill-models': SpiritDistillRouteView;
+  'distill-model-list': SpiritDistillModelListResult;
+  'distill-model-set': SpiritDistillModelSetResult;
+  // v0.4 本体层查询
+  'evaluation-list': SpiritEvaluationListResult;
+  'entity-graph': SpiritEntityGraphResult;
+  'entity-lookup': SpiritEntityLookupResult;
+  'task-list': SpiritTaskListResult;
+  'task-detail': SpiritTaskDetailResult;
+  'ontology-backfill-run': SpiritBackfillRunResult;
+  'ontology-backfill-status': SpiritBackfillStatus;
 }
 
 /** 端点字面量类型（client 与 host 白名单共用）。 */
@@ -345,14 +394,23 @@ export type SpiritSeaTier = 'full' | 'gist' | 'held';
  * 点的坐标（x/y/z）不在契约里：语义（归属轴 `axis`、老化 `freshness`）由 host 算，
  * 几何由 client 的 layout 算——换主题/换布局不需要重取数据。
  */
+/** 星海投影层 lane（v0.6）：写侧 Lane 词表不变，onto 只存在于读侧投影（交付点）。 */
+export type SpiritSeaLane = Lane | 'onto';
+
 export interface SpiritSeaPoint {
   id: string;
   /** 毫秒时间戳；只用于布局与详情，不进任何对外文本。 */
   t: number;
   sessionId: string;
   turnSeq: number;
+  /**
+   * 点源（v0.6）：情绪轨体验条目 vs 本体轨交付。缺省 experience（旧数据不破）；
+   * delivery 点只读展示——★反馈仍只对 experience 有效（写词表不动）。
+   */
+  kind?: 'experience' | 'delivery';
   trigger: TriggerKind;
-  lane: Lane;
+  /** 投影层 lane：写侧词表（live/drsc）+ 本体交付的只读投影值 onto。 */
+  lane: SpiritSeaLane;
   /** 体验句（已按 `SEA_POINT_TEXT_MAX` 截断）。 */
   text: string;
   /** 一句话残句（v1 旧行没有 ⇒ null）。 */
@@ -667,6 +725,205 @@ export interface SpiritInsightResolveRequest {
   loserId: string;
 }
 
+// ─────────────────────────────────────────────────────────── 事务轨查询面（Phase 5）
+
+/**
+ * 事务行投影（timeline-query / resource-lookup 共用）：工作记忆的可读形状。
+ * 与注入卡不同，本面是只读面板——`summary` 可随详情下发（面板不是 system prompt 注入路），
+ * 但仍只取语义安全子集（topics/cues 都是 basename/主题，不带目录）。
+ */
+export interface SpiritTxnRow {
+  id: string;
+  sessionId: string;
+  workspaceId: string;
+  tsMs: number;
+  turnSeq: number;
+  cardLine: string;
+  gistKey?: string;
+  summary?: string;
+  sourceTrust: string;
+  topics: string[];
+  cues: string[];
+}
+
+export interface SpiritTimelineRequest {
+  /** 显式区间（含两端，ms）；from/to 同时给定时优先，忽略 days。 */
+  from?: number;
+  to?: number;
+  /** 近 N 天（服务端按当前时刻算 from）；缺省 7，钳 [1,365]。 */
+  days?: number;
+  workspaceId?: string;
+  limit?: number;
+}
+
+export interface SpiritTimelineResult {
+  rows: SpiritTxnRow[];
+  from: number;
+  to: number;
+}
+
+export interface SpiritResourceRequest {
+  /** 资源键（basename/人名/工具名）；服务端按写入侧同口径归一后**等值**反查。 */
+  cue: string;
+  limit?: number;
+}
+
+export interface SpiritResourceResult {
+  hits: Array<{ row: SpiritTxnRow; matchedCue: string; matchedKind: string }>;
+}
+
+// ─────────────────────────────────────────────────────────── 长觉模型选择（面板）
+
+/**
+ * 当前蒸馏路由视图（distill-models 返回）：优先级 部署面 pin > 运行时覆盖 > 宿主默认。
+ * `effective` 为本次真会用到的路由；三者都拿不到⇒ null（fail-closed，长觉会拒蒸）。
+ */
+export interface SpiritDistillRouteView {
+  effective: { provider: string; model: string; source: 'deployPinned' | 'runtimeOverride' | 'hostDefault' } | null;
+  /** 部署面 cfg.distill.provider+model 双齐 ⇒ true（此时选择器应禁用，pin 赢了）。 */
+  pinned: boolean;
+  runtimeOverride: { provider: string; model: string } | null;
+  hostDefault: { provider: string; model: string } | null;
+  /** 宿主供应商目录（listProviders）；枚举面缺席⇒空数组且 enumerationSupported=false。 */
+  providers: Array<{ id: string; name: string }>;
+  /** 宿主 llm 是否暴露 listProviders/listModels（老宿主线可能无）。 */
+  enumerationSupported: boolean;
+}
+
+export interface SpiritDistillModelListRequest {
+  provider: string;
+}
+
+export interface SpiritDistillModelListResult {
+  provider: string;
+  models: Array<{ id: string; name: string }>;
+}
+
+/** 写运行时覆盖：给 provider+model ⇒ 设覆盖；clear=true ⇒ 清除回宿主默认。 */
+export interface SpiritDistillModelSetRequest {
+  provider?: string;
+  model?: string;
+  clear?: boolean;
+}
+
+export interface SpiritDistillModelSetResult {
+  ok: boolean;
+  /** 拒写原因：pinned（部署面锁路）/ half-config（provider+model 不成对）/ degraded（库不可用存不了）。 */
+  reason?: 'pinned' | 'half-config' | 'degraded';
+  /** 写后（无论成败）的最新路由视图，面板据此一次重绘。 */
+  route: SpiritDistillRouteView;
+}
+
+// ─────────────────────────────────────────────────────────── 本体层查询（Phase D）
+
+/** 评价行投影（evaluation-list）：只读面板用；deliveryId=null 即悬置池待人工指认。 */
+export interface SpiritEvaluationRow {
+  id: string;
+  deliveryId: string | null;
+  kind: string;
+  anchorMode: string;
+  anchorConfidence: number;
+  userLine?: string;
+  tsMs: number;
+}
+export interface SpiritEvaluationListRequest {
+  workspaceId?: string;
+  /** 含 unresolved 悬置池（缺省只列已锚定的活跃行）。 */
+  includeUnresolved?: boolean;
+  limit?: number;
+}
+export interface SpiritEvaluationListResult {
+  rows: SpiritEvaluationRow[];
+}
+
+/** 实体图（entity-graph）：按重要度取前 N 实体 + 其间关系边（星海本体层投影）。 */
+export interface SpiritEntityNode {
+  id: string;
+  kind: string;
+  name: string;
+  importance: number;
+}
+export interface SpiritEntityEdgeView {
+  id: string;
+  from: string;
+  to: string;
+  relation: string;
+  confidence: number;
+}
+export interface SpiritEntityGraphRequest {
+  limit?: number;
+  kind?: string;
+  /** 搜索词（v0.6.1）：名字/别名 LIKE 包含匹配；空串=不过滤。 */
+  q?: string;
+}
+export interface SpiritEntityGraphResult {
+  nodes: SpiritEntityNode[];
+  edges: SpiritEntityEdgeView[];
+}
+export interface SpiritEntityLookupRequest {
+  entityId?: string;
+  /** 按实体名等值反查（写入侧同一归一口径）。 */
+  name?: string;
+  workspaceId?: string;
+  limit?: number;
+}
+export interface SpiritEntityLookupResult {
+  entity: SpiritEntityNode | null;
+  deliveries: SpiritTxnRow[];
+}
+export interface SpiritTaskRow {
+  id: string;
+  title: string;
+  status: string;
+  nextStep?: string;
+  updatedAt: number;
+}
+export interface SpiritTaskListRequest {
+  workspaceId: string;
+  status?: string;
+  limit?: number;
+  /** 搜索词（v0.6.1）：任务线标题 LIKE 包含匹配。 */
+  q?: string;
+}
+export interface SpiritTaskListResult {
+  tasks: SpiritTaskRow[];
+}
+export interface SpiritTaskDetailRequest {
+  taskId: string;
+}
+export interface SpiritTaskDetailResult {
+  task: SpiritTaskRow | null;
+  deliveries: SpiritTxnRow[];
+}
+
+/** 历史回填/全记忆重建触发（异步）：立即受理，进度走 ontology-backfill-status 轮询。 */
+export interface SpiritBackfillRunRequest {
+  dryRun?: boolean;
+}
+export interface SpiritBackfillRunResult {
+  accepted: boolean;
+  reason?: 'running' | 'disabled' | 'no-scan';
+}
+
+/**
+ * 全记忆重建进度（轮询面，照长觉 sleep-status 范式）：phase + 批进度计数，面板据此画进度条。
+ * scan 完才知道总量（totalSessions/totalTurns），extracting 阶段按会话累加 done*。
+ */
+export interface SpiritBackfillStatus {
+  running: boolean;
+  phase: 'idle' | 'scanning' | 'extracting' | 'done' | 'failed';
+  dryRun: boolean;
+  totalSessions: number;
+  doneSessions: number;
+  totalTurns: number;
+  doneTurns: number;
+  /** 抽取失败的会话数（不标 done ⇒ 再点重建会续跑它们；done 阶段 >0 时面板提醒）。 */
+  failedSessions: number;
+  lastError: string;
+  startedAt: number;
+  finishedAt: number;
+}
+
 // ─────────────────────────────────────────────────────────── 配置（单源）
 
 /** 配置形状：与 `src/config.ts` 的 schema 一键一对齐。 */
@@ -816,6 +1073,31 @@ export interface SpiritConfig {
     };
   };
   /**
+   * 事务轨（v7）：结构信号 + 意图 bit + 异步批摘要，与情绪轨物理隔离。
+   * 缺省关（灰度）：关时零采集、零建表行、零注入。属**部署面**（不进 live，改动需重启）。
+   */
+  txn: {
+    enabled: boolean;
+    /** 攒够几条信号才出一次批（"12-24 条一批"的口径下限）。 */
+    batchMin: number;
+    /** card_line 的最大字符数（进注入卡的那一行）。 */
+    maxCardLineChars: number;
+    /** summary 的最大字符数（只进翻阅/详情/长觉原料；禁入指纹，G15）。 */
+    maxSummaryChars: number;
+    /** 采集链单次超时：对话延迟比"少一条回忆"贵，与 recall.timeoutMs 同族语义。 */
+    collectorTimeoutMs: number;
+  };
+  /**
+   * 本体层（v8）：语义抽取（反馈/轮次总结/实体/任务线程）。缺省关（灰度）：关时零采集零注入零回填。
+   * 属**部署面**（不进 live，改值需重启）。数值子键（batchMin/entityCap 等）随采集器在 Phase B 补。
+   */
+  ontology: {
+    /** 总闸：关 ⇒ OntologyExtractor 不跑、本体表零落库。 */
+    enabled: boolean;
+    /** 历史回填总闸（缺省关）：需显式开 + 一次性动作；前置脱敏/来源过滤/更正通道未齐时不得开。 */
+    backfillEnabled: boolean;
+  };
+  /**
    * 运行时可热更的开关节（整个对象标一次 `.volatile()`，⚠️ 节内不得再标——
    * volatile 嵌套 volatile 会被宿主拒绝）。
    */
@@ -851,6 +1133,8 @@ export interface SpiritLiveSettings {
   dreamEnabled: boolean;
   /** 长觉开关热更（v0.3.5 扁平键：嵌套 volatile 会被宿主拒）。关 ⇒ 定时器空转、sleep-run 拒并指路。 */
   distillEnabled: boolean;
+  /** 本体层热更开关（v0.5）：默认开；关 ⇒ 本体采集/抽取全停（零落库），面板「本体」开关即此键。 */
+  ontologyEnabled: boolean;
 }
 
 /**
@@ -913,6 +1197,19 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
     timeoutMs: 30_000,
     vector: { enabled: false, baseUrl: '', apiKey: '', model: '', dimensions: 0 },
   },
+  txn: {
+    enabled: false,
+    batchMin: 8,
+    maxCardLineChars: 60,
+    maxSummaryChars: 500,
+    collectorTimeoutMs: 30_000,
+  },
+  ontology: {
+    // v0.5：脱敏/来源分级/更正通道三条硬前置已上线，故缺省开（真机可见）；
+    // 关仍可从面板「本体」开关拨掉（live.ontologyEnabled），eff = 本键 ∧ live.ontologyEnabled。
+    enabled: true,
+    backfillEnabled: true,
+  },
   live: {
     enabled: true,
     personaEnabled: true,
@@ -932,7 +1229,11 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
     fadeHalfLifeMs: 5_400_000,
     feedbackEnabled: true,
     dreamEnabled: true,
-    distillEnabled: false,
+    // 长觉热更开关缺省跟随部署面：没在 config.distill.enabled 显式 opt-in 前，eff = false && true 仍关（灰度不变）；
+    // 一旦部署面开了，面板“自动长觉”就是真正的控制线（可拨关），不再被一个面板看不见的默认 false 悄悄堵死。
+    distillEnabled: true,
+    // 本体层热更开关（v0.5）：默认开，面板可见可拨；eff = ontology.enabled(静态) ∧ 本键。
+    ontologyEnabled: true,
   },
 };
 
@@ -970,6 +1271,10 @@ export const SPIRIT_RANGES: Record<string, readonly [number, number]> = {
   'distill.maxOutputTokens': [256, 8_000],
   'distill.timeoutMs': [2_000, 120_000],
   'distill.vector.dimensions': [0, 4096],
+  'txn.batchMin': [1, 24],
+  'txn.maxCardLineChars': [20, 120],
+  'txn.maxSummaryChars': [100, 2_000],
+  'txn.collectorTimeoutMs': [2_000, 120_000],
 };
 
 /** 单轮淡出形态分布（stats/ab 的计数原料；都是整数计数，无对外数值语义）。 */
@@ -984,8 +1289,8 @@ export interface FadeStats {
 
 // ─────────────────────────────────────────────────────────── 版本与文件
 
-/** SQLite schema 版本；跨版本打开明确拒绝，不静默改库（v1→v2 加列、v2→v3 人设两表、v3→v4 主人档案、v4→v5 藏起列与分页索引、v5→v6 长觉阶梯五表，均正向迁移）。 */
-export const SPIRIT_DB_SCHEMA_VERSION = 6;
+/** SQLite schema 版本；跨版本打开明确拒绝，不静默改库（v1→v2 加列、v2→v3 人设两表、v3→v4 主人档案、v4→v5 藏起列与分页索引、v5→v6 长觉阶梯五表、v6→v7 事务轨两张表、v7→v8 本体层（扩 txn_entry + 六表），均正向迁移）。 */
+export const SPIRIT_DB_SCHEMA_VERSION = 8;
 /** `persona.json` 文件形状版本。 */
 export const SPIRIT_PERSONA_FILE_VERSION = 1;
 /** `owner.json` 文件形状版本（db=null 降级面；与 persona 分键，形状互不牵连）。 */
@@ -993,7 +1298,7 @@ export const SPIRIT_OWNER_FILE_VERSION = 1;
 /** `session-modes.json` 文件形状版本。 */
 export const SPIRIT_MODES_FILE_VERSION = 1;
 /** 插件版本（与 package.json / dsh.plugin.json 同串，由门禁核对）。 */
-export const SPIRIT_VERSION = '0.3.0-local.16';
+export const SPIRIT_VERSION = '0.6.1';
 
 
 

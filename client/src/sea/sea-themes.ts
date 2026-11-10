@@ -32,6 +32,13 @@ export const TRIGGER_RGB: Record<TriggerKind, readonly [number, number, number]>
   neutral: [150, 190, 255],
 };
 
+/** 本体交付点专用色（v0.6）：青绿，和情绪轨六档 trigger 色都拉开。 */
+export const DELIVERY_RGB: readonly [number, number, number] = [126, 224, 196];
+/** 点色单源：delivery 走专用色，其余按 trigger 词表（两渲染器共用，不分叉）。 */
+export function pointRgb(point: { kind?: string; trigger: TriggerKind }): readonly [number, number, number] {
+  return point.kind === 'delivery' ? DELIVERY_RGB : TRIGGER_RGB[point.trigger] ?? TRIGGER_RGB.neutral;
+}
+
 /** 三套预设：只差"光"的脾气，不差信息。 */
 export const SEA_THEMES: Record<string, SeaTheme> = {
   starfield: {

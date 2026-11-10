@@ -274,3 +274,44 @@ describe('ExperienceStore.listRecent（窗口读取）', () => {
     expect(store.listRecent(1).map((row) => row.id)).toEqual(['e2']);
   });
 });
+
+describe('本体交付点入图（v0.6：星海与翻阅/本周同一事实面）', () => {
+  const entries = [
+    entryOf({ id: 'e1', tsMs: 100_000 }),
+    entryOf({ id: 'e2', tsMs: 200_000 }),
+  ];
+  const deliveries = [
+    { id: 'dlv-s9/1', tsMs: 150_000, sessionId: 's9', turnSeq: 1, cardLine: '我修好了端口漂移', summary: '按规则固定 tick，不再反复探测' },
+    { id: 'txn-s9/2', tsMs: 151_000, sessionId: 's9', turnSeq: 2, cardLine: '不该出现的步骤行', summary: null },
+  ];
+
+  it('交付点合入且按时间升序；kind/lane/axis 符合投影语义', () => {
+    const graph = buildSeaScene(entries, {
+      now: 200_000, halfLifeMs: 600_000, total: 2, moodLabel: '', degraded: false, window: 10, deliveries,
+    });
+    expect(graph.points.map((p) => p.id)).toEqual(['e1', 'dlv-s9/1', 'txn-s9/2', 'e2']);
+    const d = graph.points.find((p) => p.id === 'dlv-s9/1');
+    expect(d?.kind).toBe('delivery');
+    expect(d?.lane).toBe('onto');
+    expect(d?.axis).toBeGreaterThan(0);
+    expect(d?.feedback).toBeNull();
+    expect(d?.text).toBe('我修好了端口漂移');
+    expect(graph.stats.byLane['onto']).toBe(2);
+    expect(graph.stats.loaded).toBe(4);
+  });
+
+  it('体验点带 kind:experience；无交付入参时图与旧版逐字节同构', () => {
+    const graph = buildSeaScene(entries, { now: 200_000, halfLifeMs: 600_000, total: 2, moodLabel: '', degraded: false, window: 10 });
+    expect(graph.points.every((p) => p.kind === 'experience')).toBe(true);
+    expect(graph.stats.byLane['onto']).toBeUndefined();
+  });
+
+  it('同会话时间邻近：交付与体验能连上时间边（不是孤岛）', () => {
+    const graph = buildSeaScene(entries, {
+      now: 200_000, halfLifeMs: 600_000, total: 2, moodLabel: '', degraded: false, window: 10,
+      deliveries: [{ id: 'dlv-s1/9', tsMs: 200_500, sessionId: 's1', turnSeq: 9, cardLine: '交付贴隔壁', summary: null }],
+    });
+    const linked = graph.edges.some((e) => (e.a === 'e2' && e.b === 'dlv-s1/9') || (e.b === 'e2' && e.a === 'dlv-s1/9'));
+    expect(linked, '时间邻居连线应把同段交付挂上图').toBe(true);
+  });
+});

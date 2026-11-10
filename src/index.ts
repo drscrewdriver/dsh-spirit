@@ -41,12 +41,23 @@ import { DreamRunner } from './dream/dream.js';
 import { TopicStore } from './store/topics.js';
 import { InsightStore } from './store/insights.js';
 import { EdgeStore, heuristicEdges } from './store/edges.js';
+import { TxnStore } from './store/transaction.js';
+import { OntologyStore } from './store/ontology.js';
+import { OntologyWatcher } from './ontology/watcher.js';
+import { OntologyExtractor } from './ontology/extractor.js';
+import { BackfillRunner, type BackfillScan } from './ontology/backfill.js';
+import { resolveWorkspaceId } from './ontology/workspace.js';
+import { TransactionWatcher } from './transaction/watcher.js';
+import { TxnCollector } from './transaction/collector.js';
 import { RuminateRunner } from './distill/ruminate.js';
 import { createLlmChannel, type DistillRoute, type LlmChannel, type LlmRuntimeLike } from './distill/llm.js';
+import { readRuntimeRoute, writeRuntimeRoute } from './distill/runtime-route.js';
 import { Spirit } from './spirit.js';
 import { registerPersonaSection } from './hooks/persona-section.js';
 import { registerCardPreStep } from './hooks/card-pre-step.js';
 import { registerCardObserve } from './hooks/card-observe.js';
+import { registerTxnObserve } from './hooks/txn-observe.js';
+import { registerOntologyObserve } from './hooks/ontology-observe.js';
 import { registerSelfNameTool } from './tools/selfname.js';
 import { registerSpiritRpc } from './rpc.js';
 import { SpiritStats } from './stats.js';
@@ -131,6 +142,8 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   const insights = new InsightStore({ db: () => db, logger });
   const edges = new EdgeStore({ db: () => db, logger });
   let llmChannel: LlmChannel | undefined;
+  /** 宿主 llm 运行时引用（供面板枚举供应商/模型；与 llmChannel 分开，stream 缺席时枚举面仍可用）。 */
+  let llmRuntime: LlmRuntimeLike | undefined;
   const readHostDefault = (): DistillRoute | undefined => {
     // agentDefaultModel 是可选服务，缺失时不得抛错（fail-closed 会拒蒸，不隐式猜模型）
     const svc = getService(ctx, 'agentDefaultModel') as { model?: { provider?: unknown; id?: unknown } } | undefined;
@@ -138,11 +151,47 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     const model = typeof svc?.model?.id === 'string' ? svc.model.id : '';
     return provider !== '' && model !== '' ? { provider, model } : undefined;
   };
-  const sleep = new RuminateRunner({ db: () => db, store, topics, insights, edges, channel: () => llmChannel, defaultModel: readHostDefault, cfg: eff, logger });
+  /** 蒸馏默认路由：运行时覆盖（面板选的）优先于宿主默认。配合 resolveDistillRoute 的“cfg.pin > defaultModel”形成 pin>覆盖>默认 三级。 */
+  const distillDefaultModel = (): DistillRoute | undefined => readRuntimeRoute(db) ?? readHostDefault();
+  const sleep = new RuminateRunner({
+    db: () => db,
+    store,
+    topics,
+    insights,
+    edges,
+    channel: () => llmChannel,
+    defaultModel: distillDefaultModel,
+    cfg: eff,
+    logger,
+    // 事务轨混喂（Phase 4）：card_line 当归纳背景。惰性闭包——构造时 txnStore 尚未建（下一行），
+    // 但只在长觉 run 时调用，届时已就绪。关轨 ⇒ 空数组（长觉照旧只吃体验条目）。
+    recentTxnForPrompt: () => (eff().txn.enabled ? txnStore.listRecent(12).map((t) => t.cardLine) : []),
+  });
+  // 事务轨（Phase 3）：与情绪轨并行的第二条线。采集是旁路（见 hooks/txn-observe.ts），跑模型只由
+  // 攒批触发——绝不进 pre-step 串行链，也绝不每轮同步调用；关时整条休眠（零落库）。
+  // 路由单源：txn 节没有自己的 provider/model 键，走同一条 distill 路由（照 collector 头注口径）。
+  const txnStore = new TxnStore({ db: () => db, logger });
+  // 本体层（Phase B）：evaluation 存储（tier1 反馈/互动）；entity/task/relation 读写随 Phase D 补。
+  const ontologyStore = new OntologyStore({ db: () => db, logger });
+  const ontologyWatcher = new OntologyWatcher();
+  const ontologyExtractor = new OntologyExtractor({ db: () => db, txnStore, store: ontologyStore, channel: () => llmChannel, defaultModel: distillDefaultModel, cfg: eff, logger });
+  // 历史回填（Phase E）：扫既有会话经 DRSC API（不直读其 db）；无 DRSC ⇒ scan undefined ⇒ 回填拒。
+  const backfillRunner = new BackfillRunner({
+    db: () => db,
+    scan: (): BackfillScan | undefined => (client === undefined ? undefined : { sessions: (offset, limit) => client.listSessions(offset, limit), sessionAll: (sessionId) => client.sessionAll(sessionId) }),
+    extractor: ontologyExtractor,
+    cfg: eff,
+    logger,
+  });
+  const txnWatcher = new TransactionWatcher();
+  const txnCollector = new TxnCollector({ db: () => db, store: txnStore, channel: () => llmChannel, defaultModel: distillDefaultModel, cfg: eff, logger });
   // ⚠️ 域注入不是顶层 inject：没 llm 服务的宿主线（tui/headless）上顶层声明会把整插件挂死
   ctx.inject(['llm'], (scope) => {
     const llm = scope.get('llm') as LlmRuntimeLike | undefined;
-    if (llm === undefined || typeof llm.stream !== 'function') return;
+    if (llm === undefined) return;
+    // 先存运行时引用：listProviders/listModels 与 stream 是不同能力，stream 缺席不该抹掉枚举面
+    llmRuntime = llm;
+    if (typeof llm.stream !== 'function') return;
     llmChannel = createLlmChannel({ llm: () => llm, defaultModel: readHostDefault, logger });
   });
 
@@ -157,6 +206,25 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
       history: { store, ...(client ? { client } : {}), ...(probe ? { probe } : {}) },
       logger,
       recentEntries: (sessionId, k) => store.recent(sessionId, k),
+      // 事务轨注入面（Phase 4）：关轨 ⇒ undefined（卡不带事务段、指纹不变，零副作用）；
+      // 开轨只读最近一条 card_line（绝不读 summary——那是衍生物，禁入注入）。
+      recentTxnCardLine: (sessionId) => (eff().txn.enabled ? txnStore.listRecent(1, { sessionId, excludeBackfill: true })[0]?.cardLine : undefined),
+      // 本体层注入读面（Phase C）：只给稳定 gist（kind+锁定交付 card_line / 活跃任务行），不含 id/ts/原文；关轨⇒undefined。
+      recentFeedbackLine: (sessionId) => {
+        if (!eff().ontology.enabled) return undefined;
+        const e = ontologyStore.listRecentEvaluations(1, { sessionId, excludeUnresolved: true })[0];
+        if (e === undefined || e.deliveryId === null) return undefined;
+        const label = e.kind === 'positive' ? '认可' : e.kind === 'negative' ? '不满' : e.kind === 'directive' ? '指示' : '追问';
+        const delivery = txnStore.getByIds([e.deliveryId])[0];
+        return delivery !== undefined ? `${label}：${delivery.cardLine}` : label;
+      },
+      recentThreadLine: (workspaceId) => {
+        if (!eff().ontology.enabled) return undefined;
+        const active = ontologyStore.listTasks(workspaceId, { limit: 5 }).find((t) => t.status !== 'done');
+        if (active === undefined) return undefined;
+        const word = active.status === 'progress' ? '进行中' : active.status === 'stalled' ? '卡住' : '刚起';
+        return active.nextStep !== undefined ? `${active.title} · ${word} · 下一步：${active.nextStep}` : `${active.title} · ${word}`;
+      },
       previousEntries: (workspaceId, sessionId, m) => store.previousSessionEntries(workspaceId, sessionId, m),
       // 刀3：新会话首轮带出一行未竟账（过期/无账/关闸 ⇒ undefined，整行不出现）
       ledgerLine: (workspaceId, excludeSessionId, now) =>
@@ -182,6 +250,12 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
 
   registerPersonaSection(ctx, { personas, owner: ownerStore, eff, caps, logger });
   registerCardObserve(ctx, { spirit, logger });
+  // 事务轨：旁路观察 + 入队，不挂进 pre-step 串行链。关时根本不注册（零副作用纪律）——
+  // 与"关时零落库"的灰度承诺成对：不注册 ⇒ 不采集 ⇒ 不入队 ⇒ countAll() 恒为 0。
+  if (config.txn.enabled) registerTxnObserve(ctx, { watcher: txnWatcher, collector: txnCollector, cfg: eff, logger });
+  // 本体层反馈捕获（tier1）：旁路、不跑 LLM、确定性。关时根本不注册（零副作用纪律）——
+  // 不注册 ⇒ 不落 evaluation ⇒ countEvaluations() 恒 0。
+  if (config.ontology.enabled) registerOntologyObserve(ctx, { store: ontologyStore, txnStore, watcher: ontologyWatcher, extractor: ontologyExtractor, cfg: eff, logger, resolveWorkspace: (sessionId, candidate) => resolveWorkspaceId(db, sessionId, candidate) });
   // 自称工具（v0.3.4）：模型可自己增删自称列表（人设面唯一对模型开放的写字段）；
   // 部署总闸关 ⇒ 根本不注册（关闸时模型看不见这个工具，零副作用纪律）。
   if (config.enabled) registerSelfNameTool(ctx, { personas, logger });
@@ -198,6 +272,41 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     owner: { store: ownerStore, sync: ownerSync },
     dream,
     ladder: { sleep, topics, insights, edges },
+    // 事务轨查询面（Phase 5）：只读 store，始终注入（关轨时表为空 ⇒ 返回空数组，非 unavailable）。
+    txn: txnStore,
+    // 本体层查询面（Phase D）：evaluation-list 只读；始终注入（关时表空⇒空数组）。
+    ontology: ontologyStore,
+    // 历史回填触发面（Phase E）：ontology-backfill-run 用；始终注入（闸在 runner 内现判）。
+    backfill: backfillRunner,
+    // 长觉模型选择面（面板切蒸馏模型）：三级路由 + 宿主枚举。db 每轮现读（降级面每轮现判）。
+    distillRoute: {
+      deployPin: () => {
+        const p = eff().distill.provider.trim();
+        const m = eff().distill.model.trim();
+        return p !== '' && m !== '' ? { provider: p, model: m } : null;
+      },
+      runtimeOverride: () => readRuntimeRoute(db) ?? null,
+      hostDefault: () => readHostDefault() ?? null,
+      setRuntimeOverride: (route) => writeRuntimeRoute(db, route),
+      providers: () => (typeof llmRuntime?.listProviders === 'function' ? llmRuntime.listProviders() : []),
+      models: async (provider) => {
+        if (typeof llmRuntime?.listModels !== 'function') return [];
+        const lm = llmRuntime.listModels.bind(llmRuntime);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const list = await Promise.race([
+            lm(provider),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error('模型列表查询超时')), 8_000);
+            }),
+          ]);
+          return list.map((m) => ({ id: m.id, name: typeof m.name === 'string' && m.name !== '' ? m.name : m.id }));
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
+      },
+      enumerationSupported: () => typeof llmRuntime?.listProviders === 'function' || typeof llmRuntime?.listModels === 'function',
+    },
     logger,
     // config.live 就是 volatile ref（带 .get()，新宿主还带 .update()）；原样递出去，不预先解包
     liveRaw: () => config.live as unknown as { get(): SpiritLiveSettings; update?: (patch: Partial<SpiritLiveSettings>) => unknown },

@@ -56,4 +56,30 @@ describe('契约 op ⇄ 路由白名单', () => {
       expect(SPIRIT_OPS).toContain(op);
     }
   });
+
+  it('v0.4 事务轨查询面两端点在契约里（时间线 + 资源反查）', () => {
+    for (const op of ['timeline-query', 'resource-lookup'] as const) {
+      expect(SPIRIT_OPS).toContain(op);
+    }
+  });
+
+  it('v0.4 长觉模型选择三端点在契约里（读视图 + 列模型 + 写覆盖）', () => {
+    for (const op of ['distill-models', 'distill-model-list', 'distill-model-set'] as const) {
+      expect(SPIRIT_OPS).toContain(op);
+    }
+  });
+
+  it('v0.4 本体层查询端点在契约里（evaluation-list）', () => {
+    expect(SPIRIT_OPS).toContain('evaluation-list');
+  });
+
+  it('v0.4 本体层图/任务查询四端点在契约里（entity-graph/entity-lookup/task-list/task-detail）', () => {
+    for (const op of ['entity-graph', 'entity-lookup', 'task-list', 'task-detail'] as const) {
+      expect(SPIRIT_OPS).toContain(op);
+    }
+  });
+
+  it('v0.4 历史回填触发端点在契约里（ontology-backfill-run）', () => {
+    expect(SPIRIT_OPS).toContain('ontology-backfill-run');
+  });
 });

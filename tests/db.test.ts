@@ -103,10 +103,10 @@ describe('openSpiritDb', () => {
     again.db.close();
   });
 
-  it('planMigration：v2→v6 登记在链上（缺登记就是链断、老库拒读）；当前版自身零步', () => {
+  it('planMigration：v2→v7 登记在链上（缺登记就是链断、老库拒读）；当前版自身零步', () => {
     const up = planMigration(2);
     expect(up.ok).toBe(true);
-    if (up.ok) expect(up.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['2→3', '3→4', '4→5', '5→6']);
+    if (up.ok) expect(up.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['2→3', '3→4', '4→5', '5→6', '6→7', '7→8']);
     const same = planMigration(SPIRIT_DB_SCHEMA_VERSION);
     expect(same.ok).toBe(true);
     if (same.ok) expect(same.steps).toHaveLength(0);
@@ -138,6 +138,53 @@ describe('openSpiritDb', () => {
     expect(tablesOf(again.db)).toContain('owner_profile');
     expect(readStoredVersion(again.db)).toBe(SPIRIT_DB_SCHEMA_VERSION);
     expect((again.db.prepare(`SELECT revision FROM persona_current WHERE singleton = 1`).get() as { revision: number }).revision).toBe(3);
+    again.db.close();
+  });
+
+  it('v6 旧库重开 ⇒ 正向迁移到 v7：txn_entry / txn_cues 建出、meta 回写 7、老数据不丢（灰度承诺：老库打开不报错）', () => {
+    const made = openSpiritDb(dir);
+    if (!made.ok) throw new Error('应打开成功');
+    made.db.prepare(
+      `INSERT INTO experience (id, session_id, workspace_id, turn_seq, ts_ms, trigger, notice, reaction, text, fact_json, lane, persona_revision, updated_at, salience) VALUES ('e1','s1','w1',1,1000,'neutral','task_progress','none','旧行','{}','live',1,1000,0)`,
+    ).run();
+    // 手工退回 v6 形状：删掉 v7 的两张表 + 版本号改 6
+    made.db.exec('DROP TABLE txn_entry');
+    made.db.exec('DROP TABLE txn_cues');
+    made.db.prepare(`UPDATE meta SET value = ? WHERE key = ?`).run('6', META_KEY_SCHEMA_VERSION);
+    made.db.close();
+
+    const again = openSpiritDb(dir);
+    if (!again.ok) throw new Error('v6 库应能正向迁移打开');
+    const names = tablesOf(again.db);
+    for (const expected of ['txn_entry', 'txn_cues', 'txn_ts', 'txn_workspace_ts', 'txn_topic', 'txn_cue_value']) {
+      expect(names, expected).toContain(expected);
+    }
+    expect(readStoredVersion(again.db)).toBe(SPIRIT_DB_SCHEMA_VERSION);
+    expect((again.db.prepare(`SELECT COUNT(*) AS n FROM experience`).get() as { n: number }).n).toBe(1);
+    again.db.close();
+  });
+
+  it('v7 旧库重开 ⇒ 正向迁移到 v8：六张本体表建出、txn_entry delivery 列齐、meta 回写 8、老数据不丢', () => {
+    const made = openSpiritDb(dir);
+    if (!made.ok) throw new Error('应打开成功');
+    made.db.prepare(
+      `INSERT INTO experience (id, session_id, workspace_id, turn_seq, ts_ms, trigger, notice, reaction, text, fact_json, lane, persona_revision, updated_at, salience) VALUES ('e8','s1','w1',1,1000,'neutral','task_progress','none','旧行','{}','live',1,1000,0)`,
+    ).run();
+    // 手工退回 v7 形状：删掉 v8 的六张本体表 + 版本号改 7（txn_entry 新列留着不影响，addColumnIfMissing 幂等）。
+    for (const t of ['delivery_entity', 'entity_edge', 'task_delivery', 'evaluation', 'entity', 'task']) made.db.exec(`DROP TABLE ${t}`);
+    made.db.prepare(`UPDATE meta SET value = ? WHERE key = ?`).run('7', META_KEY_SCHEMA_VERSION);
+    made.db.close();
+
+    const again = openSpiritDb(dir);
+    if (!again.ok) throw new Error('v7 库应能正向迁移打开');
+    const names = tablesOf(again.db);
+    for (const expected of ['entity', 'delivery_entity', 'entity_edge', 'task', 'task_delivery', 'evaluation']) {
+      expect(names, expected).toContain(expected);
+    }
+    const cols = new Set((again.db.prepare(`PRAGMA table_info(txn_entry)`).all() as Array<{ name?: string }>).map((r) => r.name ?? ''));
+    for (const c of ['superseded_by', 'salience_tier', 'turn_start_ms', 'turn_end_ms']) expect(cols, c).toContain(c);
+    expect(readStoredVersion(again.db)).toBe(SPIRIT_DB_SCHEMA_VERSION);
+    expect((again.db.prepare(`SELECT COUNT(*) AS n FROM experience`).get() as { n: number }).n).toBe(1);
     again.db.close();
   });
 
@@ -282,11 +329,11 @@ describe('planMigration', () => {
     expect(planMigration(SPIRIT_DB_SCHEMA_VERSION)).toEqual({ ok: true, steps: [] });
   });
 
-  it('v1 ⇒ 有正向链（1→2→3→4→5→6，带人话 note）', () => {
+  it('v1 ⇒ 有正向链（1→2→3→4→5→6→7→8，带人话 note）', () => {
     const plan = planMigration(1);
     expect(plan.ok).toBe(true);
     if (plan.ok) {
-      expect(plan.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['1→2', '2→3', '3→4', '4→5', '5→6']);
+      expect(plan.steps.map((s) => `${s.from}→${s.to}`)).toEqual(['1→2', '2→3', '3→4', '4→5', '5→6', '6→7', '7→8']);
       expect(plan.steps[0]?.note.length).toBeGreaterThan(0);
     }
   });

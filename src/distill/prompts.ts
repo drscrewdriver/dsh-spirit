@@ -88,9 +88,14 @@ function renderBatch(entries: readonly BatchEntry[]): string {
 }
 
 /** 归纳调用（调用#1）的 user 文本。 */
-export function buildInductionUser(entries: readonly BatchEntry[], knownTopics: readonly string[]): string {
+export function buildInductionUser(entries: readonly BatchEntry[], knownTopics: readonly string[], txnContext: readonly string[] = []): string {
   const topicLine = knownTopics.length > 0 ? `已有主题（优先复用这些名字，别造同义词）：${knownTopics.join('、')}\n\n` : '';
-  return `${topicLine}最近的体验条目：\n${renderBatch(entries)}`;
+  // 工作记忆上下文（事务轨 card_line）：帮模型理解“最近在推什么事”，但它不是体验条目——
+  // 不拥有条目编号，绝不能被当作 evidence/entry_ids 引用（编号校验侧会拒收，双保险）。
+  const txnBlock = txnContext.length > 0
+    ? `近期做过的事（工作记忆，仅供理解上下文，不是可引用的体验条目、不要引用其编号）：\n${txnContext.map((line) => `· ${line}`).join('\n')}\n\n`
+    : '';
+  return `${topicLine}${txnBlock}最近的体验条目：\n${renderBatch(entries)}`;
 }
 
 export const INDUCTION_PROMPT_SYSTEM = INDUCTION_SYSTEM;

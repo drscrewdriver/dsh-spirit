@@ -141,6 +141,42 @@ export const LANES = [LANE_LIVE, LANE_DRSC] as const;
 export type Lane = (typeof LANES)[number];
 
 /**
+ * 来源可信度四档（v7 事务轨三档 + v8 回填档，单源在此）。
+ *
+ * 语义采集必须带来源标记，因为"这条从哪来"决定它能不能进注入卡：
+ * - `user_explicit`：主人显命名过的实体/意图 ⇒ 允许直接进卡
+ * - `structure_signal`：纯结构量派生（basename/计数/词表档位）⇒ 无自由文本，可进卡
+ * - `derived_summary`：LLM 批蒸产物 ⇒ **禁入 recent()/deriveMood/注入指纹**（G15 同族纪律）
+ * - `backfill`：历史会话回填产物 ⇒ **绝不进注入读面**（只进翻阅/timeline/resource-lookup）；
+ *   历史正文未经当时语境校准，回流当前上下文风险高于在线采集，故单列一档并默认排除。
+ * 与注入署名 `SPIRIT_SOURCE_KIND` 解耦：本值只说"从哪来"，不改署名（防冒充用户轮次）。
+ */
+export const TRUST_USER_EXPLICIT = 'user_explicit' as const;
+export const TRUST_DERIVED_SUMMARY = 'derived_summary' as const;
+export const TRUST_STRUCTURE_SIGNAL = 'structure_signal' as const;
+export const TRUST_BACKFILL = 'backfill' as const;
+export const SOURCE_TRUST_VALUES = [TRUST_USER_EXPLICIT, TRUST_DERIVED_SUMMARY, TRUST_STRUCTURE_SIGNAL, TRUST_BACKFILL] as const;
+export type SourceTrust = (typeof SOURCE_TRUST_VALUES)[number];
+
+/**
+ * 本体层词表（v8，单源在此）。
+ * - EvalKind：评价/互动档位。positive/negative/directive 直接复用 matchIntent 的 IntentKind；
+ *   question（追问）为预留位，待后续检测器接入，当前采集不产出。
+ * - AnchorMode：评价锚定方式（显式引用 / 同任务 / 时间邻近 / 悬置）。unresolved = 没找到锚点，不硬绑。
+ */
+export const EVAL_KINDS = ['positive', 'negative', 'directive', 'question'] as const;
+export type EvalKind = (typeof EVAL_KINDS)[number];
+export const ANCHOR_MODES = ['explicit', 'task', 'recency', 'unresolved'] as const;
+export type AnchorMode = (typeof ANCHOR_MODES)[number];
+
+/**
+ * 实体 kind 五词单源（v8 本体层）：比事务轨的 cue 四词（file|person|tool|topic）更细，
+ * 顺带补上旧口径缺口（URL host 无 cue kind → resource 承接）。采集侧只产这五个值，不开放词表。
+ */
+export const ENTITY_KINDS = ['person', 'project', 'module', 'concept', 'resource'] as const;
+export type EntityKind = (typeof ENTITY_KINDS)[number];
+
+/**
  * 因果四词单源（v0.3.5 长觉阶梯）：启发式边与 LLM 投影边的 relation 都往这四处归。
  * 词表是开放的（LLM 可提新关系词，只钳长度不白名单），但这四个是「因果」的规范集：
  * 星海截断优先判定与面板图例都读这一处，不各抄第二份（照姊妹包同一教训）。

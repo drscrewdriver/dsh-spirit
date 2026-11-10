@@ -13,7 +13,7 @@
  */
 import { createElement, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 
-import type { SpiritJournalRow } from '../../../src/contract.js';
+import type { SpiritJournalRow, SpiritTxnRow, SpiritTaskRow, SpiritEntityNode, SpiritEvaluationRow } from '../../../src/contract.js';
 import { copyOf } from '../copy.js';
 import type { RpcFn } from '../rpc.js';
 import { SeaTopics } from './sea-topics.js';
@@ -40,10 +40,12 @@ function formatTime(ms: number): string {
 
 export interface SeaRecordsProps {
   rpc?: RpcFn;
+  /** 头部「刷新/⟲」令牌（v0.5.9）：递增 ⇒ 按当前视图重取（条目/本周/本体）；0 为初值不动作。 */
+  refreshToken?: number;
 }
 
 export function SeaRecords(props: SeaRecordsProps) {
-  const { rpc } = props;
+  const { rpc, refreshToken } = props;
   const copy = copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
 
   const [rows, setRows] = useState<SpiritJournalRow[]>([]);
@@ -62,8 +64,22 @@ export function SeaRecords(props: SeaRecordsProps) {
   const [withGhosts, setWithGhosts] = useState(false);
   const [hiddenView, setHiddenView] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  // 子视图（v0.3.5）：条目流 ⇄ 线索头（主题分区 + 碰撞裁决）——同一 tab 两面，不加第五 tab
-  const [view, setView] = useState<'entries' | 'topics'>('entries');
+  // 子视图（v0.3.5）：条目流 ⇄ 线索头（主题分区 + 碰撞裁决）；v0.4 加本周事务——同一 tab 三面，不加第五 tab
+  const [view, setView] = useState<'entries' | 'topics' | 'week' | 'onto'>('entries');
+  // 本周事务（timeline-query）：切到该面时拉一次，不轮询
+  const [weekRows, setWeekRows] = useState<SpiritTxnRow[]>([]);
+  const [weekBusy, setWeekBusy] = useState(false);
+  // 本体面（v0.5）：任务线 / 实体 / 反馈 三视图 + 点开看做成明细；切到该面时各拉一次
+  const [ontoTab, setOntoTab] = useState<'tasks' | 'entities' | 'feedback'>('tasks');
+  const [ontoTasks, setOntoTasks] = useState<SpiritTaskRow[]>([]);
+  const [ontoEntities, setOntoEntities] = useState<SpiritEntityNode[]>([]);
+  const [ontoEvals, setOntoEvals] = useState<SpiritEvaluationRow[]>([]);
+  const [ontoDetail, setOntoDetail] = useState<{ label: string; rows: SpiritTxnRow[] } | null>(null);
+  const [ontoBusy, setOntoBusy] = useState(false);
+  const [ontoBackfilling, setOntoBackfilling] = useState(false);
+  // 本体面搜索（v0.6.1）：输入与生效值分开（Enter 提交，照条目流口径）
+  const [ontoQueryInput, setOntoQueryInput] = useState('');
+  const [ontoQuery, setOntoQuery] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [editGist, setEditGist] = useState('');
@@ -113,6 +129,118 @@ export function SeaRecords(props: SeaRecordsProps) {
   const reload = (): void => {
     void fetchPage(0, false);
   };
+
+  /** 本周事务（近 7 天，服务端按当前时刻算区间）：只读 timeline-query，动作无关不重取。 */
+  const fetchWeek = useCallback(async () => {
+    if (rpc === undefined) return;
+    const token = ++seqRef.current;
+    setWeekBusy(true);
+    setError(null);
+    try {
+      const result = await rpc('timeline-query', { days: 7, limit: 200 });
+      if (token !== seqRef.current) return;
+      if (!result.ok) {
+        setError(result.error.message);
+        return;
+      }
+      setWeekRows(result.value.rows);
+    } catch (err) {
+      if (token !== seqRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWeekBusy(false);
+    }
+  }, [rpc]);
+
+  // 切到本周面时拉一次（与条目面同口径：打开取，不轮询）
+  useEffect(() => {
+    if (view === 'week') void fetchWeek();
+  }, [view, fetchWeek]);
+
+  /** 本体面三视图各拉一次（动作无关不重取；点实体/任务再按需拉明细）。 */
+  const fetchOnto = useCallback(async () => {
+    if (rpc === undefined) return;
+    const token = ++seqRef.current;
+    setOntoBusy(true);
+    setError(null);
+    try {
+      const [tasks, graph, evals] = await Promise.all([
+        rpc('task-list', { workspaceId: '', limit: 50 }),
+        rpc('entity-graph', { limit: 60 }),
+        rpc('evaluation-list', { limit: 100 }),
+      ]);
+      if (token !== seqRef.current) return;
+      if (tasks.ok) setOntoTasks(tasks.value.tasks);
+      if (graph.ok) setOntoEntities(graph.value.nodes);
+      if (evals.ok) setOntoEvals(evals.value.rows);
+      const bad = [tasks, graph, evals].find((r) => !r.ok);
+      if (bad !== undefined && !bad.ok) setError(bad.error.message);
+    } catch (err) {
+      if (token !== seqRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOntoBusy(false);
+    }
+  }, [rpc]);
+
+  /** 本体面搜索（v0.6.1）：实体按名字/别名、任务线按标题 LIKE；空词=回到全量。反馈面是追加型真源无搜索词表。 */
+  const searchOnto = useCallback(() => {
+    if (rpc === undefined) return;
+    const q = ontoQueryInput.trim();
+    setOntoQuery(q);
+    setOntoDetail(null);
+    if (q === '') { void fetchOnto(); return; }
+    setOntoBusy(true);
+    setError(null);
+    const call = ontoTab === 'entities'
+      ? rpc('entity-graph', { limit: 60, q }).then((r) => { if (r.ok) setOntoEntities(r.value.nodes); return r; })
+      : rpc('task-list', { workspaceId: '', limit: 50, q }).then((r) => { if (r.ok) setOntoTasks(r.value.tasks); return r; });
+    void call
+      .then((r) => { if (!r.ok) setError(r.error.message); })
+      .catch(() => setError(copy['rec.failed']))
+      .finally(() => setOntoBusy(false));
+  }, [rpc, ontoQueryInput, ontoTab, fetchOnto]);
+
+  const openTask = useCallback((task: SpiritTaskRow) => {
+    if (rpc === undefined) return;
+    void rpc('task-detail', { taskId: task.id })
+      .then((result) => { if (result.ok) setOntoDetail({ label: result.value.task?.title ?? task.title, rows: result.value.deliveries }); })
+      .catch(() => undefined);
+  }, [rpc]);
+
+  const openEntity = useCallback((entity: SpiritEntityNode) => {
+    if (rpc === undefined) return;
+    void rpc('entity-lookup', { entityId: entity.id })
+      .then((result) => { if (result.ok) setOntoDetail({ label: result.value.entity?.name ?? entity.name, rows: result.value.deliveries }); })
+      .catch(() => undefined);
+  }, [rpc]);
+
+  useEffect(() => {
+    if (view === 'onto') void fetchOnto();
+  }, [view, fetchOnto]);
+
+  // 头部刷新令牌（v0.5.9）：重建期间不离开翻阅面也能拉新——按当前视图重取，条目流永远重取（它背后是热路）。
+  useEffect(() => {
+    if (refreshToken === undefined || refreshToken === 0) return;
+    reload();
+    if (view === 'week') void fetchWeek();
+    if (view === 'onto') void fetchOnto();
+    // 依赖只跟令牌：视图切换自身的 effect 已负责拉新，这里不重复挂 view
+  }, [refreshToken]);
+
+  /** 回填历史（ontology-backfill-run，异步受理）：进度在「做梦」页看；这里只发起+回显受理。 */
+  const runBackfill = useCallback(() => {
+    if (rpc === undefined || ontoBackfilling) return;
+    setOntoBackfilling(true);
+    setNote(null);
+    void rpc('ontology-backfill-run', { dryRun: false })
+      .then((result) => {
+        if (!result.ok) { setNote(`${copy['rec.failed']}: ${result.error.message}`); return; }
+        setNote(result.value.accepted ? copy['onto.backfillDone'] : `${copy['rec.failed']}: ${result.value.reason ?? ''}`);
+      })
+      .catch(() => setNote(copy['rec.failed']))
+      .finally(() => setOntoBackfilling(false));
+  }, [rpc, ontoBackfilling]);
 
   const act = (fn: () => Promise<void>): void => {
     fn().catch(() => setNote(copy['rec.failed']));
@@ -164,15 +292,196 @@ export function SeaRecords(props: SeaRecordsProps) {
 
   const editable = (row: SpiritJournalRow): boolean => row.supersededBy === null && row.hiddenAt === null;
 
-  if (view === 'topics') {
+  /** 三面切换行（条目流 / 线索头 / 本周）：当前面高亮。 */
+  const switchTabs = (active: 'entries' | 'topics' | 'week' | 'onto'): ReturnType<typeof createElement>[] => [
+    createElement('button', { key: 'e', type: 'button', style: active === 'entries' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('entries') }, copy['panel.recent']),
+    createElement('button', { key: 't', type: 'button', style: active === 'topics' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('topics') }, copy['topic.view']),
+    createElement('button', { key: 'w', type: 'button', style: active === 'week' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('week') }, copy['rec.weekView']),
+    createElement('button', { key: 'o', type: 'button', style: active === 'onto' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('onto') }, copy['onto.tab']),
+  ];
+
+  if (view === 'week') {
     return createElement(
       'div',
-      { style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 } },
+      { style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, colorScheme: 'dark' } },
       createElement(
         'header',
         { style: HEAD_STYLE },
-        createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => setView('entries') }, copy['panel.recent']),
-        createElement('button', { type: 'button', style: BUTTON_ON_STYLE, onClick: () => setView('topics') }, copy['topic.view']),
+        ...switchTabs('week'),
+        createElement('h4', { style: { margin: 0, fontSize: 13, color: '#9fc1ff' } }, copy['rec.weekTitle']),
+        createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => void fetchWeek() }, copy['sea.refresh']),
+      ),
+      error !== null ? createElement('p', { style: { margin: '8px 14px', color: '#ff9a9a', fontSize: 12 } }, `${copy['sea.loadFailed']}: ${error}`) : null,
+      weekRows.length === 0 && error === null && !weekBusy
+        ? createElement('p', { style: { margin: '18px 14px', ...MUTED_STYLE } }, copy['rec.weekEmpty'])
+        : null,
+      createElement(
+        'ul',
+        { style: LIST_STYLE },
+        weekRows.map((row) =>
+          createElement(
+            'li',
+            { key: row.id, style: ITEM_STYLE },
+            createElement(
+              'div',
+              { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
+              createElement('span', { style: BADGE_STYLE }, formatTime(row.tsMs)),
+              row.topics.map((topic) => createElement('span', { key: `tp-${topic}`, style: CUE_STYLE }, topic)),
+              row.cues.map((cue) => createElement('span', { key: `cue-${cue}`, style: CUE_STYLE }, cue)),
+            ),
+            createElement('div', { style: { fontSize: 13, lineHeight: 1.6, color: '#e8eeff', marginTop: 4, whiteSpace: 'pre-wrap' } }, row.cardLine),
+            row.summary !== undefined && row.summary !== ''
+              ? createElement('div', { style: { ...MUTED_STYLE, marginTop: 4, whiteSpace: 'pre-wrap' } }, row.summary)
+              : null,
+          ),
+        ),
+      ),
+    );
+  }
+
+  if (view === 'onto') {
+    const innerTab = (k: 'tasks' | 'entities' | 'feedback', label: string): ReturnType<typeof createElement> =>
+      createElement('button', { key: k, type: 'button', style: ontoTab === k ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => { setOntoTab(k); setOntoDetail(null); setOntoQuery(''); setOntoQueryInput(''); void fetchOnto(); } }, label);
+    const empty = ontoTab === 'tasks' ? ontoTasks.length === 0 : ontoTab === 'entities' ? ontoEntities.length === 0 : ontoEvals.length === 0;
+    return createElement(
+      'div',
+      { style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, colorScheme: 'dark' } },
+      createElement(
+        'header',
+        { style: HEAD_STYLE },
+        ...switchTabs('onto'),
+        innerTab('tasks', copy['onto.tasks']),
+        innerTab('entities', copy['onto.entities']),
+        innerTab('feedback', copy['onto.feedback']),
+        ontoTab === 'feedback'
+          ? null
+          : createElement('input', {
+            key: 'onto-q',
+            style: { ...INPUT_STYLE, width: 160 },
+            value: ontoQueryInput,
+            placeholder: ontoTab === 'entities' ? copy['onto.searchPhEntities'] : copy['onto.searchPhTasks'],
+            onChange: (event: { target: { value: string } }) => setOntoQueryInput(event.target.value),
+            onKeyDown: (event: { key: string }) => { if (event.key === 'Enter') searchOnto(); },
+          }),
+        ontoTab === 'feedback'
+          ? null
+          : createElement('button', { type: 'button', style: ontoQuery !== '' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => searchOnto() }, copy['onto.search']),
+        createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => void fetchOnto() }, copy['sea.refresh']),
+        createElement('button', { type: 'button', style: ontoBackfilling ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => runBackfill() }, ontoBackfilling ? copy['onto.backfilling'] : copy['onto.backfill']),
+      ),
+      error !== null ? createElement('p', { style: { margin: '8px 14px', color: '#ff9a9a', fontSize: 12 } }, `${copy['sea.loadFailed']}: ${error}`) : null,
+      note !== null ? createElement('p', { style: { margin: '6px 14px', ...MUTED_STYLE } }, note) : null,
+      ontoDetail !== null
+        ? createElement(
+            'div',
+            { style: { borderBottom: '1px solid rgba(120,160,255,.14)', padding: '8px 14px' } },
+            createElement(
+              'div',
+              { style: { display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' } },
+              createElement('span', { style: { fontSize: 13, color: '#9fc1ff' } }, `${copy['onto.deliveries']}：${ontoDetail.label}`),
+              createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => setOntoDetail(null) }, copy['onto.close']),
+            ),
+            createElement(
+              'ul',
+              { style: LIST_STYLE },
+              ontoDetail.rows.length === 0
+                ? createElement('li', { style: { ...ITEM_STYLE, ...MUTED_STYLE } }, copy['onto.empty'])
+                : ontoDetail.rows.map((row) =>
+                    createElement(
+                      'li',
+                      { key: row.id, style: ITEM_STYLE },
+                      createElement(
+                        'div',
+                        { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
+                        createElement('span', { style: BADGE_STYLE }, formatTime(row.tsMs)),
+                        ...row.cues.map((cue) => createElement('span', { key: `c-${cue}`, style: CUE_STYLE }, cue)),
+                      ),
+                      createElement('div', { style: { fontSize: 13, lineHeight: 1.6, color: '#e8eeff', marginTop: 4, whiteSpace: 'pre-wrap' } }, row.cardLine),
+                      row.summary !== undefined && row.summary !== ''
+                        ? createElement('div', { style: { ...MUTED_STYLE, marginTop: 4, whiteSpace: 'pre-wrap' } }, row.summary)
+                        : null,
+                    ),
+                  ),
+            ),
+          )
+        : null,
+      empty && error === null && !ontoBusy
+        ? createElement('p', { style: { margin: '18px 14px', ...MUTED_STYLE } }, ontoQuery !== '' ? copy['onto.searchEmpty'] : copy['onto.empty'])
+        : null,
+      ontoTab === 'tasks'
+        ? createElement(
+            'ul',
+            { style: LIST_STYLE },
+            ontoTasks.map((task) =>
+              createElement(
+                'li',
+                { key: task.id, style: ITEM_STYLE },
+                createElement(
+                  'div',
+                  { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
+                  createElement('span', { style: BADGE_STYLE }, task.status),
+                  createElement('span', { style: MUTED_STYLE }, formatTime(task.updatedAt)),
+                ),
+                createElement('div', { style: { fontSize: 13, lineHeight: 1.6, color: '#e8eeff', marginTop: 4 } }, task.title),
+                task.nextStep !== undefined && task.nextStep !== ''
+                  ? createElement('div', { style: { ...MUTED_STYLE, marginTop: 2 } }, `${copy['onto.nextStep']}：${task.nextStep}`)
+                  : null,
+                createElement('button', { type: 'button', style: { ...BUTTON_STYLE, marginTop: 6 }, onClick: () => openTask(task) }, copy['sea.detail']),
+              ),
+            ),
+          )
+        : ontoTab === 'entities'
+        ? createElement(
+            'ul',
+            { style: LIST_STYLE },
+            ontoEntities.map((entity) =>
+              createElement(
+                'li',
+                { key: entity.id, style: ITEM_STYLE },
+                createElement(
+                  'div',
+                  { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
+                  createElement('span', { style: BADGE_STYLE }, entity.kind),
+                  createElement('span', { style: MUTED_STYLE }, String(entity.importance)),
+                ),
+                createElement('div', { style: { fontSize: 13, lineHeight: 1.6, color: '#e8eeff', marginTop: 4 } }, entity.name),
+                createElement('button', { type: 'button', style: { ...BUTTON_STYLE, marginTop: 6 }, onClick: () => openEntity(entity) }, copy['sea.detail']),
+              ),
+            ),
+          )
+        : createElement(
+            'ul',
+            { style: LIST_STYLE },
+            ontoEvals.map((ev) =>
+              createElement(
+                'li',
+                { key: ev.id, style: ITEM_STYLE },
+                createElement(
+                  'div',
+                  { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
+                  createElement('span', { style: BADGE_STYLE }, ev.kind),
+                  createElement('span', { style: MUTED_STYLE }, `${ev.anchorMode}·${ev.anchorConfidence}`),
+                  createElement('span', { style: MUTED_STYLE }, formatTime(ev.tsMs)),
+                ),
+                createElement(
+                  'div',
+                  { style: { fontSize: 13, lineHeight: 1.6, color: '#e8eeff', marginTop: 4, whiteSpace: 'pre-wrap' } },
+                  ev.userLine !== undefined && ev.userLine !== '' ? ev.userLine : (ev.deliveryId !== null ? ev.deliveryId : '—'),
+                ),
+              ),
+            ),
+          ),
+    );
+  }
+
+  if (view === 'topics') {
+    return createElement(
+      'div',
+      { style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, colorScheme: 'dark' } },
+      createElement(
+        'header',
+        { style: HEAD_STYLE },
+        ...switchTabs('topics'),
       ),
       createElement(SeaTopics, { rpc }),
     );
@@ -180,7 +489,7 @@ export function SeaRecords(props: SeaRecordsProps) {
 
   return createElement(
     'div',
-    { style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0 } },
+    { style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, colorScheme: 'dark' } },
     createElement(
       'header',
       { style: HEAD_STYLE },
@@ -218,7 +527,7 @@ export function SeaRecords(props: SeaRecordsProps) {
       createElement('button', { type: 'button', style: withGhosts ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setWithGhosts((v) => !v) }, copy['rec.filterGhosts']),
       createElement('button', { type: 'button', style: hiddenView ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setHiddenView((v) => !v) }, copy['rec.filterHidden']),
       createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => reload() }, copy['sea.refresh']),
-      createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => setView('topics') }, copy['topic.view']),
+      ...switchTabs('entries'),
     ),
     error !== null ? createElement('p', { style: { margin: '8px 14px', color: '#ff9a9a', fontSize: 12 } }, `${copy['sea.loadFailed']}: ${error}`) : null,
     note !== null ? createElement('p', { style: { margin: '6px 14px', ...MUTED_STYLE } }, note) : null,

@@ -55,10 +55,16 @@ export function classifyTrigger(signals: TurnSignals, cfg: EventConfig): Trigger
  * 这条断言是给门禁/自检用的，不是给业务分支用的：任何携带**自由文本**字段的信号包
  * 都应当被拒（那说明采集侧越过了上面的边界）。文本类字段一律不判内容、直接拒绝整包。
  */
+/**
+ * 情绪轨禁读面字段（单源导出，供 gates 与事务轨 SEMANTIC_BANNED_FIELDS 对敲）。
+ * 比事务轨多一个 `assistantText`：情绪判定连助手文本都不许看（事务轨允许带助手动作衍生物）。
+ */
+export const STRUCTURED_BANNED_FIELDS: readonly string[] = ['assistantText', 'toolOutput', 'userText', 'content', 'snippet', 'rawText'];
+
 export function isStructuredOnly(signals: unknown): boolean {
   if (typeof signals !== 'object' || signals === null) return false;
   const record = signals as Record<string, unknown>;
-  for (const key of ['assistantText', 'toolOutput', 'userText', 'content', 'snippet', 'rawText']) {
+  for (const key of STRUCTURED_BANNED_FIELDS) {
     if (typeof record[key] === 'string') return false;
   }
   return typeof record['turnSeq'] === 'number' && typeof record['toolCalls'] === 'number';

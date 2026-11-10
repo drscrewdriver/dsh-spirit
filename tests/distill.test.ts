@@ -241,6 +241,15 @@ describe('RuminateRunner 全链（假通道）', () => {
     expect(bare.status().supported).toBe(false);
   });
 
+  it('双闸分报：部署关+live 开 ⇒ disabled；部署关+live 也关 ⇒ toggle-off（面板开关才是真控制线）', () => {
+    const h = harness();
+    h.cfg.distill.enabled = false;
+    h.cfg.live.distillEnabled = true;
+    expect(h.runner.run()).toEqual({ accepted: false, reason: 'disabled' });
+    h.cfg.live.distillEnabled = false;
+    expect(h.runner.run()).toEqual({ accepted: false, reason: 'toggle-off' });
+  });
+
   it('NoDistillRouteError 是 Error 子类且 name 稳定（调用方按它分类豁免退避）', () => {
     const err = new NoDistillRouteError('x');
     expect(err).toBeInstanceOf(Error);

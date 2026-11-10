@@ -12,7 +12,7 @@
 import type { SeaCam, SeaFrame, SeaProjected, SeaRenderer, SeaTheme } from './types.js';
 import type { SpiritSeaPoint } from '../../../src/contract.js';
 import { labelBudget, pickNearest, project, projectPole, sortByDepth } from './sea-projection.js';
-import { EDGE_DASH, EDGE_RGB, LANE_DASH, TRIGGER_RGB } from './sea-themes.js';
+import { EDGE_DASH, EDGE_RGB, LANE_DASH, pointRgb } from './sea-themes.js';
 
 const SPRITE_SIZE = 64;
 const LABEL_FONT = '11px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
@@ -390,7 +390,7 @@ export function createCanvas2dRenderer(options: Canvas2dOptions = {}): SeaRender
       const dimmed = frame.focusOnly && frame.focus.size > 0 && !hot;
       const strength = glowStrength(point, item.f, hot, dimmed, theme, proxBoost(item, frame));
       if (strength <= 0.06) continue;
-      const sprite = spriteFor(TRIGGER_RGB[point.trigger] ?? TRIGGER_RGB.neutral);
+      const sprite = spriteFor(pointRgb(point));
       if (sprite === null) continue;
       const size = Math.max(8, item.view.radius * item.f * 1.75 * (4 + 6 * Math.min(1, strength)) * theme.halo);
       ctx.globalAlpha = Math.min(0.8, strength * 0.5);
@@ -407,7 +407,7 @@ export function createCanvas2dRenderer(options: Canvas2dOptions = {}): SeaRender
     for (const item of order) {
       const point = item.view.point;
       const hot = frame.focus.has(point.id) || frame.hovered === point.id || frame.selected === point.id;
-      const rgb = TRIGGER_RGB[point.trigger] ?? TRIGGER_RGB.neutral;
+      const rgb = pointRgb(point);
       const dimmed = frame.focusOnly && frame.focus.size > 0 && !hot;
       const alpha = pointAlpha(point, dimmed);
       if (alpha <= 0.01) continue;

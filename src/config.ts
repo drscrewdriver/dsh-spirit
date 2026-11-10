@@ -74,6 +74,7 @@ function liveSettingsSchema(): VolatileRef<SpiritLiveSettings> {
     feedbackEnabled: bool(d.feedbackEnabled),
     dreamEnabled: bool(d.dreamEnabled),
     distillEnabled: bool(d.distillEnabled),
+    ontologyEnabled: bool(d.ontologyEnabled),
   });
   const maybe = node as unknown as { volatile?: () => unknown };
   return (typeof maybe.volatile === 'function' ? maybe.volatile() : node) as VolatileRef<SpiritLiveSettings>;
@@ -166,6 +167,19 @@ export const spiritSchema: ConfigSchema = Schema.object({
       dimensions: num('distill.vector.dimensions', SPIRIT_DEFAULTS.distill.vector.dimensions),
     }),
   }),
+  // 事务轨（v7）：灰度缺省关；属部署面（不进 volatile/live 节，改值需重启）。
+  txn: Schema.object({
+    enabled: bool(SPIRIT_DEFAULTS.txn.enabled),
+    batchMin: num('txn.batchMin', SPIRIT_DEFAULTS.txn.batchMin),
+    maxCardLineChars: num('txn.maxCardLineChars', SPIRIT_DEFAULTS.txn.maxCardLineChars),
+    maxSummaryChars: num('txn.maxSummaryChars', SPIRIT_DEFAULTS.txn.maxSummaryChars),
+    collectorTimeoutMs: num('txn.collectorTimeoutMs', SPIRIT_DEFAULTS.txn.collectorTimeoutMs),
+  }),
+  // 本体层（v8）：灰度缺省关；属部署面（不进 volatile/live）。数值子键随 Phase B 采集器补。
+  ontology: Schema.object({
+    enabled: bool(SPIRIT_DEFAULTS.ontology.enabled),
+    backfillEnabled: bool(SPIRIT_DEFAULTS.ontology.backfillEnabled),
+  }),
   // 运行时开关：整个 volatile 节，设置页自动成表。
   live: liveSettingsSchema(),
 }) as unknown as ConfigSchema;
@@ -228,6 +242,13 @@ export const SCHEMA_FIELD_KEYS: readonly string[] = [
   'distill.vector.model',
   'distill.vector.dimensions',
   'drsc.timeoutMs',
+  'txn.enabled',
+  'txn.batchMin',
+  'txn.maxCardLineChars',
+  'txn.maxSummaryChars',
+  'txn.collectorTimeoutMs',
+  'ontology.enabled',
+  'ontology.backfillEnabled',
   'live.enabled',
   'live.personaEnabled',
   'live.cardEnabled',
@@ -247,6 +268,7 @@ export const SCHEMA_FIELD_KEYS: readonly string[] = [
   'live.feedbackEnabled',
   'live.dreamEnabled',
   'live.distillEnabled',
+  'live.ontologyEnabled',
 ];
 
 /** 数值键区间表覆盖检查用的键集（`num()` 引用的键必须都在 SPIRIT_RANGES 里）。 */
@@ -304,6 +326,7 @@ export function resolveLive(raw: unknown): SpiritLiveSettings {
     feedbackEnabled: flag('feedbackEnabled', d.feedbackEnabled),
     dreamEnabled: flag('dreamEnabled', d.dreamEnabled),
     distillEnabled: flag('distillEnabled', d.distillEnabled),
+    ontologyEnabled: flag('ontologyEnabled', d.ontologyEnabled),
   };
 }
 
@@ -347,6 +370,8 @@ export function effectiveCfg(cfg: SpiritConfig, live?: SpiritLiveSettings): Spir
     dream: { ...cfg.dream, enabled: cfg.dream.enabled && live.dreamEnabled },
     // 长觉双闸同理：live.distillEnabled 关 ⇒ sleep-run 拒、定时器空转
     distill: { ...cfg.distill, enabled: cfg.distill.enabled && live.distillEnabled },
+    // 本体层双闸（v0.5）：静态总闸 ∧ live 热更闸；关任一 ⇒ 采集/抽取全停（零落库）
+    ontology: { ...cfg.ontology, enabled: cfg.ontology.enabled && live.ontologyEnabled },
     live,
   };
 }

@@ -40,6 +40,10 @@ export interface LlmRuntimeLike {
     reasoningEffort?: string;
     signal?: AbortSignal;
   }): AsyncIterable<Record<string, unknown>>;
+  /** 供应商目录（本地快照，不触网）；老宿主/缺席 ⇒ undefined，面板据此降级为手不列。 */
+  listProviders?(): Array<{ id: string; name: string }>;
+  /** 某供应商的模型列表（异步，本地快照）；缺席 ⇒ undefined。 */
+  listModels?(provider: string): Promise<Array<{ id: string; name?: string; description?: string | null }>>;
 }
 
 export interface LlmChannelDeps {
@@ -134,6 +138,13 @@ export function createLlmChannel(deps: LlmChannelDeps): LlmChannel {
             }
           }
         }
+      } catch (err) {
+        // 超时自杀是 abort 出来的 DOMException（原文只叫 "This operation was aborted"）——
+        // 对上层/面板毫无信息量，这里换成能看懂的：谁超时、多长、什么模型、已收多少字。
+        if (controller.signal.aborted && !(outerSignal?.aborted ?? false)) {
+          throw new Error(`llm 超时被中止（${Math.round(opts.timeoutMs / 1000)}s，模型 ${opts.route.model || '默认'}，已收 ${deltaText.length + blockText.length} 字）`, { cause: err });
+        }
+        throw err;
       } finally {
         clearTimeout(timer);
         if (outerSignal !== undefined) outerSignal.removeEventListener('abort', onOuterAbort);

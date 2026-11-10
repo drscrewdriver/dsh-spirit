@@ -20,6 +20,8 @@ import type { SpiritSeaEdge, SpiritSeaGraph, SpiritSeaPoint, SpiritSeaStats } fr
 import type { ExperienceEntry, TriggerKind } from '../types.js';
 /** 星海窗口上限：一次投影最多取多少条（超出丢最老的）。 */
 export const SEA_WINDOW_LIMIT = 3_000;
+/** 本体交付点的投影上限（v0.6）：独立于体验窗口，不把 3000 点情绪星图埋进工作记录。 */
+export const SEA_DELIVERY_MAX = 500;
 /** 单点文本上限（详情卡另有全文/残句）。 */
 export const SEA_POINT_TEXT_MAX = 120;
 /** 全图边上限。 */
@@ -89,6 +91,18 @@ export interface BuildSeaSceneOptions {
   focusIds?: readonly string[];
   /** 因果边（v0.3.5 长觉阶梯：启发式打底 + LLM 投影）；缺省则无因果边。 */
   causalEdges?: readonly SeaCausalInput[];
+  /** 本体轨交付（v0.6）：作为 kind:'delivery' 点入图，与体验星同图异色。 */
+  deliveries?: readonly SeaDeliveryInput[];
+}
+
+/** 交付点输入（rpc 层从 TxnStore 取行后映射；scene 保持纯函数不碰 store）。 */
+export interface SeaDeliveryInput {
+  id: string;
+  tsMs: number;
+  sessionId: string;
+  turnSeq: number;
+  cardLine: string;
+  summary: string | null;
 }
 
 function clamp(value: number, lo: number, hi: number): number {
@@ -274,6 +288,7 @@ export function buildSeaScene(entries: readonly ExperienceEntry[], opts: BuildSe
       t: entry.tsMs,
       sessionId: entry.sessionId,
       turnSeq: entry.turnSeq,
+      kind: 'experience',
       trigger: entry.trigger,
       lane: entry.lane,
       text: textOf(entry),
@@ -288,12 +303,44 @@ export function buildSeaScene(entries: readonly ExperienceEntry[], opts: BuildSe
     };
   });
 
-  const edges = buildEdges(points, opts.cues ?? new Map(), list, opts.causalEdges ?? []);
+  // 本体交付点（v0.6）：同尺度老化、tier 用同一公式（salience 固定 1=tier2 权重）；
+  // axis 固定 +0.35：交付永远是"为主人的任务做的"，不读正文推轴（那是注入面）。
+  const deliveryPoints: SpiritSeaPoint[] = (opts.deliveries ?? []).slice(0, SEA_DELIVERY_MAX).map((d) => {
+    const freshness = seaFreshness(d.tsMs, opts.now, opts.halfLifeMs);
+    const tierFreshness = seaFreshness(d.tsMs, opts.now, opts.tierHalfLifeMs ?? opts.halfLifeMs);
+    const gist = d.summary === null ? null : d.summary.length > SEA_POINT_TEXT_MAX ? `${d.summary.slice(0, SEA_POINT_TEXT_MAX - 1)}…` : d.summary;
+    return {
+      id: d.id,
+      t: d.tsMs,
+      sessionId: d.sessionId,
+      turnSeq: d.turnSeq,
+      kind: 'delivery',
+      trigger: 'neutral' as TriggerKind,
+      lane: 'onto',
+      text: (() => {
+        const raw = d.cardLine.replace(/\s+/g, ' ').trim();
+        return raw.length > SEA_POINT_TEXT_MAX ? `${raw.slice(0, SEA_POINT_TEXT_MAX - 1)}…` : raw;
+      })(),
+      gist,
+      salience: 1,
+      freshness,
+      tier: fadeTierOf({ salience: 1, gist: gist ?? undefined }, tierFreshness, opts.fade),
+      axis: 0.35,
+      feedback: null,
+      cues: [],
+      superseded: false,
+    };
+  });
+
+  // 合图按时间升序：时间邻居连线与 span 都依赖这个不变式
+  const merged = [...points, ...deliveryPoints].sort((a, b) => a.t - b.t || (a.id < b.id ? -1 : 1));
+
+  const edges = buildEdges(merged, opts.cues ?? new Map(), list, opts.causalEdges ?? []);
 
   const byTrigger: Record<string, number> = {};
   const byLane: Record<string, number> = {};
   const fade = { full: 0, gist: 0, held: 0 };
-  for (const point of points) {
+  for (const point of merged) {
     byTrigger[point.trigger] = (byTrigger[point.trigger] ?? 0) + 1;
     byLane[point.lane] = (byLane[point.lane] ?? 0) + 1;
     // 档位已在点上算过（与光晕门控同一个值），不在这里重算第二套
@@ -301,21 +348,21 @@ export function buildSeaScene(entries: readonly ExperienceEntry[], opts: BuildSe
   }
 
   const stats: SpiritSeaStats = {
-    loaded: points.length,
-    ghosts: points.filter((point) => point.superseded).length,
-    total: Math.max(points.length, Math.floor(opts.total)),
+    loaded: merged.length,
+    ghosts: merged.filter((point) => point.superseded).length,
+    total: Math.max(merged.length, Math.floor(opts.total)),
     edges: edges.length,
     byTrigger,
     byLane,
     fade,
     moodLabel: opts.moodLabel,
-    span: points.length > 0 ? { from: points[0]!.t, to: points[points.length - 1]!.t } : null,
+    span: merged.length > 0 ? { from: merged[0]!.t, to: merged[merged.length - 1]!.t } : null,
     degraded: opts.degraded === true,
     window: windowSize,
   };
 
-  const known = new Set(points.map((point) => point.id));
+  const known = new Set(merged.map((point) => point.id));
   const focusIds = (opts.focusIds ?? []).filter((id) => known.has(id));
 
-  return { points, edges, stats, focusIds };
+  return { points: merged, edges, stats, focusIds };
 }
