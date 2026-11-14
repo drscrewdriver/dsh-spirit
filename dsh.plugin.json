@@ -1,7 +1,7 @@
 {
   "id": "dsh-spirit",
   "name": "dsh-spirit",
-  "version": "0.8.0",
+  "version": "0.8.4-local.28",
   "description": {
     "en": "First-person experience and ontology memory for DSH: compiles process events into the character's lived moments, builds queryable work memory (deliveries / entities / task threads), and injects state, recents and ongoing threads before each model step.",
     "zh": "DSH 第一人称体验与本体记忆插件：把流程事件编译成角色的体验点滴，并从交付/实体/任务线维度建立可回查的工作记忆，在模型步骤前注入此刻状态、刚发生的、被勾起的回忆与正在推进的事。"
@@ -13,10 +13,14 @@
   },
   "license": "MIT",
   "engines": {
-    "dsh": ">=0.2.0-rc.1 <0.3.0"
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
   },
   "components": {
     "host": "dist/index.js",
     "client": "dist/client.js"
   }
 }
+
+
+
+

@@ -186,6 +186,27 @@ grep 断言同装跑真回合。但对方证据面**原样收 assistant 发言**
 - 跳线抽检：`0.2.1-rc.1`（已声明线）headless 真回合同样通过；`0.1.7-rc.2` 默认被 `peerDependencies`
   门拒载并自动回滚（需要用 `allow-version --accept-risk` 才装得上）——所以声明只收已验的 0.2.x 六线
 
+## 生涯流程档（v0.8.18）：知识性归上游，流程性归 spirit
+
+上游 `dsh-prime-memory` 的 L1（`work_task`/`work_fact`/技法/坑/决定…）是**输入**，不是 spirit 的存储。
+spirit 只做一件事：把其中**流程性**（`work_task`/`episodic`）预总结成自己的生涯档，运行时不再依赖上游库。
+
+- **三档防失忆**：`week`（近 7 天，ISO 周）/ `month`（近 30 天）/ `milestone`（done/交付语义，90 天内，
+  **只增不改**，按上游 record_id 去重）。滚动档幂等覆盖；摘要为空不覆盖旧档；上游不可用保留旧档。
+- **知识性不入库**：事实/方法/坑/决定/规范只记录 `entity_record_ref`（实体 → 上游 record_id），
+  需要正文时用上游 `memory_search`；spirit 侧不存一份知识副本（避免双真源分叉）。
+- **实体双向对齐**：`entity_alias`（spirit 名/别名归一）+ `entity_upstream_link`（上游 graph_node / repo_key /
+  workspace）；只建链接，**不新建、不合并实体**。
+- **查询**：问「最近/这周做了什么」用 **`spirit_history`**（时间性入口，不占 `memory_search` 配额）；
+  事实/方法/坑/规则用上游 **`memory_search`**；`spirit_memory` 负责写与关键词召回（`recall/list/entity`）；
+  面板「翻阅 → 记着」是三档分组，带「刷新流程档」。
+- **历史重建改读 L1（v0.8.24）**：面板「全记忆重建」不再扫会话（DRSC），改为读上游 L1 重建任务线（work_task）、
+  交付（work_artifact）与实体（graph_nodes/repo/workspace），并重算实体别名/上游链接/知识引用；ID 由 L1 record_id 派生，重跑幂等。
+- **睡眠总结 L1**：长觉梦醒后自动重算三档生涯流程档（周/月/里程碑）。
+- **代理可记对话细节**：`spirit_memory scope=episode kind=detail`（不自动注入，靠 recall 取），面板「记着」有「对话细节」组。
+- **边界收口**：上游库只读访问只允许出现在 `src/prime/l1-source.ts`（门禁 task_7.3 正向断言），
+  其余文件仍硬禁；读取走 `readOnly`，表/列缺失退化为空。
+
 ## 工程
 
 `npm run check` = typecheck（3 套配置）→ lint → vitest → build → **dist 冒烟**。

@@ -1,6 +1,6 @@
 {
   "name": "dsh-spirit",
-  "version": "0.8.0",
+  "version": "0.8.4-local.28",
   "description": "DSH 第一人称体验与本体记忆插件：把流程事件编译成角色的体验点滴，并从交付/实体/任务线维度建立可回查的工作记忆（SQLite），在模型步骤前注入「此刻状态 + 刚发生的 + 被勾起的回忆 + 正在推进的事」。",
   "type": "module",
   "main": "dist/index.js",
@@ -63,7 +63,7 @@
   ],
   "engines": {
     "node": ">=22.16.0",
-    "dsh": ">=0.2.0-rc.1 <0.3.0"
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
@@ -74,13 +74,13 @@
     "@deepseek-ai/schemastery": "^3.18.4"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-agent": ">=0.2.0-rc.1 <0.3.0",
-    "@deepseek-ai/dsh-home-paths": ">=0.2.0-rc.1 <0.3.0",
-    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.1 <0.3.0",
-    "@deepseek-ai/dsh-session": ">=0.2.0-rc.1 <0.3.0",
-    "@deepseek-ai/dsh-settings": ">=0.2.0-rc.1 <0.3.0",
-    "@deepseek-ai/dsh-system-prompt": ">=0.2.0-rc.1 <0.3.0",
-    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.1 <0.3.0"
+    "@deepseek-ai/dsh-agent": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-home-paths": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-session": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-settings": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.1 <0.3.0-0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-agent": {
@@ -127,3 +127,7 @@
     "vitest": "^4.1.11"
   }
 }
+
+
+
+
