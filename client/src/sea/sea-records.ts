@@ -13,10 +13,12 @@
  */
 import { createElement, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 
-import type { SpiritJournalRow, SpiritTxnRow, SpiritTaskRow, SpiritEntityNode, SpiritEvaluationRow, SpiritEchoSnapshot, SpiritMemoryListResult } from '../../../src/contract.js';
+import type { SpiritJournalRow, SpiritTxnRow, SpiritTaskRow, SpiritEntityNode, SpiritEvaluationRow, SpiritEchoSnapshot, SpiritEchoRecordRow, SpiritEchoTone, SpiritEchoRecallInfo, SpiritEchoLocateHit, SpiritSearchHit, SpiritRecordDetailResult, SpiritMemoryListResult } from '../../../src/contract.js';
 import { copyOf } from '../copy.js';
 import type { RpcFn } from '../rpc.js';
 import { SeaTopics } from './sea-topics.js';
+import { echoRefTarget, shortEcho } from './echo-view.js';
+import { EchoRecallHeader, EchoRefsList, EchoToneBar } from './echo-refs-list.js';
 import { NOTICE_LABEL, TRIGGER_LABEL, TRIGGER_ORDER } from './sea-labels.js';
 
 const HEAD_STYLE: CSSProperties = { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid rgba(120,160,255,.14)' };
@@ -42,14 +44,97 @@ export interface SeaRecordsProps {
   rpc?: RpcFn;
   /** 头部「刷新/⟲」令牌（v0.5.9）：递增 ⇒ 按当前视图重取（条目/本周/本体）；0 为初值不动作。 */
   refreshToken?: number;
+  /** 回响深链（v0.8.1）：侧栏指定打开的子视图。 */
+  requestedView?: 'echo';
+  /** 深链令牌：递增即切换视图；0 为初值不动作。 */
+  viewToken?: number;
+  /** 星图定位（v0.8.12）：把 echo 号交给星海选中对应星点。 */
+  onLocateEcho?: (echoId: string) => void;
 }
 
 export function SeaRecords(props: SeaRecordsProps) {
-  const { rpc, refreshToken } = props;
+  const { rpc, refreshToken, requestedView, viewToken } = props;
   const copy = copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
+  /** 记录号徽标（v0.8.11）：星图/翻阅都要看得到 echo id（短号展示，全 UUID 进 tooltip）。 */
+  const echoChip = (echoId: string | undefined): ReturnType<typeof createElement> | null =>
+    echoId === undefined || echoId === ''
+      ? null
+      : createElement('span', { key: 'echo-id', style: { ...MUTED_STYLE, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }, title: echoId, 'data-spirit': 'echo-id' }, shortEcho(echoId));
+
+  /** 搜索块（v0.8.14）：号命中给记录列表，文本命中给全域跨类型结果；两者都带「打开」与「星图定位」。 */
+  const locateBlock = (): ReturnType<typeof createElement> | null => {
+    if (searchMode === '' || echoHitQuery === '') return null;
+    const isId = searchMode === 'id';
+    const rows: ReturnType<typeof createElement>[] = isId
+      ? echoHits.map((hit) => {
+        const key = hit.echoId;
+        return createElement(
+          'div',
+          { key, style: { ...ITEM_STYLE } },
+          createElement(
+            'div',
+            { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            createElement('span', { style: BADGE_STYLE }, kindLabel(hit.kind)),
+            createElement('span', { style: { fontSize: 13, color: '#e8eeff' } }, hit.title),
+            echoChip(hit.echoId),
+            hit.recordTs > 0 ? createElement('span', { style: MUTED_STYLE }, formatTime(hit.recordTs)) : null,
+            expandButton(key, hit.kind, hit.memId),
+            createElement('button', { type: 'button', style: BUTTON_STYLE, 'data-spirit': 'echo-locate-open', onClick: () => openRefTarget({ kind: hit.kind }) }, copy['echo.locateOpen']),
+            createElement('button', { type: 'button', style: BUTTON_STYLE, 'data-spirit': 'echo-locate-graph', onClick: () => props.onLocateEcho?.(hit.echoId) }, copy['echo.locateGraph']),
+          ),
+          detailBlock(key),
+        );
+      })
+      : globalHits.map((hit) => {
+        const key = `${hit.kind}-${hit.id}`;
+        return createElement(
+          'div',
+          { key, style: { ...ITEM_STYLE } },
+          createElement(
+            'div',
+            { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            createElement('span', { style: BADGE_STYLE }, kindLabel(hit.kind)),
+            createElement('span', { style: { fontSize: 13, color: '#e8eeff' } }, hit.title),
+            echoChip(hit.echoId),
+            hit.ts > 0 ? createElement('span', { style: MUTED_STYLE }, formatTime(hit.ts)) : null,
+            expandButton(key, hit.kind, hit.id),
+            createElement('button', { type: 'button', style: BUTTON_STYLE, 'data-spirit': 'echo-locate-open', onClick: () => openRefTarget({ kind: hit.kind }) }, copy['echo.locateOpen']),
+            hit.echoId === undefined
+              ? null
+              : createElement('button', { type: 'button', style: BUTTON_STYLE, 'data-spirit': 'echo-locate-graph', onClick: () => props.onLocateEcho?.(hit.echoId!) }, copy['echo.locateGraph']),
+          ),
+          detailBlock(key),
+        );
+      });
+    return createElement(
+      'div',
+      { 'data-spirit': 'echo-locate', style: { padding: '8px 14px', borderBottom: '1px solid rgba(120,160,255,.12)' } },
+      createElement(
+        'div',
+        { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, color: '#8e9ab5' } },
+        createElement('span', { style: CUE_STYLE }, isId ? copy['echo.locateTitle'] : copy['echo.searchTitle']),
+        createElement('span', { style: { ...MUTED_STYLE, fontFamily: 'ui-monospace, monospace' }, title: echoHitQuery }, echoHitQuery),
+        echoHitBusy ? createElement('span', { style: MUTED_STYLE }, '...') : null,
+      ),
+      rows.length === 0
+        ? createElement('div', { style: { ...MUTED_STYLE, marginTop: 4 } }, isId ? copy['echo.locateEmpty'] : copy['echo.searchEmpty'])
+        : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 } }, ...rows),
+    );
+  };
+
+  const kindLabel = (kind: string): string => {
+    if (kind === 'task') return copy['echo.kind.task'];
+    if (kind === 'delivery') return copy['echo.kind.delivery'];
+    if (kind === 'experience') return copy['echo.kind.experience'];
+    if (kind === 'memory') return copy['echo.kind.memory'];
+    if (kind === 'goal') return copy['echo.kind.goal'];
+    return kind;
+  };
 
   const [rows, setRows] = useState<SpiritJournalRow[]>([]);
   const [offset, setOffset] = useState(0);
+  /** v19 翻阅游标：追加时用它替代 OFFSET（null = 从头开始或上一页到底） */
+  const cursorRef = useRef<{ tsMs: number; id: string } | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,19 +162,122 @@ export function SeaRecords(props: SeaRecordsProps) {
   const [ontoDetail, setOntoDetail] = useState<{ label: string; rows: SpiritTxnRow[] } | null>(null);
   const [ontoBusy, setOntoBusy] = useState(false);
   const [ontoBackfilling, setOntoBackfilling] = useState(false);
-  // 回响面（v0.7）：每轮注入/跳过快照（进程内环形缓冲；重启归零属正常）
+  // 回响面（v0.8.11）：记录聚合（echo-<uuid>）+ 最近回响事件（recall-<uuid>）+ 语气（特殊格式）
   const [echoRows, setEchoRows] = useState<SpiritEchoSnapshot[]>([]);
   const [echoBusy, setEchoBusy] = useState(false);
+  const [echoRefRows, setEchoRefRows] = useState<SpiritEchoRecordRow[]>([]);
+  const [echoTone, setEchoTone] = useState<SpiritEchoTone | null>(null);
+  const [echoRecall, setEchoRecall] = useState<SpiritEchoRecallInfo | null>(null);
+  const [echoDetail, setEchoDetail] = useState<{ echoId: string; text: string } | null>(null);
   // 模型可写记忆（v0.8）：两本账+日记+目的（本体「记着」子页 / 回响页生涯补充）
   const [memoryView, setMemoryView] = useState<SpiritMemoryListResult | null>(null);
   // 本体面搜索（v0.6.1）：输入与生效值分开（Enter 提交，照条目流口径）
   const [ontoQueryInput, setOntoQueryInput] = useState('');
   const [ontoQuery, setOntoQuery] = useState('');
+  // 按 echo 号搜索/定位 + 全域文本搜索（v0.8.14）：号查询走注册表，文本查询跨类型，不跟当前分页绑定
+  const [echoHits, setEchoHits] = useState<SpiritEchoLocateHit[]>([]);
+  const [globalHits, setGlobalHits] = useState<SpiritSearchHit[]>([]);
+  const [searchMode, setSearchMode] = useState<'id' | 'text' | ''>('');
+  const [echoHitQuery, setEchoHitQuery] = useState('');
+  const [echoHitBusy, setEchoHitBusy] = useState(false);
+  // 命中行内展开（v0.8.17）：一行一个 key，详情按需取并缓存
+  const [expandedKey, setExpandedKey] = useState('');
+  const [detailMap, setDetailMap] = useState<Record<string, SpiritRecordDetailResult | null>>({});
+  const [detailBusyKey, setDetailBusyKey] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [editGist, setEditGist] = useState('');
   const [editSalience, setEditSalience] = useState(0);
   const seqRef = useRef(0);
+
+  /** 命中行的详情块：加载中 / 记录不在了 / 明细行。 */
+  const detailBlock = (key: string): ReturnType<typeof createElement> | null => {
+    if (expandedKey !== key) return null;
+    if (detailBusyKey === key) return createElement('div', { style: { ...MUTED_STYLE, marginTop: 4 } }, `${copy['echo.expandLoading']}...`);
+    const detail = detailMap[key];
+    if (detail === undefined || detail === null) {
+      return createElement('div', { style: { ...MUTED_STYLE, marginTop: 4 } }, copy['echo.detailGone']);
+    }
+    return createElement(
+      'div',
+      { 'data-spirit': 'record-detail', style: { marginTop: 6, paddingTop: 6, borderTop: '1px dashed rgba(120,160,255,.18)' } },
+      ...detail.lines.map((line, index) => createElement(
+        'div',
+        { key: index, style: { fontSize: 12, lineHeight: 1.6, color: '#cfd8ea', whiteSpace: 'pre-wrap' } },
+        line,
+      )),
+    );
+  };
+
+  /** 展开/收起按钮。 */
+  const expandButton = (key: string, kind: string, id: string): ReturnType<typeof createElement> => createElement(
+    'button',
+    { type: 'button', style: BUTTON_STYLE, 'data-spirit': 'echo-expand', onClick: () => void toggleDetail(key, kind, id) },
+    expandedKey === key ? copy['echo.collapse'] : copy['echo.expand'],
+  );
+
+  /**
+   * 统一搜索（v0.8.14）：先试 echo 号（注册表），不是号就跨类型文本搜（任务/交付/体验/记着/目的/实体）。
+   * 返回模式：`id` = 号命中；`text` = 文本全域搜；`none` = 空词。
+   */
+  const runSearch = useCallback(async (raw: string): Promise<'id' | 'text' | 'none'> => {
+    const q = raw.trim();
+    if (rpc === undefined || q === '') {
+      setEchoHits([]);
+      setGlobalHits([]);
+      setSearchMode('');
+      setEchoHitQuery('');
+      return 'none';
+    }
+    setEchoHitBusy(true);
+    try {
+      const located = await rpc('echo-locate', { q });
+      if (located.ok && located.value.idQuery && located.value.hits.length > 0) {
+        setEchoHits(located.value.hits);
+        setGlobalHits([]);
+        setEchoHitQuery(q);
+        setSearchMode('id');
+        return 'id';
+      }
+      // 号查不到（或只是碎片）⇒ 继续走文本全域搜，不停在“注册表没有”
+      const found = await rpc('spirit-search', { q, limit: 24 }).catch(() => undefined);
+      setEchoHits([]);
+      setGlobalHits(found !== undefined && found.ok ? found.value.hits : []);
+      setEchoHitQuery(q);
+      setSearchMode('text');
+      return 'text';
+    } catch {
+      setEchoHits([]);
+      setGlobalHits([]);
+      setSearchMode('');
+      setEchoHitQuery('');
+      return 'none';
+    } finally {
+      setEchoHitBusy(false);
+    }
+  }, [rpc]);
+
+  /** 行内展开/收起（v0.8.17）：详情按需取，取过就缓存（不重复请求）。 */
+  const toggleDetail = useCallback(async (key: string, kind: string, id: string): Promise<void> => {
+    if (expandedKey === key) {
+      setExpandedKey('');
+      return;
+    }
+    setExpandedKey(key);
+    if (detailMap[key] !== undefined || rpc === undefined) return;
+    setDetailBusyKey(key);
+    try {
+      const result = await rpc('record-detail', {
+        kind: kind as 'task' | 'delivery' | 'experience' | 'memory' | 'goal' | 'entity',
+        id,
+      });
+      setDetailMap((prev) => ({ ...prev, [key]: result.ok ? result.value : null }));
+    } catch {
+      setDetailMap((prev) => ({ ...prev, [key]: null }));
+    } finally {
+      setDetailBusyKey('');
+    }
+  }, [expandedKey, detailMap, rpc]);
 
   const fetchPage = useCallback(async (nextOffset: number, append: boolean) => {
     if (rpc === undefined) return;
@@ -105,6 +293,8 @@ export function SeaRecords(props: SeaRecordsProps) {
         ...(withGhosts ? { includeGhosts: true } : {}),
         ...(hiddenView ? { hiddenOnly: true } : {}),
         offset: nextOffset,
+        // v19：追加时优先用游标（直接吃 ts_ms 索引；服务端 cursor 优先于 offset）
+        ...(append && cursorRef.current !== null ? { cursor: cursorRef.current } : {}),
         limit: PAGE_SIZE,
       });
       if (token !== seqRef.current) return;
@@ -114,15 +304,18 @@ export function SeaRecords(props: SeaRecordsProps) {
       }
       setRows((current) => (append ? [...current, ...result.value.rows] : result.value.rows));
       setOffset(nextOffset);
+      cursorRef.current = result.value.nextCursor ?? null;
       setHasMore(result.value.hasMore);
       setTruncated(result.value.truncated);
+      // 条目流搜索同样先试号/全域搜索，命中会在列表上方出定位块
+      void runSearch(query);
     } catch (err) {
       if (token !== seqRef.current) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
-  }, [rpc, query, trigger, lane, marked, withGhosts, hiddenView]);
+  }, [rpc, query, trigger, lane, marked, withGhosts, hiddenView, runSearch]);
 
   // 筛选条件一变就从头重取（动作后的重取也走这里，不做增量拼接）
   useEffect(() => {
@@ -190,23 +383,31 @@ export function SeaRecords(props: SeaRecordsProps) {
     }
   }, [rpc]);
 
-  /** 本体面搜索（v0.6.1）：实体按名字/别名、任务线按标题 LIKE；空词=回到全量。反馈面是追加型真源无搜索词表。 */
+  /** 本体面搜索（v0.6.1）：先试号查询（echo-xxxx）；号命中就只给定位结果，不再拿号去拼文本搜索。 */
   const searchOnto = useCallback(() => {
     if (rpc === undefined) return;
     const q = ontoQueryInput.trim();
     setOntoQuery(q);
     setOntoDetail(null);
-    if (q === '') { void fetchOnto(); return; }
+    if (q === '') { void runSearch(''); void fetchOnto(); return; }
     setOntoBusy(true);
     setError(null);
-    const call = ontoTab === 'entities'
-      ? rpc('entity-graph', { limit: 60, q }).then((r) => { if (r.ok) setOntoEntities(r.value.nodes); return r; })
-      : rpc('task-list', { workspaceId: '', limit: 50, q }).then((r) => { if (r.ok) setOntoTasks(r.value.tasks); return r; });
-    void call
-      .then((r) => { if (!r.ok) setError(r.error.message); })
-      .catch(() => setError(copy['rec.failed']))
-      .finally(() => setOntoBusy(false));
-  }, [rpc, ontoQueryInput, ontoTab, fetchOnto]);
+    void runSearch(q)
+      .then((mode) => {
+        if (mode === 'id') {
+          setOntoBusy(false);
+          return;
+        }
+        const call = ontoTab === 'entities'
+          ? rpc('entity-graph', { limit: 60, q }).then((r) => { if (r.ok) setOntoEntities(r.value.nodes); return r; })
+          : rpc('task-list', { workspaceId: '', limit: 50, q }).then((r) => { if (r.ok) setOntoTasks(r.value.tasks); return r; });
+        void call
+          .then((r) => { if (!r.ok) setError(r.error.message); })
+          .catch(() => setError(copy['rec.failed']))
+          .finally(() => setOntoBusy(false));
+      })
+      .catch(() => setOntoBusy(false));
+  }, [rpc, ontoQueryInput, ontoTab, fetchOnto, runSearch, copy]);
 
   const openTask = useCallback((task: SpiritTaskRow) => {
     if (rpc === undefined) return;
@@ -226,7 +427,7 @@ export function SeaRecords(props: SeaRecordsProps) {
     if (view === 'onto') void fetchOnto();
   }, [view, fetchOnto]);
 
-  /** 回响面：拉最近 50 轮快照（跨会话；重启后为空属正常）。 */
+  /** 回响面（v0.8.11）：一次取回 轮次观测 + 记录聚合 + 回响事件 + 语气。 */
   const fetchEcho = useCallback(async () => {
     if (rpc === undefined) return;
     const token = ++seqRef.current;
@@ -235,8 +436,15 @@ export function SeaRecords(props: SeaRecordsProps) {
     try {
       const result = await rpc('inject-echo', { limit: 50 });
       if (token !== seqRef.current) return;
-      if (!result.ok) { setError(result.error.message); return; }
-      setEchoRows(result.value.items);
+      if (result.ok) {
+        setEchoRows(result.value.items);
+        setEchoRefRows(result.value.records ?? []);
+        setEchoTone(result.value.tone ?? null);
+        setEchoRecall(result.value.recall ?? null);
+      } else {
+        setError(result.error.message);
+        setEchoRefRows([]);
+      }
       // 生涯补充（v0.8）：pinned 的心里话/约定也在这儿露一眼（这就是「回响通道调生涯记忆」）
       const mem = await rpc('memory-list', { limit: 20 }).catch(() => ({ ok: false }) as const);
       if (token !== seqRef.current) return;
@@ -249,9 +457,43 @@ export function SeaRecords(props: SeaRecordsProps) {
     }
   }, [rpc]);
 
+  /** 记录的「原文」：按 lastRecallId（recall-<uuid>）取那一轮注入卡；早期行没存原文 ⇒ 如实说。 */
+  const openEchoDetail = useCallback(async (row: SpiritEchoRecordRow): Promise<void> => {
+    if (rpc === undefined) return;
+    if (row.lastRecallId === '') {
+      setEchoDetail({ echoId: row.echoId, text: '' });
+      return;
+    }
+    const result = await rpc('echo-detail', { sessionId: row.sessionId, id: row.lastRecallId }).catch(() => undefined);
+    if (result !== undefined && result.ok) {
+      const item = result.value.item;
+      setEchoDetail({ echoId: row.echoId, text: item === undefined ? '' : (item.text !== '' ? item.text : item.preview) });
+      return;
+    }
+    setEchoDetail({ echoId: row.echoId, text: '' });
+  }, [rpc]);
+
+  /** 记录行点开 → 定位到真源视图（task/delivery → 本体任务线；memory/goal → 记着；experience → 条目流）。 */
+  const openRefTarget = useCallback((row: { kind: string }): void => {
+    const target = echoRefTarget(row.kind);
+    setEchoDetail(null);
+    if (target.view === 'entries') {
+      setView('entries');
+      return;
+    }
+    setOntoTab(target.ontoTab);
+    setView('onto');
+  }, []);
+
   useEffect(() => {
     if (view === 'echo') void fetchEcho();
   }, [view, fetchEcho]);
+
+  // 回响深链（v0.8.1）：token 递增即切到指定子视图；视图切换自身的 effect 负责拉新。
+  useEffect(() => {
+    if (viewToken === undefined || viewToken === 0 || requestedView === undefined) return;
+    setView(requestedView);
+  }, [viewToken, requestedView]);
 
   // 头部刷新令牌（v0.5.9）：重建期间不离开翻阅面也能拉新——按当前视图重取，条目流永远重取（它背后是热路）。
   useEffect(() => {
@@ -362,6 +604,7 @@ export function SeaRecords(props: SeaRecordsProps) {
               'div',
               { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
               createElement('span', { style: BADGE_STYLE }, formatTime(row.tsMs)),
+              echoChip(row.echoId),
               row.topics.map((topic) => createElement('span', { key: `tp-${topic}`, style: CUE_STYLE }, topic)),
               row.cues.map((cue) => createElement('span', { key: `cue-${cue}`, style: CUE_STYLE }, cue)),
             ),
@@ -397,39 +640,73 @@ export function SeaRecords(props: SeaRecordsProps) {
           ),
         )
         : null,
-      echoRows.length === 0 && !echoBusy
-        ? createElement('p', { style: { margin: '18px 14px', ...MUTED_STYLE } }, copy['echo.empty'])
-        : createElement(
+      // 生涯流程档（v0.8.18）：回响页只放近 7 天档的前 3 行（pinned 记忆在上，不抢位）
+      (memoryView?.distill ?? []).some((row) => row.kind === 'week')
+        ? createElement(
           'div',
-          { style: { overflowY: 'auto', flex: '1 1 auto', minHeight: 0, padding: '8px 14px' } },
-          ...echoRows.map((item) => createElement(
+          { style: { padding: '6px 14px', borderBottom: '1px solid rgba(120,160,255,.12)' }, 'data-spirit': 'echo-digest' },
+          createElement('div', { style: { fontSize: 12, color: '#8e9ab5' } }, copy['echo.digestNote']),
+          ...(memoryView?.distill ?? [])
+            .filter((row) => row.kind === 'week')
+            .flatMap((row) => row.text.split('\n'))
+            .filter((line) => line.trim() !== '')
+            .slice(0, 3)
+            .map((line, index) => createElement('div', { key: index, style: { ...MUTED_STYLE, marginTop: 2, whiteSpace: 'pre-wrap' } }, `· ${line}`)),
+        )
+        : null,
+      // 回响事件头（v0.8.11）：recall-<uuid> · 时间 · FLASHBACK 标
+      echoRecall !== null
+        ? createElement(EchoRecallHeader, {
+          recall: echoRecall,
+          copy: { label: copy['echo.recallLabel'], flashback: copy['echo.flashback'] },
+          formatTime,
+        })
+        : null,
+      // 「此刻/语气」特殊格式栏（v0.8.8）：语气/状态不是记录，与列表分栏
+      echoTone !== null
+        ? createElement(EchoToneBar, {
+          tone: echoTone,
+          copy: { badge: copy['echo.toneBadge'], state: copy['echo.toneState'], opening: copy['echo.toneOpening'] },
+          formatTime,
+        })
+        : null,
+      // 主列表：记录（echo-<uuid>）——行形与本体/记着同构（组件化后可测，见 echo-refs-list）
+      echoRefRows.length === 0 && echoBusy
+        ? null
+        : createElement(EchoRefsList, {
+          records: echoRefRows,
+          detail: echoDetail,
+          copy: { original: copy['echo.refOriginal'], detailEmpty: copy['echo.detailEmpty'] },
+          emptyText: copy['echo.refsEmpty'],
+          kindLabel,
+          formatTime,
+          onOriginal: (row) => void openEchoDetail(row),
+          onOpen: openRefTarget,
+        }),
+      // 轮次观测（回答「这一轮为什么没卡」）：折叠保留，不顶掉引用列表
+      echoRows.length > 0
+        ? createElement(
+          'details',
+          { style: { padding: '8px 14px' } },
+          createElement('summary', { style: { ...MUTED_STYLE, cursor: 'pointer' } }, copy['echo.stepsTitle']),
+          ...echoRows.slice(0, 10).map((item) => createElement(
             'div',
-            { key: `${item.at}-${item.fingerprint}-${item.sessionId}`, style: { border: '1px solid rgba(120,160,255,.14)', borderRadius: 8, padding: '8px 10px', marginBottom: 8, background: 'rgba(10,14,26,.45)' } },
-            createElement(
-              'div',
-              { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 } },
-              createElement('span', { style: { color: '#8e9ab5' } }, new Date(item.at).toLocaleString()),
-              createElement('span', { style: { color: item.kind === 'injected' ? '#8fe0b0' : '#e8c07f' } }, item.kind === 'injected' ? copy['echo.injected'] : `${copy['echo.skipped']} · ${item.reason}`),
-              item.kind === 'injected'
-                ? createElement('span', { style: MUTED_STYLE }, `${item.bytes}B · ${copy['echo.fp']} ${item.fingerprint.slice(0, 12)}`)
-                : null,
-              ...item.segments.map((seg) => createElement('span', { key: seg.name, style: CUE_STYLE }, `${seg.name} ${seg.lines}`)),
-            ),
-            item.text !== ''
-              ? createElement('div', { style: { marginTop: 6, fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', color: '#e8eeff' } }, item.text)
-              : null,
+            { key: `${item.at}-${item.sessionId}-${item.kind}`, style: { ...MUTED_STYLE, marginTop: 4, fontSize: 11, whiteSpace: 'pre-wrap' } },
+            `${new Date(item.at).toLocaleString()} \u00b7 ${item.kind === 'injected' ? copy['echo.injected'] : `${copy['echo.skipped']} \u00b7 ${item.reason}`}${item.origin === 'persisted' ? ` \u00b7 ${copy['echo.persisted']}` : ''}`,
           )),
-        ),
+        )
+        : null,
     );
   }
 
   if (view === 'onto') {
     // 记忆分组渲染（v0.8）：生涯/工作/目的/日记共用一套行形（kind 徽标 + pinned 标记）
-    const memGroup = (title: string, rows: Array<{ id: string; kind: string; text: string; pinned: boolean }>): ReturnType<typeof createElement> =>
+    const memGroup = (title: string, rows: Array<{ id: string; kind: string; text: string; pinned: boolean; echoId?: string; updatedAt?: number }>, note?: string): ReturnType<typeof createElement> =>
       createElement(
         'div',
         { key: title, style: { marginTop: 10 } },
         createElement('div', { style: { fontSize: 12, color: '#8e9ab5' } }, `${title}（${rows.length}）`),
+        note === undefined || note === '' ? null : createElement('div', { style: { ...MUTED_STYLE, marginTop: 2 }, 'data-spirit': 'digest-entities' }, note),
         rows.length === 0
           ? createElement('div', { style: { ...MUTED_STYLE, marginTop: 4 } }, copy['memory.empty'])
           : createElement(
@@ -443,6 +720,8 @@ export function SeaRecords(props: SeaRecordsProps) {
                 { style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' } },
                 createElement('span', { style: BADGE_STYLE }, row.kind),
                 row.pinned ? createElement('span', { style: CUE_STYLE }, copy['memory.pinned']) : null,
+                typeof row.updatedAt === 'number' ? createElement('span', { style: MUTED_STYLE }, formatTime(row.updatedAt)) : null,
+                echoChip(row.echoId),
               ),
               createElement('div', { style: { fontSize: 13, lineHeight: 1.6, color: '#e8eeff', marginTop: 4, whiteSpace: 'pre-wrap' } }, row.text),
             )),
@@ -467,6 +746,7 @@ export function SeaRecords(props: SeaRecordsProps) {
           : createElement('input', {
             key: 'onto-q',
             style: { ...INPUT_STYLE, width: 160 },
+            'data-spirit': 'onto-search-input',
             value: ontoQueryInput,
             placeholder: ontoTab === 'entities' ? copy['onto.searchPhEntities'] : copy['onto.searchPhTasks'],
             onChange: (event: { target: { value: string } }) => setOntoQueryInput(event.target.value),
@@ -480,6 +760,8 @@ export function SeaRecords(props: SeaRecordsProps) {
       ),
       error !== null ? createElement('p', { style: { margin: '8px 14px', color: '#ff9a9a', fontSize: 12 } }, `${copy['sea.loadFailed']}: ${error}`) : null,
       note !== null ? createElement('p', { style: { margin: '6px 14px', ...MUTED_STYLE } }, note) : null,
+      // 号查询结果（v0.8.12）：按 echo 号搜到的记录 + 星图定位
+      locateBlock(),
       ontoDetail !== null
         ? createElement(
             'div',
@@ -503,6 +785,7 @@ export function SeaRecords(props: SeaRecordsProps) {
                         'div',
                         { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
                         createElement('span', { style: BADGE_STYLE }, formatTime(row.tsMs)),
+                        echoChip(row.echoId),
                         ...row.cues.map((cue) => createElement('span', { key: `c-${cue}`, style: CUE_STYLE }, cue)),
                       ),
                       createElement('div', { style: { fontSize: 13, lineHeight: 1.6, color: '#e8eeff', marginTop: 4, whiteSpace: 'pre-wrap' } }, row.cardLine),
@@ -530,6 +813,7 @@ export function SeaRecords(props: SeaRecordsProps) {
                   { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
                   createElement('span', { style: BADGE_STYLE }, task.status),
                   createElement('span', { style: MUTED_STYLE }, formatTime(task.updatedAt)),
+                  echoChip(task.echoId),
                 ),
                 createElement('div', { style: { fontSize: 13, lineHeight: 1.6, color: '#e8eeff', marginTop: 4 } }, task.title),
                 task.nextStep !== undefined && task.nextStep !== ''
@@ -587,10 +871,42 @@ export function SeaRecords(props: SeaRecordsProps) {
             ...(memoryView === null
               ? [createElement('p', { style: MUTED_STYLE }, copy['memory.empty'])]
               : [
-                memGroup(copy['memory.life'], memoryView.life.map((m) => ({ id: m.id, kind: m.kind, text: m.text, pinned: m.pinned }))),
-                memGroup(copy['memory.work'], memoryView.work.map((m) => ({ id: m.id, kind: m.kind, text: m.text, pinned: m.pinned }))),
-                memGroup(copy['memory.goals'], memoryView.goals.map((g) => ({ id: g.id, kind: g.status, text: g.title, pinned: false }))),
-                memGroup(copy['memory.diary'], memoryView.diary.map((m) => ({ id: m.id, kind: m.kind, text: m.text, pinned: m.pinned }))),
+                // 刷新流程档（v0.8.18）：手动重算三档（幂等，里程碑只增不改）
+                createElement(
+                  'div',
+                  { key: 'digest-refresh', style: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 } },
+                  createElement('button', {
+                    type: 'button',
+                    style: BUTTON_STYLE,
+                    'data-spirit': 'digest-refresh',
+                    onClick: () => {
+                      const call = rpc;
+                      if (call === undefined) return;
+                      void (async () => {
+                        await call('distill-digest-run', {}).catch(() => undefined);
+                        const mem = await call('memory-list', {}).catch(() => undefined);
+                        if (mem !== undefined && mem.ok) setMemoryView(mem.value);
+                      })();
+                    },
+                  }, copy['memory.refreshDigest']),
+                ),
+                memGroup(copy['memory.life'], memoryView.life.map((m) => ({ id: m.id, kind: m.kind, text: m.text, pinned: m.pinned, ...(m.echoId === undefined ? {} : { echoId: m.echoId }), updatedAt: m.updatedAt }))),
+                memGroup(copy['memory.work'], memoryView.work.map((m) => ({ id: m.id, kind: m.kind, text: m.text, pinned: m.pinned, ...(m.echoId === undefined ? {} : { echoId: m.echoId }), updatedAt: m.updatedAt }))),
+                memGroup(copy['memory.goals'], memoryView.goals.map((g) => ({ id: g.id, kind: g.status, text: g.title, pinned: false, ...(g.echoId === undefined ? {} : { echoId: g.echoId }), updatedAt: g.updatedAt }))),
+                memGroup(copy['memory.diary'], memoryView.diary.map((m) => ({ id: m.id, kind: m.kind, text: m.text, pinned: m.pinned, ...(m.echoId === undefined ? {} : { echoId: m.echoId }), updatedAt: m.updatedAt }))),
+                // 对话细节（v0.8.24）：代理自记的要点（不自动注入）
+                memGroup(copy['memory.episode'], (memoryView.episode ?? []).map((m) => ({ id: m.id, kind: m.kind, text: m.text, pinned: m.pinned, updatedAt: m.updatedAt }))),
+                // 生涯流程档（v0.8.18）：三档分开——week 近期 / month 中期 / milestone 只增不改；知识性归上游
+                // v0.8.25：先看「按会话」（会话内 + 跨会话已去重，重复标 ×N），再看时间窗口档
+                ...(['session', 'week', 'month', 'milestone'] as const).map((tier) => {
+                  const rows = (memoryView.distill ?? []).filter((m) => m.kind === tier);
+                  const entities = [...new Set(rows.flatMap((m) => m.entityNames ?? []))];
+                  return memGroup(
+                    tier === 'session' ? copy['memory.digestSession'] : tier === 'week' ? copy['memory.digestWeek'] : tier === 'month' ? copy['memory.digestMonth'] : copy['memory.digestMilestone'],
+                    rows.map((m) => ({ id: m.id, kind: tier, text: m.text, pinned: false, updatedAt: m.updatedAt })),
+                    entities.length === 0 ? undefined : `${copy['memory.digestEntities']}${entities.join('、')}`,
+                  );
+                }),
               ]),
           ),
     );
@@ -618,6 +934,7 @@ export function SeaRecords(props: SeaRecordsProps) {
       createElement('h4', { style: { margin: 0, fontSize: 13, color: '#9fc1ff' } }, copy['rec.title']),
       createElement('input', {
         style: { ...INPUT_STYLE, width: 200 },
+        'data-spirit': 'entries-search-input',
         placeholder: copy['rec.search'],
         value: queryInput,
         onChange: (event: { target: { value: string } }) => setQueryInput(event.target.value),
@@ -653,6 +970,8 @@ export function SeaRecords(props: SeaRecordsProps) {
     ),
     error !== null ? createElement('p', { style: { margin: '8px 14px', color: '#ff9a9a', fontSize: 12 } }, `${copy['sea.loadFailed']}: ${error}`) : null,
     note !== null ? createElement('p', { style: { margin: '6px 14px', ...MUTED_STYLE } }, note) : null,
+    // 号查询结果（v0.8.12）：按 echo 号搜到的记录 + 星图定位
+    locateBlock(),
     rows.length === 0 && error === null && !busy
       ? createElement('p', { style: { margin: '18px 14px', ...MUTED_STYLE } }, hiddenView ? copy['rec.emptyHidden'] : copy['rec.empty'])
       : null,
@@ -690,6 +1009,7 @@ export function SeaRecords(props: SeaRecordsProps) {
             { style: { ...MUTED_STYLE, marginTop: 4 } },
             `${copy['panel.turn']} ${row.turnSeq} · ${formatTime(row.tsMs)} · ${copy['rec.session']} ${row.sessionId !== undefined ? row.sessionId.slice(0, 10) : '—'}`,
           ),
+          echoChip(row.echoId),
           expandedId === row.id && editingId !== row.id
             ? createElement('div', { style: { ...MUTED_STYLE, marginTop: 6, wordBreak: 'break-all' } }, `id ${row.id}${row.sourceRef !== null ? ` · ${row.sourceRef}` : ''}`)
             : null,

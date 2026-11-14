@@ -442,6 +442,32 @@ describe('翻阅与编辑（v5 管理面）', () => {
     expect(store.byId('e1')?.text).toBe(draft.text);
   });
 
+  it('listAdmin 游标分页（v19）：连翻不重不漏；cursor 与 offset 同给以 cursor 为准', () => {
+    const { store } = adminStore();
+    for (let i = 0; i < 7; i += 1) {
+      store.append(
+        { id: `c${i}`, sessionId: 's1', workspaceId: 'w1', turnSeq: i, tsMs: 1_000 + i * 100, personaRevision: 1 },
+        { ...draft, text: `游标第${i}句` },
+      );
+    }
+    const page1 = store.listAdmin({ offset: 0, limit: 3 });
+    expect(page1.rows.map((e) => e.id)).toEqual(['c6', 'c5', 'c4']);
+    expect(page1.hasMore).toBe(true);
+    expect(page1.nextCursor).toEqual({ tsMs: 1_400, id: 'c4' });
+
+    const page2 = store.listAdmin({ offset: 0, limit: 3, cursor: page1.nextCursor });
+    expect(page2.rows.map((e) => e.id)).toEqual(['c3', 'c2', 'c1']);
+
+    const page3 = store.listAdmin({ offset: 0, limit: 3, cursor: page2.nextCursor });
+    expect(page3.rows.map((e) => e.id)).toEqual(['c0']);
+    expect(page3.hasMore).toBe(false);
+    expect(page3.nextCursor).toBeUndefined();
+
+    // cursor 优先于 offset（老客户端可能两者都带）
+    const paged = store.listAdmin({ offset: 999, limit: 3, cursor: page1.nextCursor });
+    expect(paged.rows.map((e) => e.id)).toEqual(['c3', 'c2', 'c1']);
+  });
+
   it('listAdmin：跨会话分页 hasMore、trigger/marked 筛选、hiddenOnly 视图、搜索与浏览同投影', () => {
     const { store } = adminStore();
     for (let i = 0; i < 5; i += 1) {

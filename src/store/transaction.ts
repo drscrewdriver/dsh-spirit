@@ -27,6 +27,8 @@ import type { SourceTrust } from '../types.js';
 import { SOURCE_TRUST_VALUES, TRUST_BACKFILL } from '../types.js';
 import { baseName, CUE_LIMITS, normalizeCue } from '../experience/cues.js';
 import { hitsInjection } from '../words.js';
+import { indexDoc } from '../search/fts.js';
+import { indexText } from '../search/tokens.js';
 
 /** cue 的 kind 是开放词表（只钳长度不白名单）；单源在此，别处不再抄第二份。 */
 export const TXN_CUE_KINDS = ['file', 'person', 'tool', 'topic'] as const;
@@ -290,6 +292,8 @@ export class TxnStore {
           entry.turnEndMs ?? null,
         );
         for (const cue of cues) db.prepare(INSERT_CUE_SQL).run(cue.txnId, cue.cue, cue.kind);
+        // v19 检索索引：card_line 进索引（title 面），summary 只进索引不进注入
+        indexDoc(db, 'delivery', entry.id, entry.tsMs, indexText(entry.cardLine, entry.summary));
       });
     } catch (err) {
       this.deps.logger.warn(`[spirit] 事务条目落库失败：${err instanceof Error ? err.message : String(err)}`);

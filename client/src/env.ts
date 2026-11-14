@@ -22,6 +22,10 @@ export interface SpiritClientCtx {
   };
   /** 按名取客户端服务（不把可选服务写进声明式 inject：晚到会永久挂起 apply）。 */
   get(name: string): unknown;
+  /** 可选注入：服务晚到时不阻塞 apply（回调只在服务可用时跑）。 */
+  inject?(deps: string[], callback: (scope: Record<string, unknown>) => void, label?: string): unknown;
+  /** cordis 底层反射面：`ctx.get` 被宿主代理拦掉时的兜底入口。 */
+  reflect?: { get?(name: string): unknown };
   /** 布局服务（关闭主栏整页用）；老宿主可能整体缺席。 */
   layout?: { selectPanel?(key: string | null): unknown };
 }

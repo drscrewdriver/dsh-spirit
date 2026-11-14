@@ -23,6 +23,8 @@ import type { DatabaseSync, SQLOutputValue } from 'node:sqlite';
 import type { ExperienceDraft, ExperienceEntry, ExperienceFact } from '../types.js';
 import type { MinimalLogger } from '../persona/store.js';
 import { extractCues } from '../experience/cues.js';
+import { indexDoc, queryDocs } from '../search/fts.js';
+import { indexText } from '../search/tokens.js';
 
 /** 降级模式下的内存镜像上限（有顶是必须的：无顶就是无界增长）。 */
 export const MEMORY_MIRROR_LIMIT = 200;
@@ -261,6 +263,9 @@ export class ExperienceStore {
           entry.salience ?? 0,
         ]);
         for (const cue of cues) this.run(INSERT_CUE_SQL, [entry.id, cue]);
+        // v19 检索索引：同一事务里写（索引失败自吞，绝不让 append 变成一轮对话失败）。
+        // 正文字段与 cues 进同一文档：cue 是检索段的一等公民。
+        indexDoc(this.deps.db, 'experience', entry.id, entry.tsMs, indexText(entry.text, entry.gist, cues.join(' ')));
       });
     } catch (err) {
       // 抛穿就等于让一次记录失败变成一轮对话失败
@@ -415,6 +420,8 @@ export class ExperienceStore {
           revised.feedbackScore ?? null,
         ]);
         for (const cue of oldCues) this.run(INSERT_CUE_SQL, [revised.id, cue]);
+        // v19：新行入索引（旧行仍留在索引里也无害：查询侧会按 superseded_by 二次过滤）
+        indexDoc(this.deps.db, 'experience', revised.id, revised.tsMs, indexText(revised.text, revised.gist, oldCues.join(' ')));
         if (!this.supersede(old.id, revised.id)) throw new Error('旧行已被并发取代，编辑未落');
       });
       return revised;
@@ -517,6 +524,72 @@ export class ExperienceStore {
       ) ?? '';
     } catch {
       return '';
+    }
+  }
+
+  /**
+   * 全库可见条目计数（TUI `/spirit status` 用）。
+   *
+   * 为什么需要全库而不是会话级：终端里第一眼问的是「库里到底有多少记忆」，
+   * `count(sessionId)` 回答不了。
+   */
+  countVisible(): number {
+    if (this.deps.db === null) {
+      return this.mirror.filter((entry) => entry.supersededBy === undefined && entry.hiddenAt === undefined).length;
+    }
+    try {
+      return this.countOf(`SELECT COUNT(*) AS n FROM experience WHERE superseded_by IS NULL AND hidden_at IS NULL`, []);
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * FTS 候选 id（v19）：索引不可用 / 无命中 ⇒ 空数组，调用方回落 LIKE。
+   * 只返回 id：可见面（ghost/hidden/会话）过滤永远回源表做，避免第二套语义。
+   */
+  private ftsExperienceIds(query: string, limit: number): string[] {
+    const db = this.deps.db;
+    if (db === null) return [];
+    return queryDocs(db, query, { kinds: ['experience'], limit: Math.max(1, Math.floor(limit)) }).map((hit) => hit.refId);
+  }
+
+  /**
+   * 关键词召回（TUI `/spirit recall` 用）：text/gist 双列 LIKE，只读可见面。
+   *
+   * 必须有 LIMIT（本库 append-only）；参数化拼接，不拼字符串。
+   */
+  searchText(needle: string, limit: number): ExperienceEntry[] {
+    const size = Math.max(1, Math.min(40, Math.floor(Number.isFinite(limit) ? limit : 8)));
+    const query = String(needle ?? '').trim();
+    if (query === '') return [];
+    const pattern = `%${query}%`;
+    if (this.deps.db === null) {
+      return this.mirror
+        .filter((entry) => entry.supersededBy === undefined && entry.hiddenAt === undefined
+          && (`${entry.text ?? ''}`.includes(query) || `${entry.gist ?? ''}`.includes(query)))
+        .slice(-size)
+        .reverse();
+    }
+    // v19：FTS 快路（词级命中；返回前仍按可见面过滤 + 时间倒序）
+    const ids = this.ftsExperienceIds(query, Math.max(size * 4, 24));
+    if (ids.length > 0) {
+      const rows = this.all(
+        `SELECT * FROM experience WHERE id IN (${ids.map(() => '?').join(', ')})
+           AND superseded_by IS NULL AND hidden_at IS NULL
+         ORDER BY ts_ms DESC, id DESC LIMIT ?`,
+        [...ids, size],
+      );
+      if (rows.length > 0) return rows.map(toEntry);
+    }
+    try {
+      const rows = this.all(
+        `SELECT * FROM experience WHERE superseded_by IS NULL AND hidden_at IS NULL AND (text LIKE ? OR gist LIKE ?) ORDER BY ts_ms DESC, id DESC LIMIT ?`,
+        [pattern, pattern, size],
+      );
+      return rows.map(toEntry);
+    } catch {
+      return [];
     }
   }
 
@@ -652,12 +725,30 @@ export class ExperienceStore {
     query: string,
     opts: { sessionId?: string; limit: number; scanLimit?: number },
   ): ExperienceEntry[] {
-    const parts = query
-      .trim()
+    const raw = query.trim();
+    if (raw === '' || this.deps.db === null) return [];
+    const limit = Math.max(1, Math.floor(opts.limit));
+    // ① FTS 快路（v19）：索引只决定“谁可能相关”，可见面过滤与时间排序仍回源表——
+    //    排序语义不跟着实现换（否则“想起”段的顺序会整体漂）。
+    const ids = this.ftsExperienceIds(raw, Math.max(limit * 4, 24));
+    if (ids.length > 0) {
+      const scope = opts.sessionId === undefined ? '' : 'AND session_id = ?';
+      const rows = this.all(
+        `SELECT * FROM experience
+          WHERE id IN (${ids.map(() => '?').join(', ')})
+            AND superseded_by IS NULL AND hidden_at IS NULL ${scope}
+          ORDER BY ts_ms DESC, id DESC
+          LIMIT ?`,
+        [...ids, ...(opts.sessionId === undefined ? [] : [opts.sessionId]), limit],
+      );
+      if (rows.length > 0) return rows.map(toEntry);
+    }
+    // ② 回落：原 LIKE 扫描窗（索引不可用 / 无命中 / 单字查询）
+    const parts = raw
       .toLowerCase()
       .split(/\s+/u)
       .filter((part) => part.length >= 2);
-    if (parts.length === 0 || this.deps.db === null) return [];
+    if (parts.length === 0) return [];
     const scan = Math.max(1, Math.floor(opts.scanLimit ?? LOCAL_SCAN_LIMIT));
     try {
       const clauses = parts.map(() => `(c.cue LIKE ? OR e.text LIKE ?)`).join(' OR ');
@@ -767,14 +858,30 @@ export class ExperienceStore {
     hiddenOnly?: boolean;
     sessionId?: string;
     offset: number;
+    /** 游标分页（v19）：与 offset 同时给时以 cursor 为准。 */
+    cursor?: { tsMs: number; id: string };
     limit: number;
     scanLimit?: number;
-  }): { rows: ExperienceEntry[]; hasMore: boolean; truncated: boolean } {
-    const from = Math.max(0, Math.floor(opts.offset));
+  }): { rows: ExperienceEntry[]; hasMore: boolean; truncated: boolean; nextCursor?: { tsMs: number; id: string } } {
+    const cursor = opts.cursor;
+    const useCursor = cursor !== undefined && Number.isFinite(cursor.tsMs) && cursor.id !== '';
+    const from = useCursor ? 0 : Math.max(0, Math.floor(opts.offset));
     const size = Math.max(1, Math.min(PAGE_MAX, Math.floor(opts.limit)));
     const wanted = size + 1;
     const q = opts.query?.trim().toLowerCase();
     const hasQuery = q !== undefined && q !== '';
+    /** 统一出口：切页 + 探界 + 下一页游标（游标取本页最后一行，缺行则不给）。 */
+    const finish = (rows: ExperienceEntry[], truncated: boolean) => {
+      const hasMore = rows.length > size;
+      const page = rows.slice(0, size);
+      const last = page[page.length - 1];
+      return {
+        rows: page,
+        hasMore,
+        truncated,
+        ...(hasMore && last !== undefined ? { nextCursor: { tsMs: last.tsMs, id: last.id } } : {}),
+      };
+    };
 
     // 镜像过滤（db=null 降级面）：条件与 SQL 路逐条对齐，不拿降级当第二套语义
     const mirrorMatch = (e: ExperienceEntry): boolean => {
@@ -792,7 +899,15 @@ export class ExperienceStore {
     };
     if (this.deps.db === null) {
       const pool = this.mirror.filter(mirrorMatch).slice().reverse(); // 倒序：新在前
-      return { rows: pool.slice(from, from + size), hasMore: from + size < pool.length, truncated: false };
+      // 降级面也支持游标：按 (tsMs, id) 找到起点（降级面不做索引优化，只保语义对齐）
+      const start = useCursor
+        ? (() => {
+          const idx = pool.findIndex((e) => e.tsMs < (cursor as { tsMs: number }).tsMs
+            || (e.tsMs === (cursor as { tsMs: number; id: string }).tsMs && e.id < (cursor as { id: string }).id));
+          return idx < 0 ? pool.length : idx;
+        })()
+        : from;
+      return finish(pool.slice(start, start + wanted), false);
     }
 
     try {
@@ -814,6 +929,11 @@ export class ExperienceStore {
         params.push(opts.lane);
       }
       if (opts.marked === true) conditions.push('feedback_score >= 0');
+      // v19 游标：严格小于上一页末行（同 ts 时用 id 定序，与 ORDER BY ts_ms DESC, id DESC 同构）
+      if (useCursor) {
+        conditions.push('(ts_ms < ? OR (ts_ms = ? AND id < ?))');
+        params.push((cursor as { tsMs: number }).tsMs, (cursor as { tsMs: number }).tsMs, (cursor as { id: string }).id);
+      }
       const where = conditions.join(' AND ');
 
       if (!hasQuery) {
@@ -821,18 +941,29 @@ export class ExperienceStore {
           `SELECT * FROM experience WHERE ${where} ORDER BY ts_ms DESC, id DESC LIMIT ? OFFSET ?`,
           [...params, wanted, from],
         );
-        return { rows: rows.slice(0, size).map(toEntry), hasMore: rows.length > size, truncated: false };
+        return finish(rows.map(toEntry), false);
       }
 
-      // 搜索路：候选池（带结构化筛选）→ cues/正文匹配 → 同一投影回
+      // 搜索路：① FTS 候选（v19）→ ② 原候选池 LIKE 回落
       const scan = Math.max(1, Math.floor(opts.scanLimit ?? LOCAL_SCAN_LIMIT));
+      const ftsIds = this.ftsExperienceIds(q!, Math.max(wanted * 4, 40));
+      if (ftsIds.length > 0) {
+        // 索引只给候选 id；结构化筛选与分页仍走同一套 where / 同一排序
+        const rows = this.all(
+          `SELECT * FROM experience WHERE id IN (${ftsIds.map(() => '?').join(', ')})
+             AND ${where}
+           ORDER BY ts_ms DESC, id DESC LIMIT ? OFFSET ?`,
+          [...ftsIds, ...params, wanted, from],
+        );
+        return finish(rows.map(toEntry), false);
+      }
       const parts = q!.split(/\s+/u).filter((p) => p.length >= 2);
       if (parts.length === 0) {
         const rows = this.all(
           `SELECT * FROM experience WHERE ${where} ORDER BY ts_ms DESC, id DESC LIMIT ? OFFSET ?`,
           [...params, wanted, from],
         );
-        return { rows: rows.slice(0, size).map(toEntry), hasMore: rows.length > size, truncated: false };
+        return finish(rows.map(toEntry), false);
       }
       const clauses = parts.map(() => `(c.cue LIKE ? OR e.text LIKE ?)`).join(' OR ');
       const innerParams: Array<string | number> = [...params, scan];
@@ -853,7 +984,7 @@ export class ExperienceStore {
       );
       // 截断告知：候选池被扫描窗吃满 ⇒ 更早的经历可能没被勾起（诚实面，不外漏 scanLimit）
       const poolN = this.countOf(`SELECT COUNT(*) AS n FROM (SELECT id FROM experience WHERE ${where} ORDER BY ts_ms DESC LIMIT ?)`, [...params, scan]);
-      return { rows: rows.slice(0, size).map(toEntry), hasMore: rows.length > size, truncated: poolN >= scan };
+      return finish(rows.map(toEntry), poolN >= scan);
     } catch (err) {
       this.deps.logger.warn(`[spirit] 管理查询失败：${err instanceof Error ? err.message : String(err)}`);
       return { rows: [], hasMore: false, truncated: false };

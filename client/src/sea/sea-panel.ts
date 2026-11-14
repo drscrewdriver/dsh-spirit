@@ -16,8 +16,11 @@ import { sessionIdOf, type SeatProps } from '../env.js';
 import type { RpcFn } from '../rpc.js';
 import { SeaPersona } from './sea-persona.js';
 import { SeaRecords } from './sea-records.js';
+import { seaIntent } from './sea-intent.js';
+import type { SeaIntentRequest } from './sea-intent.js';
 import { SeaDream } from './sea-dream.js';
 import { THEME_LABEL, TRIGGER_LABEL } from './sea-labels.js';
+import { shortEcho } from './echo-view.js';
 import { SeaView } from './sea-view.js';
 import { THEME_IDS, browserStorage, loadGlowFactor, loadHiGlow, loadThemeId, saveGlowFactor, saveHiGlow, saveThemeId, themeById, withGlow } from './sea-themes.js';
 import { loadLayoutMode, saveLayoutMode, type SeaLayoutMode } from './sea-layout.js';
@@ -76,8 +79,73 @@ export function SeaPanel(props: SeaPanelProps) {
   const [selected, setSelected] = useState<SpiritSeaPoint | null>(null);
   // 四 tab（v0.3.3）：星海=图、人设=卡、翻阅=条目管理面（设置卡检视段搬入处）、做梦=整理 pass
   const [tab, setTab] = useState<'sea' | 'persona' | 'records' | 'dream'>('sea');
+  // 回响深链（v0.8.1）：侧栏发来的「打开回响」意图。token 递增保证连续两次深链都生效；
+  // 挂载前积压的意图在首帧 take()，已挂载时靠 subscribe 当场切页签。
+  const [recordsView, setRecordsView] = useState<'echo' | undefined>(undefined);
+  const [recordsToken, setRecordsToken] = useState(0);
+  // 星图定位（v0.8.12）：按 echo 号选中星点（翻阅搜索 / 头部输入框都打这里）
+  const [focusEcho, setFocusEcho] = useState<string | null>(null);
+  const [focusEchoInput, setFocusEchoInput] = useState('');
+  const normEcho = (value: string): string => value.trim().toLowerCase().replaceAll('-', '');
+  useEffect(() => {
+    const applyIntent = (request: SeaIntentRequest): void => {
+      // 星图目标只切页签；条目目标还要把翻阅面定位到回响子视图。
+      if (request.intent.tab === 'sea') {
+        setTab('sea');
+        if (request.intent.focusEchoId !== undefined) {
+          setFocusEcho(request.intent.focusEchoId);
+          setFocusEchoInput(request.intent.focusEchoId);
+        }
+        return;
+      }
+      setTab('records');
+      setRecordsView(request.intent.view);
+      setRecordsToken(request.token);
+    };
+    const pending = seaIntent.take();
+    if (pending !== undefined) applyIntent(pending);
+    return seaIntent.subscribe(applyIntent);
+  }, []);
   const [note, setNote] = useState<string | null>(null);
   const seqRef = useRef(0);
+
+  // 星图定位（v0.8.15）：先直找星点；号命中但本身无星点（任务/记着类）就顺着 starEchoIds
+  // （任务的交付点）找；不是号就退回全域文本搜。找不到如实说，不假装成功。
+  useEffect(() => {
+    if (focusEcho === null || graph === null || rpc === undefined) return;
+    let cancelled = false;
+    const findPoint = (candidates: readonly string[]): SpiritSeaPoint | undefined => {
+      const want = candidates.map(normEcho).filter((value) => value !== '');
+      if (want.length === 0) return undefined;
+      return graph.points.find((point) => {
+        const actual = point.echoId === undefined ? '' : normEcho(point.echoId);
+        return actual !== '' && want.some((w) => actual.startsWith(w) || w.startsWith(actual));
+      });
+    };
+    void (async () => {
+      const direct = findPoint([focusEcho]);
+      if (direct !== undefined) {
+        if (!cancelled) { setNote(null); setSelected(direct); }
+        return;
+      }
+      const located = await rpc('echo-locate', { q: focusEcho }).catch(() => undefined);
+      if (located !== undefined && located.ok && located.value.idQuery && located.value.hits.length > 0) {
+        const hit = located.value.hits[0]!;
+        const point = findPoint([hit.echoId, ...(hit.starEchoIds ?? [])]);
+        if (!cancelled) {
+          if (point !== undefined) { setNote(null); setSelected(point); } else { setNote(`${copy['echo.locateNoStar']}：${hit.title}`); }
+        }
+        return;
+      }
+      const found = await rpc('spirit-search', { q: focusEcho, limit: 5 }).catch(() => undefined);
+      const hits = found !== undefined && found.ok ? found.value.hits : [];
+      const point = findPoint(hits.flatMap((item) => (item.echoId === undefined ? [] : [item.echoId])));
+      if (cancelled) return;
+      if (point !== undefined) { setNote(null); setSelected(point); } else { setNote(hits.length === 0 ? copy['echo.locateMiss'] : copy['echo.searchNoStar']); }
+    })();
+    return () => { cancelled = true; };
+    // copy 每渲染新建（仅用于文案），不进依赖避免无意义重跑
+  }, [focusEcho, graph, rpc]);
 
   const load = useCallback(async () => {
     if (rpc === undefined) return;
@@ -209,6 +277,10 @@ export function SeaPanel(props: SeaPanelProps) {
           ? '—'
           : `${copy['sea.loaded']} ${stats.loaded} · ${copy['sea.total']} ${stats.total} · ${copy['sea.edges']} ${stats.edges} · ${copy['sea.spanDays']} ${spanDays} · ${copy['sea.fadeTiers']} ${stats.fade.full}/${stats.fade.gist}/${stats.fade.held}${stats.ghosts > 0 ? ` · ${copy['sea.ghosts']} ${stats.ghosts}` : ''}${stats.moodLabel === '' ? '' : ` · ${copy['sea.mood']} ${stats.moodLabel}`}`,
       ),
+      // 星海专属设置（v0.8.15）：切到人设/翻阅/做梦时不显示
+      // （用户实报：翻阅页顶着一整行星海设置，像误入了另一个视图）
+      ...(tab === 'sea'
+        ? [
       createElement(
         'button',
         { type: 'button', style: BUTTON_STYLE, onClick: () => setScope(scope === 'all' ? 'session' : 'all') },
@@ -248,6 +320,23 @@ export function SeaPanel(props: SeaPanelProps) {
       createElement('button', { type: 'button', style: focusOnly ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setFocusOnly((v) => !v) }, copy['sea.focusOnly']),
       createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => { setResetToken((v) => v + 1); setRefreshToken((v) => v + 1); } }, '⟲'),
       createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => { void load(); setRefreshToken((v) => v + 1); } }, copy['sea.refresh']),
+      // 按 echo 号定位星点（v0.8.12）：输入短号/全号，回车或点「定位」
+      createElement('input', {
+        style: { ...BUTTON_STYLE, width: 140, background: 'rgba(10,14,26,.6)' },
+        placeholder: copy['echo.locateIdPh'],
+        'data-spirit': 'sea-locate-input',
+        value: focusEchoInput,
+        onChange: (event: { target: { value: string } }) => setFocusEchoInput(event.target.value),
+        onKeyDown: (event: { key: string }) => { if (event.key === 'Enter') setFocusEcho(focusEchoInput.trim() === '' ? null : focusEchoInput.trim()); },
+      }),
+      createElement('button', {
+        type: 'button',
+        style: BUTTON_STYLE,
+        'data-spirit': 'sea-locate',
+        onClick: () => setFocusEcho(focusEchoInput.trim() === '' ? null : focusEchoInput.trim()),
+      }, copy['echo.locateSeaBtn']),
+        ]
+        : []),
       props.onClose !== undefined ? createElement('button', { type: 'button', style: BUTTON_STYLE, onClick: () => props.onClose?.() }, copy['sea.close']) : null,
     ),
     error !== null
@@ -268,7 +357,7 @@ export function SeaPanel(props: SeaPanelProps) {
       ? createElement('div', { style: { flex: '1 1 auto', overflowY: 'auto' } }, createElement(SeaPersona, { rpc, sessionId: seatSessionId }))
       : tab === 'records'
         // 翻阅面同样占满主体区：长列表需要确定高度链（布局①同源纪律），不叠画布背板
-        ? createElement('div', { style: { flex: '1 1 auto', minHeight: 0, display: 'flex' } }, createElement(SeaRecords, { rpc, refreshToken }))
+        ? createElement('div', { style: { flex: '1 1 auto', minHeight: 0, display: 'flex' } }, createElement(SeaRecords, { rpc, refreshToken, requestedView: recordsView, viewToken: recordsToken, onLocateEcho: (echoId: string) => { setTab('sea'); setFocusEcho(echoId); setFocusEchoInput(echoId); } }))
         : tab === 'dream'
           ? createElement('div', { style: { flex: '1 1 auto', overflowY: 'auto' } }, createElement(SeaDream, { rpc }))
           : createElement(
@@ -319,6 +408,14 @@ export function SeaPanel(props: SeaPanelProps) {
               { style: { ...MUTED_STYLE, marginTop: 8 } },
               `${selected.kind === 'delivery' ? copy['sea.detailDelivery'] : TRIGGER_LABEL[selected.trigger] !== undefined ? copy[TRIGGER_LABEL[selected.trigger]] : selected.trigger} · ${copy['sea.detailTurn']} ${selected.turnSeq} · ${formatTime(selected.t)}`,
             ),
+            // 记录号（v0.8.11）：星图卡片也要看得到 echo id（单号进 tooltip）
+            selected.echoId !== undefined
+              ? createElement(
+                'div',
+                { style: { ...MUTED_STYLE, marginTop: 2 }, 'data-spirit': 'sea-echo-id', title: selected.echoId },
+                shortEcho(selected.echoId),
+              )
+              : null,
             createElement(
               'div',
               { style: { ...MUTED_STYLE } },

@@ -13,6 +13,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { SPIRIT_MEMORY_KINDS, SPIRIT_MEMORY_SCOPES, type SpiritGoalRow, type SpiritMemoryRow, type SpiritMemoryScope } from '../contract.js';
 import { dropIfSecret } from '../ontology/scrub.js';
+import { dropDoc, indexDoc } from '../search/fts.js';
 
 const TEXT_MAX = 200;
 const TITLE_MAX = 80;
@@ -73,6 +74,8 @@ export class ModelMemoryStore {
          VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, NULL)
          ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, updated_at = excluded.updated_at, forgotten_at = NULL`,
       ).run(id, scope, kind, clean, (input.workspaceId ?? '').trim(), (input.sessionId ?? '').trim(), ts, ts);
+      // v19 检索索引（失败自吞）：写入即搜得到
+      indexDoc(db, 'memory', id, ts, clean);
       const row = this.recent({ scope: scope as SpiritMemoryScope, limit: READ_MAX }).find((r) => r.id === id);
       if (row === undefined) return { ok: false, reason: '写入后读取失败' };
       return { ok: true, row };
@@ -99,7 +102,10 @@ export class ModelMemoryStore {
     try {
       const info = db.prepare(`UPDATE model_memory SET forgotten_at = ?, updated_at = ? WHERE id = ? AND forgotten_at IS NULL`)
         .run(this.now, this.now, id);
-      return Number(info.changes) > 0;
+      const changed = Number(info.changes) > 0;
+      // 遗忘 = 从检索面摘掉（源行仍在，写回时重新入索引）
+      if (changed) dropDoc(db, 'memory', id);
+      return changed;
     } catch {
       return false;
     }
@@ -187,6 +193,8 @@ export class GoalStore {
          VALUES (?, ?, 'open', ?, ?, ?, ?, NULL)
          ON CONFLICT(id) DO UPDATE SET status = 'open', why = excluded.why, updated_at = excluded.updated_at, done_at = NULL`,
       ).run(id, title, why, (input.workspaceId ?? '').trim(), ts, ts);
+      // v19 检索索引（失败自吞）：目的层也进全域搜索
+      indexDoc(db, 'goal', id, ts, `${title}\n${why}`);
       const row = this.list({ limit: READ_MAX }).find((r) => r.id === id);
       if (row === undefined) return { ok: false, reason: '写入后读取失败' };
       return { ok: true, row };

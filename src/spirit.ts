@@ -16,7 +16,7 @@ import { compileTurn } from './experience/compile.js';
 import type { TurnWatcher } from './experience/watcher.js';
 import { previousTone } from './experience/cross-session.js';
 import type { ExperienceStore } from './store/experience.js';
-import { recentForms, formsDigest, type FormedEntry } from './recall/recent.js';
+import { recentFormsDetailed, formsDigest, type FormedEntry, type RecallReject } from './recall/recent.js';
 import { feedbackFirst, type FadeConfig } from './recall/form.js';
 import { recallHistory, queryWorthRecall, type HistoryDeps } from './recall/history.js';
 import { deriveMood, moodChanged, withRevisionBump, type MoodConfig } from './slot/derive.js';
@@ -34,8 +34,14 @@ export interface PreStepInput {
   /** 档位所有者（子代理沿 parentSession 上溯后的结果）。 */
   ownerId: string;
   isSubagent: boolean;
-  /** 本轮新进入的用户消息文本（用于检索查询串；只取首条）。 */
+  /** 本轮新进入的用户消息文本（用于记账与 quote 采集；只取最后一条人话）。 */
   newUserText: string;
+  /**
+   * 检索专用查询串（P0）：短句会向前拼上文（≤6 条 / ≤240 字）。
+   * 与 `newUserText` 分离——拼长的串绝不能进体验正文与 quote。
+   * 缺省（旧调用方/单测）⇒ 退化为 `newUserText`（不拼上文，行为与改前一致）。
+   */
+  recallQuery?: string;
   /** 宿主本轮批准进入的原始消息数组。 */
   messageCount: number;
   /**
@@ -49,7 +55,11 @@ export interface PreStepInput {
 export type PreStepOutcome =
   | { kind: 'passthrough'; reason: Gate }
   | { kind: 'recorded'; reason: Gate }
-  | { kind: 'injected'; text: string; bytes: number; fingerprint: string; reason: Gate; tendency?: string };
+  | { kind: 'injected'; text: string; bytes: number; fingerprint: string; reason: Gate; tendency?: string;
+      /** 本轮被「想起」的段落（已截断）——回响落档面要它，注入卡之外不另取原文。 */
+      recalled?: readonly string[];
+      /** 本轮被挡在卡外的条目及原因（P0 纯观测：不进卡、不进指纹）。 */
+      rejected?: readonly RecallReject[]; };
 
 /** 判定链上的门（顺序固定，任一为假即零注入零副作用）。 */
 export type Gate =
@@ -256,9 +266,11 @@ export class Spirit {
 
       // ── 重发判据：档位没动且近因内容没动 ⇒ 沿用上一张 ──
       // 淡出臂：形态档位进指纹——档内字节稳定，重发只发生在跨档（量化纪律的执行点）
-      const formed: FormedEntry[] = fade.fadeEnabled
-        ? recentForms(entries, { now: input.now, halfLifeMs: cfg.recall.halfLifeMs, limit: recentK, fade })
-        : recentForms(entries, { now: input.now, halfLifeMs: cfg.recall.halfLifeMs, limit: recentK });
+      const formedResult = fade.fadeEnabled
+        ? recentFormsDetailed(entries, { now: input.now, halfLifeMs: cfg.recall.halfLifeMs, limit: recentK, fade })
+        : recentFormsDetailed(entries, { now: input.now, halfLifeMs: cfg.recall.halfLifeMs, limit: recentK });
+      const formed: FormedEntry[] = formedResult.formed;
+      const recentRejected: RecallReject[] = formedResult.rejected;
       const recentTexts = formed.map((item) => item.text);
       // 事务轨：只取 card_line 进卡与进指纹（summary 永不参与，否则每轮唯一 ⇒ churn 100%）。
       const transactionLine = this.deps.recentTxnCardLine?.(input.sessionId) ?? '';
@@ -282,13 +294,16 @@ export class Spirit {
         this.runtimes.set(input.agentId, { ...runtime, mood, firstTurnDone: true });
         return { kind: 'passthrough', reason: 'unchanged' };
       }
-      // ── 历史路（有预算与超时，拿不到就整段省略） ──
+      // ── 历史路（有预算与超时，拿不到就整段省略）──
       let recalled: string[] = [];
-      if (cfg.recall.maxResults > 0 && queryWorthRecall(input.newUserText)) {
+      // P0：负样本累积（近因路 + 历史路），只进回响落档的观测列
+      const rejected: RecallReject[] = [...recentRejected];
+      const recallQuery = input.recallQuery ?? input.newUserText;
+      if (cfg.recall.maxResults > 0 && queryWorthRecall(recallQuery)) {
         const result = await recallHistory(
           this.deps.history,
           {
-            query: input.newUserText,
+            query: recallQuery,
             sessionId: undefined, // 检索跨会话，近因段已覆盖本会话
             limit: cfg.recall.maxResults,
             maxCharsPerEntry: cfg.recall.maxCharsPerEntry,
@@ -298,6 +313,7 @@ export class Spirit {
           },
         );
         recalled = result.excerpts;
+        for (const item of result.rejected ?? []) rejected.push(item);
         this.lastRecall.set(input.agentId, result.excerpts.length);
       } else {
         this.lastRecall.set(input.agentId, 0);
@@ -355,6 +371,9 @@ export class Spirit {
         bytes: card.bytes,
         fingerprint,
         reason: 'injected',
+        recalled,
+        // P0 观测面：近因路 + 历史路的负样本（截 20 条，纯观测）
+        rejected: rejected.slice(0, 20),
         ...(tendencyOverride !== undefined ? { tendency: tendencyOverride } : {}),
       };
     } catch (err) {
@@ -569,6 +588,10 @@ function fadeConfigOf(cfg: SpiritConfig): FadeConfig {
     fadeEnabled: cfg.recall.fadeEnabled,
     feedbackEnabled: cfg.recall.feedbackEnabled,
     fadeHalfLifeMs: cfg.recall.fadeHalfLifeMs,
+    fadeHotDays: cfg.recall.fadeHotDays,
+    fadeColdDays: cfg.recall.fadeColdDays,
+    fadeWarmWeight: cfg.recall.fadeWarmWeight,
+    fadeColdWeight: cfg.recall.fadeColdWeight,
     fullMinScore: cfg.recall.fadeFullMinScore,
     gistMinScore: cfg.recall.fadeGistMinScore,
     gistMinSalience: cfg.recall.gistMinSalience,

@@ -1,21 +1,29 @@
 /**
- * 刀1 滑窗淡出：档位量化、形态降级链、反馈两轴分离、v0.1 逐字节回归臂。
+ * 刀1 滑窗淡出：台阶量化、形态降级链、反馈两轴分离、v0.1 逐字节回归臂。
  *
  * 这里盯的是最贵的静默回归：**淡出把 unchanged 门弄失效**（now 每轮漂移 ⇒ 指纹每轮变
  * ⇒ 每轮重发）。量化纪律的全部意义就是让"档内"与"档变"成为仅有的两个状态。
+ *
+ * v19：尺度从「连续半衰期」改为 **0-7-30 台阶**（旧曲线在 90 分钟 + 地板 0.5 下只有两档）。
  */
 import { describe, expect, it } from 'vitest';
 
-import { attentionWeight, fadeScoreMs, feedbackFirst, formOf, formText, FORM_FULL, FORM_GIST, FORM_HELD, type FadeConfig } from '../src/recall/form.js';
+import { fadeScoreMs, feedbackFirst, formOf, formText, ladderWeightPermille, FORM_FULL, FORM_GIST, FORM_HELD, type FadeConfig } from '../src/recall/form.js';
 import { recentForms, formsDigest } from '../src/recall/recent.js';
 import { SPIRIT_DEFAULTS } from '../src/contract.js';
 import { renderGistText } from '../src/experience/render.js';
 import type { ExperienceEntry, NoticeKind, TriggerKind } from '../src/types.js';
 
+const DAY = 86_400_000;
+
 const FADE: FadeConfig = {
   fadeEnabled: true,
   feedbackEnabled: true,
   fadeHalfLifeMs: 1_000,
+  fadeHotDays: 7,
+  fadeColdDays: 30,
+  fadeWarmWeight: 750,
+  fadeColdWeight: 500,
   fullMinScore: 550,
   gistMinSalience: 1,
   gistMinScore: 250,
@@ -30,26 +38,27 @@ function entry(over: Partial<ExperienceEntry> & { id: string }): ExperienceEntry
   } as ExperienceEntry;
 }
 
-describe('attentionWeight：量化与地板（对齐 prime 0.5^(Δt/halfLife)，同式同地板）', () => {
-  it('同一半衰期档内权重恒定（now 漂移不改变档位——指纹稳定的前提）', () => {
-    const w1 = attentionWeight(0, 999, 1_000);
-    const w2 = attentionWeight(0, 1_500, 1_000);
-    const w3 = attentionWeight(0, 1_999, 1_000);
-    expect(w1).toBe(1);
-    expect(w2).toBe(0.5);
-    expect(w3).toBe(0.5);
-    // 再跨一档仍是 0.5（地板）而不是 0.25 —— 时间至多让条目变淡一半
-    expect(attentionWeight(0, 9_000, 1_000)).toBe(0.5);
+describe('ladderWeightPermille：台阶量化与末阶地板（0-7-30）', () => {
+  it('档内权重恒定（now 漂移不改变档位——指纹稳定的前提）', () => {
+    expect(ladderWeightPermille(0, 1 * DAY, FADE)).toBe(1_000);
+    expect(ladderWeightPermille(0, 6 * DAY, FADE)).toBe(1_000);
+    // 跨到「一周后」阶：同阶内怎么漂都是 750
+    expect(ladderWeightPermille(0, 8 * DAY, FADE)).toBe(750);
+    expect(ladderWeightPermille(0, 29 * DAY, FADE)).toBe(750);
+    // 末阶地板：时间至多让条目变淡一半
+    expect(ladderWeightPermille(0, 31 * DAY, FADE)).toBe(500);
+    expect(ladderWeightPermille(0, 9_000 * DAY, FADE)).toBe(500);
   });
 
-  it('halfLife<=0 ⇒ 恒 1（pin 基线：窗口冻结）', () => {
-    expect(attentionWeight(0, 10 ** 12, 0)).toBe(1);
+  it('fadeHalfLifeMs<=0 ⇒ 全阶 1000（冻结臂）', () => {
+    expect(ladderWeightPermille(0, 10 ** 12, { ...FADE, fadeHalfLifeMs: 0 })).toBe(1_000);
   });
 
   it('fadeScoreMs 给千分位整数（离散，可进指纹）', () => {
-    expect(fadeScoreMs(entry({ id: 'a', salience: 2 }), 0, FADE)).toBe(1000);
-    expect(fadeScoreMs(entry({ id: 'b', salience: 1 }), 1_500, FADE)).toBe(250);
-    expect(fadeScoreMs(entry({ id: 'c', salience: 2 }), 1_500, FADE)).toBe(500);
+    expect(fadeScoreMs(entry({ id: 'a', salience: 2 }), 0, FADE)).toBe(1_000);
+    expect(fadeScoreMs(entry({ id: 'b', salience: 1 }), 10 * DAY, FADE)).toBe(375);
+    expect(fadeScoreMs(entry({ id: 'c', salience: 2 }), 10 * DAY, FADE)).toBe(750);
+    expect(fadeScoreMs(entry({ id: 'd', salience: 2 }), 90 * DAY, FADE)).toBe(500);
   });
 });
 
@@ -57,17 +66,17 @@ describe('formOf：降级链 full → gist → held', () => {
   it('fadeEnabled=false ⇒ 恒 full（v0.1 回归臂的单元面）', () => {
     expect(formOf(entry({ id: 'x' }), 10 ** 9, { ...FADE, fadeEnabled: false })).toBe(FORM_FULL);
   });
-  it('高 salience 新条目 full；跨一档到 gist；salience 低/无残句 ⇒ held', () => {
+  it('高 salience 新条目 full；末阶到 gist；salience 低/无残句 ⇒ held', () => {
     expect(formOf(entry({ id: 'x', salience: 2 }), 0, FADE)).toBe(FORM_FULL);
-    expect(formOf(entry({ id: 'x', salience: 2 }), 1_500, FADE)).toBe(FORM_GIST);
-    // 地板 0.5 的语义后果：salience=1 的时间下限 m=250 恰在 gist 地板上——
-    // “重要的事淡成残句但永不被逐出”正是人的形状；held 经“无残句/低档”达成
-    expect(formOf(entry({ id: 'x', salience: 1 }), 3_500, FADE)).toBe(FORM_GIST);
-    expect(formOf(entry({ id: 'x', salience: 1 }), 3_500, { ...FADE, gistMinScore: 300 })).toBe(FORM_HELD);
+    expect(formOf(entry({ id: 'x', salience: 2 }), 10 * DAY, FADE)).toBe(FORM_FULL);
+    expect(formOf(entry({ id: 'x', salience: 2 }), 90 * DAY, FADE)).toBe(FORM_GIST);
+    // 地板语义：salience=1 在末阶 m=250 恰在 gist 地板上——重要的事淡成残句但永不被逐出
+    expect(formOf(entry({ id: 'x', salience: 1 }), 90 * DAY, FADE)).toBe(FORM_GIST);
+    expect(formOf(entry({ id: 'x', salience: 1 }), 10 * DAY, { ...FADE, gistMinScore: 400 })).toBe(FORM_HELD);
   });
   it('无 gist 列（v1 迁移旧行）⇒ 不给 gist 档，直接 held（宁缺毋造）', () => {
     const old = entry({ id: 'x', gist: undefined });
-    expect(formOf(old, 1_500, FADE)).toBe(FORM_HELD);
+    expect(formOf(old, 90 * DAY, FADE)).toBe(FORM_HELD);
   });
   it('salience 低于 gistMinSalience ⇒ held（弱条目连残句都不配；v1 旧行落 0 正是这条路径）', () => {
     expect(formOf(entry({ id: 'x', salience: 1 }), 0, { ...FADE, gistMinSalience: 2 })).toBe(FORM_HELD);
@@ -90,18 +99,19 @@ describe('recentForms：排序→反馈重排→定档 的接缝', () => {
   });
 
   it('held 被滤掉，full/gist 保留其文本形态', () => {
+    const now = 100 * DAY;
     const items = [
-      entry({ id: 'fresh', tsMs: 900, salience: 2 }),
-      entry({ id: 'mid', tsMs: 0, salience: 2 }), // 跨一档 ⇒ gist
-      entry({ id: 'weak', tsMs: 0, salience: 1, reaction: 'mild' }),
+      entry({ id: 'fresh', tsMs: now - 1 * DAY, salience: 2 }),
+      entry({ id: 'mid', tsMs: now - 90 * DAY, salience: 2 }), // 末阶 ⇒ gist
+      entry({ id: 'weak', tsMs: now - 90 * DAY, salience: 0.5 }), // 末阶 + 低 salience ⇒ held
     ];
-    const formed = recentForms(items, { now: 1_500, halfLifeMs: 1_000, limit: 5, fade: FADE });
+    const formed = recentForms(items, { now, halfLifeMs: 1_000, limit: 5, fade: FADE });
     const ids = formed.map((f) => f.entry.id);
     expect(ids).toContain('fresh');
     expect(formed.find((f) => f.entry.id === 'mid')?.form).toBe(FORM_GIST);
-    // salience=1 且 Δt 跨档 ⇒ m=250×? 视地板而定；只断言"要么保留要么消失"，不许保留空文本
+    expect(ids).not.toContain('weak');
+    // 不许保留空文本
     for (const f of formed) expect(f.text).not.toBe('');
-    void ids;
   });
 
   it('反馈只重排：打分改变先后，不改变谁在场（两轴分离）', () => {
@@ -155,5 +165,12 @@ describe('默认值口径（防"把淡出默认打开"这类事故）', () => {
     expect(SPIRIT_DEFAULTS.recall.fadeFullMinScore).toBeLessThanOrEqual(1000);
     expect(SPIRIT_DEFAULTS.recall.gistMinSalience).toBeGreaterThanOrEqual(1);
     expect(SPIRIT_DEFAULTS.recall.fadeHalfLifeMs).toBe(SPIRIT_DEFAULTS.recall.halfLifeMs);
+  });
+
+  it('v19 台阶缺省：0-7-30，权重 750 / 500（末阶即地板）', () => {
+    expect(SPIRIT_DEFAULTS.recall.fadeHotDays).toBe(7);
+    expect(SPIRIT_DEFAULTS.recall.fadeColdDays).toBe(30);
+    expect(SPIRIT_DEFAULTS.recall.fadeWarmWeight).toBe(750);
+    expect(SPIRIT_DEFAULTS.recall.fadeColdWeight).toBe(500);
   });
 });

@@ -58,7 +58,7 @@ function fakeChannel(canned: Array<string | ((callIndex: number) => string)>): {
   };
 }
 
-function harness(cfgOver: Partial<SpiritConfig> = {}, canned: Array<string | ((callIndex: number) => string)> = ['{}'], channelOverride?: LlmChannel) {
+function harness(cfgOver: Partial<SpiritConfig> = {}, canned: Array<string | ((callIndex: number) => string)> = ['{}'], channelOverride?: LlmChannel, onComplete?: () => void) {
   const opened = openSpiritDb(dir);
   if (!opened.ok) throw new Error('库应打开成功');
   openDbs.push(opened.db);
@@ -84,6 +84,7 @@ function harness(cfgOver: Partial<SpiritConfig> = {}, canned: Array<string | ((c
     defaultModel: () => ROUTE,
     cfg: () => cfg,
     logger,
+    ...(onComplete === undefined ? {} : { onComplete }),
   });
   return { db, store, topics, insights, edges, cfg, runner, fake };
 }
@@ -105,6 +106,17 @@ const INDUCTION_OK = JSON.stringify({
 });
 
 describe('RuminateRunner 全链（假通道）', () => {
+  it('睡眠完成后回调 onComplete（v0.8.24：L1 → 生涯流程档）', async () => {
+    let called = 0;
+    const h = harness({}, [INDUCTION_OK], undefined, () => { called += 1; });
+    // 共享测试库可能已有水位：清掉，确保这批 4 条能进长觉
+    h.db.prepare(`DELETE FROM meta WHERE key = 'sleep.watermark'`).run();
+    seedEntries(h.store, 4);
+    const status = await h.runner.runNow();
+    expect(status.phase).toBe('done');
+    expect(called).toBe(1);
+  });
+
   it('攒够→归纳→落库：主题/洞察/因果边/水位/报告一次跑齐；prompt 不含用户原文（G20）', async () => {
     const h = harness({}, [INDUCTION_OK]);
     seedEntries(h.store, 4);

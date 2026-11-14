@@ -138,6 +138,13 @@ npm run ab -- --home "$DSH_HOME" --json   # 机读
 
 ## 遗忘怎么调：观察—pin—对照—定向—灰度（v0.2 淡出/未竟/条件化的调参 SOP）
 
+> **v19 台阶 0-7-30**：尺度从“连续半衰期”改成**三段台阶**——`Δt < fadeHotDays`（缺省 7 天）
+> 权重 1000；`< fadeColdDays`（缺省 30 天）用 `fadeWarmWeight`（缺省 750）；其余落到
+> `fadeColdWeight`（缺省 500，即地板）。四个键都走 `live.*` 热更（面板 RPC 可写）。
+> `fadeHalfLifeMs` 保留但**语义收窄为冻结开关**：`0` = 全阶恒 1000（不淡），`>0` = 启用台阶。
+> 为什么改：旧式 `max(0.5, 0.5^floor(Δt/90min))` 在 90 分钟后一律 0.5，实际只有两档，
+> 「昨天的事」与「上个月的事」权重完全一样。保守臂：`fadeHotDays=0` 直接进「一周后」阶。
+
 淡出参数没有“校准过的最优值”，只有“这台机器上观察出来的合适值”，所以给可执行的五步：
 
 1. **指标先行**：面板「淡出（原文/一句话/退场）」行读每会话累计的 full/gist/held 占比与发卡轮次；
@@ -186,6 +193,21 @@ grep 断言同装跑真回合。但对方证据面**原样收 assistant 发言**
 - 跳线抽检：`0.2.1-rc.1`（已声明线）headless 真回合同样通过；`0.1.7-rc.2` 默认被 `peerDependencies`
   门拒载并自动回滚（需要用 `allow-version --accept-risk` 才装得上）——所以声明只收已验的 0.2.x 六线
 
+> **v19 检索索引**：上面的「历史检索有扫描窗」现在是**回落路径**。正常情况走 FTS5 词级检索：
+> 六类文档（体验 / 记着 / 交付 / 任务线 / 实体 / 目的）统一进 `search_doc` + `search_fts`，
+> 分词用 `@node-rs/jieba`（**可选依赖**，未装则自动退 CJK 二元组），索引按分词器版本戳自动重建。
+> 三条边界必须知道：
+> - 索引是**派生缓存**（与 `entry_vector` 同族）：可删可重建，绝不进 `recent()` / 情绪派生 / 注入指纹；
+> - FTS 只决定「谁可能相关」，**可见面过滤与时间排序仍回源表**（ghost / hidden / 已遗忘搜不出来）；
+> - 建表失败或回填失败 ⇒ 整链回落 LIKE（不让残缺索引静默漏召回），日志打一行说明。
+>
+> 多名称：实体任一别名（含归一化、双向包含）命中后，会展开该实体的**交付与任务线**，命中行带
+> `via=<entityId>`；上游知识只计数量，正文仍走上游 `memory_search`。
+>
+> 召回链（同批改）：查询串改**黑名单来源判定**（未知来源当人话，IM 桥会话不再静默失去历史召回），
+> 短句会向前拼上文（≤ 6 条 / ≤ 240 字，**只用于检索**）；每轮被挡在卡外的条目与原因写入
+> `echo_step.rejected_json`（纯观测，不进卡也不进指纹）。
+
 ## 生涯流程档（v0.8.18）：知识性归上游，流程性归 spirit
 
 上游 `dsh-prime-memory` 的 L1（`work_task`/`work_fact`/技法/坑/决定…）是**输入**，不是 spirit 的存储。
@@ -209,8 +231,29 @@ spirit 只做一件事：把其中**流程性**（`work_task`/`episodic`）预�
 
 ## 工程
 
+> **v20 实体卫生**：归一化补 **NFKC**（「ＤＳＨ」→「dsh」，去零宽）；算法戳变会自动
+> 重建 `entity_alias`（`source='spirit'` 重算，`source='user'` 人工别名永不删）。
+> 疑似同一实体只出**候选**（`entity-merge-suggest`：归一化相等 / 共享上游 / 包含 / 编辑距离≤1），
+> 确认后只写人工别名（`entity-alias-add`）——**永不合并 id**。
+> 里程碑档新增派生列 `stale_at`（`markDigestStale` 三分支判定），**只影响展示，正文不改**。
+
 `npm run check` = typecheck（3 套配置）→ lint → vitest → build → **dist 冒烟**。
 最后一层是刻意的：单测跑 `src/`，宿主装的是 `dist/`，中间那道缝（client bundle 包装、
 `__ModuleLoader__` 的 id 必须等于包名）只有直接 import 产物才照得出来。
 
 MIT License.
+
+## TUI 终端面（dsh-tui）
+
+dsh-tui 不加载插件的 client 半边（面板/卡片/设置页），也调不到插件自有 RPC；工具调用只显示一行摘要。人可读、人可操作的面只剩宿主斜杠命令。输出约定：单行 ≤100 字符、总行 ≤40、无 ANSI、两空格对齐；写操作默认 dry、加 `--yes` 才执行；`--json` 输出单行 JSON。
+
+| 命令 | 作用 |
+|---|---|
+| `/spirit` | 库状态：sqlite/内存降级、体验条数、账本条数、最近会话注入计数 |
+| `/spirit recent` | 最近 8 条体验（`--n=20` / `--all`） |
+| `/spirit recall <q>` | text/gist 关键词命中（LIMIT 保护） |
+| `/spirit entity <q>` | 本体实体（name LIKE，按 importance 排） |
+| `/spirit txn` | 最近交付/事务（txn_entry） |
+| `/spirit echo` | 回响投影摘要（分段计数） |
+
+命令由插件自己在宿主侧注册（`ctx.inject(['commands'], …)`）：命令服务缺席的老宿主线上不激活、不报错。

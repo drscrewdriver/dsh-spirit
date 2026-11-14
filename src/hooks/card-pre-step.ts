@@ -16,7 +16,8 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 
 import { SPIRIT_SLOT_SECTION_NAME, SPIRIT_SOURCE_KIND } from '../contract.js';
 import type { PreStepInput, PreStepOutcome, Spirit } from '../spirit.js';
-import { readSurfaceNodes, textOfMessage } from '../util/host-shape.js';
+import { readSurfaceNodes } from '../util/host-shape.js';
+import { buildRecallQuery, pickHumanText } from '../recall/query-source.js';
 
 export interface PreStepHookDeps {
   spirit: Spirit;
@@ -43,15 +44,16 @@ export interface PreStepHookDeps {
   afterOutcome?(input: PreStepInput, outcome: PreStepOutcome): void;
 }
 
-/** 取用户来源消息的正文，当检索查询串（只取第一条，长度有顶）。 */
-function queryFrom(messages: readonly unknown[]): string {
-  for (const raw of messages) {
-    const record = raw as { source?: { kind?: unknown } };
-    if (record.source?.kind !== 'user') continue;
-    const text = textOfMessage(raw);
-    if (text !== '') return text.slice(0, 240);
-  }
-  return '';
+/**
+ * 本轮文本两道：
+ * - `pickHumanText` 取最后一条人话，只用于记账与 quote（长度与原行为一致）；
+ * - `buildRecallQuery` 在短句时向前借上文，**只用于检索**。
+ *
+ * P0 修的正是这两件事：旧实现只认 `source.kind === 'user'`（IM 桥会话静默失去历史召回），
+ * 且短句直接拿去检索（「推」「在吗」几乎必然零命中）。
+ */
+function recallTexts(messages: readonly unknown[]): { userText: string; recallQuery: string } {
+  return { userText: pickHumanText(messages), recallQuery: buildRecallQuery(messages) };
 }
 
 export function registerCardPreStep(ctx: Context, deps: PreStepHookDeps): void {
@@ -68,13 +70,15 @@ export function registerCardPreStep(ctx: Context, deps: PreStepHookDeps): void {
       const agent = payload.agent;
       const agentId = String(agent.id ?? '');
       const messages = decision.messages ?? [];
+      const texts = recallTexts(messages);
       const preStepInput: PreStepInput = {
         agentId,
         sessionId: deps.sessionIdOf(agent),
         workspaceId: deps.workspaceIdOf(agent),
         ownerId: deps.ownerOf(agent),
         isSubagent: deps.isSubagent(agent),
-        newUserText: queryFrom(messages),
+        newUserText: texts.userText,
+        recallQuery: texts.recallQuery,
         messageCount: messages.length,
         // 每轮对一次表面：压缩不发事件的宿主线确实存在，只靠事件会永久静默
         surfaceNodes: readSurfaceNodes((agent as { session?: unknown }).session),

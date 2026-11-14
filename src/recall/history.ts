@@ -29,10 +29,19 @@ export interface HistoryInput {
 
 export type HistoryLane = 'none' | 'local' | 'drsc' | 'local+drsc' | 'drsc-timeout';
 
+/** 历史路负样本（P0）：本地候选被哪道闸挡下。 */
+export interface HistoryReject {
+  kind: 'experience';
+  id: string;
+  reason: 'limit' | 'exclude-dup' | 'own-card';
+}
+
 export interface HistoryResult {
   excerpts: string[];
   sourceRefs: string[];
   laneUsed: HistoryLane;
+  /** 只作观测：不进卡、不进指纹。 */
+  rejected?: HistoryReject[];
 }
 
 export interface HistoryDeps {
@@ -71,6 +80,8 @@ export async function recallHistory(deps: HistoryDeps, input: HistoryInput): Pro
   const exclude = input.exclude ?? new Set<string>();
   const excerpts: string[] = [];
   const sourceRefs: string[] = [];
+  /** P0 观测面：本地路被哪道闸挡下的（DRSC 路没有可对账的真源 id，不记）。 */
+  const rejected: HistoryReject[] = [];
   let lane: HistoryLane = 'none';
 
   /**
@@ -88,9 +99,18 @@ export async function recallHistory(deps: HistoryDeps, input: HistoryInput): Pro
 
   const local = deps.store.searchLocal(input.query, { sessionId: input.sessionId, limit: input.limit });
   for (const entry of local) {
-    if (excerpts.length >= input.limit) break;
-    if (exclude.has(entry.text)) continue;
-    if (isOwnCardText(entry.text)) continue; // 自家卡行不当历史记回来
+    if (excerpts.length >= input.limit) {
+      rejected.push({ kind: 'experience', id: entry.id, reason: 'limit' });
+      continue;
+    }
+    if (exclude.has(entry.text)) {
+      rejected.push({ kind: 'experience', id: entry.id, reason: 'exclude-dup' });
+      continue;
+    }
+    if (isOwnCardText(entry.text)) {
+      rejected.push({ kind: 'experience', id: entry.id, reason: 'own-card' });
+      continue;
+    }
     pushExcerpt(entry.text, entry.sourceRef ?? `spirit:${entry.id}`);
     lane = 'local';
   }
@@ -124,7 +144,7 @@ export async function recallHistory(deps: HistoryDeps, input: HistoryInput): Pro
     }
   }
 
-  return { excerpts, sourceRefs, laneUsed: lane };
+  return { excerpts, sourceRefs, laneUsed: lane, rejected: rejected.slice(0, 20) };
 }
 
 /** 只在有查询串时才值得走历史路（空查询会捞回一堆无关行）。 */

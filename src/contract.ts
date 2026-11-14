@@ -54,6 +54,23 @@ export const SPIRIT_OPS = [
   'journal-export',
   // v0.7 注入回响面（对表 prime-memory 的 memory 激活槽位）：每轮注入/跳过快照
   'inject-echo',
+  // v0.8.6 回响分层检索：时间段 → 关键词 →（最后）语义向量
+  'echo-search',
+  // v0.8.8 回响引用列表（旧名，一版别名）
+  'echo-refs',
+  // v0.8.11 回响记录（记录持 echo-<uuid>；echo-refs 的正式名）
+  'echo-records',
+  // v0.8.12 按 echo 号定位记录（翻阅搜索 / 星图定位共用）
+  'echo-locate',
+  // v0.8.14 全域文本搜索（记录不分类型：任务/交付/体验/记着/目的/实体）
+  'spirit-search',
+  // v0.8.17 记录详情（搜索命中行内展开）
+  'record-detail',
+  // v0.8.18 生涯流程三档：按实体查 / 手动刷新
+  'entity-digest',
+  'distill-digest-run',
+  // v0.8.2 回响落档的条目详情（按 sessionId + id 取注入原文）
+  'echo-detail',
   // v0.8 模型可写记忆（两本账+日记）与目的层
   'memory-list',
   'persona-get',
@@ -108,6 +125,9 @@ export const SPIRIT_OPS = [
   // v0.4 本体层查询（Phase D）：评价列表（含 unresolved 悬置池）
   'evaluation-list',
   'entity-graph',
+  // v20（B-3）：疑似同一实体的候选（只读）+ 人工别名追加（不合并 id）
+  'entity-merge-suggest',
+  'entity-alias-add',
   'entity-lookup',
   'task-list',
   'task-detail',
@@ -169,6 +189,11 @@ export interface SpiritFeedbackRequest {
 export interface SpiritSettingsRequest {
   fadeEnabled?: boolean;
   fadeHalfLifeMs?: number;
+  /** v19 台阶三键（热更）：当下/一周后边界天数 + 两级权重（千分位）。 */
+  fadeHotDays?: number;
+  fadeColdDays?: number;
+  fadeWarmWeight?: number;
+  fadeColdWeight?: number;
   feedbackEnabled?: boolean;
   dreamEnabled?: boolean;
   /** 长觉热更开关（v0.3.5）：面板一键开；部署面总闸关时它开了也不跑（双闸取与）。 */
@@ -180,6 +205,10 @@ export interface SpiritSettingsRequest {
 export interface SpiritSettingsView {
   fadeEnabled: boolean;
   fadeHalfLifeMs: number;
+  fadeHotDays: number;
+  fadeColdDays: number;
+  fadeWarmWeight: number;
+  fadeColdWeight: number;
   feedbackEnabled: boolean;
   dreamEnabled: boolean;
   distillEnabled: boolean;
@@ -214,6 +243,15 @@ export interface SpiritRequestMap {
   'persona-bind': SpiritPersonaBindRequest;
   'persona-effective': SpiritPersonaEffectiveRequest;
   'inject-echo': SpiritInjectEchoRequest;
+  'echo-search': SpiritEchoSearchRequest;
+  'echo-refs': SpiritEchoRefsRequest;
+  'echo-records': SpiritEchoRefsRequest;
+  'echo-locate': SpiritEchoLocateRequest;
+  'spirit-search': SpiritSearchAllRequest;
+  'record-detail': SpiritRecordDetailRequest;
+  'entity-digest': SpiritEntityDigestRequest;
+  'distill-digest-run': Record<string, never>;
+  'echo-detail': SpiritEchoDetailRequest;
   'memory-list': SpiritMemoryListRequest;
   'owner-get': Record<string, never>;
   'owner-set-self': SpiritOwnerSetSelfRequest;
@@ -243,6 +281,8 @@ export interface SpiritRequestMap {
   // v0.4 本体层查询
   'evaluation-list': SpiritEvaluationListRequest;
   'entity-graph': SpiritEntityGraphRequest;
+  'entity-merge-suggest': SpiritEntityMergeSuggestRequest;
+  'entity-alias-add': SpiritEntityAliasAddRequest;
   'entity-lookup': SpiritEntityLookupRequest;
   'task-list': SpiritTaskListRequest;
   'task-detail': SpiritTaskDetailRequest;
@@ -274,6 +314,15 @@ export interface SpiritResponseMap {
   'persona-bind': SpiritPersonaBindResult;
   'persona-effective': SpiritPersonaEffectiveResult;
   'inject-echo': SpiritInjectEchoResult;
+  'echo-search': SpiritEchoSearchResult;
+  'echo-refs': SpiritEchoRefsResult;
+  'echo-records': SpiritEchoRefsResult;
+  'echo-locate': SpiritEchoLocateResult;
+  'spirit-search': SpiritSearchAllResult;
+  'record-detail': SpiritRecordDetailResult;
+  'entity-digest': SpiritEntityDigestResult;
+  'distill-digest-run': SpiritDistillRunResult;
+  'echo-detail': SpiritEchoDetailResult;
   'memory-list': SpiritMemoryListResult;
   'owner-get': SpiritOwnerProfile;
   'owner-set-self': SpiritOwnerProfile;
@@ -301,6 +350,8 @@ export interface SpiritResponseMap {
   // v0.4 本体层查询
   'evaluation-list': SpiritEvaluationListResult;
   'entity-graph': SpiritEntityGraphResult;
+  'entity-merge-suggest': SpiritEntityMergeSuggestResult;
+  'entity-alias-add': SpiritEntityAliasAddResult;
   'entity-lookup': SpiritEntityLookupResult;
   'task-list': SpiritTaskListResult;
   'task-detail': SpiritTaskDetailResult;
@@ -375,6 +426,8 @@ export interface SpiritJournalRow {
   text: string;
   lane: string;
   sourceRef: string | null;
+  /** v0.8.11：记录号 `echo-<uuid>`（体验条目也是一条记录；旧行缺省）。 */
+  echoId?: string;
   /** v0.2：一句话压缩残句（旧行/缺格 = null）。 */
   gist: string | null;
   /** v0.2：人格在意度 0..2（v1 旧行 = null，不假装知道旧权重）。 */
@@ -438,6 +491,8 @@ export interface SpiritSeaPoint {
   trigger: TriggerKind;
   /** 投影层 lane：写侧词表（live/drsc）+ 本体交付的只读投影值 onto。 */
   lane: SpiritSeaLane;
+  /** v0.8.11：记录号 `echo-<uuid>`（星点对应的体验/交付记录；旧数据缺省）。 */
+  echoId?: string;
   /** 体验句（已按 `SEA_POINT_TEXT_MAX` 截断）。 */
   text: string;
   /** 一句话残句（v1 旧行没有 ⇒ null）。 */
@@ -664,6 +719,30 @@ export interface SpiritEchoSegment {
   lines: number;
 }
 
+/**
+ * 一个分段条目（v0.8.6）：回响页的渲染单元——标签 + 内容行 + 条目自身的时间。
+ *
+ * 用户实报：贴整张卡原文等于没观测，要的是「线程：plugin-9lang-five-dim」这种条目，
+ * 并且能回答“这条对应的时间”：tsSource='turn' 表示本轮时刻（状态/开场），
+ * 'item' 表示从真源表反查到的条目时刻（任务/交付/体验/记忆/目标），
+ * 'unknown' 表示行内内容在库里找不着（不编时间）。
+ */
+export interface SpiritEchoEntry {
+  name: string;
+  lines: string[];
+  ts?: number;
+  tsSource?: 'turn' | 'item' | 'unknown';
+  /** 这条目指向的真源记录（memid）：侧栏/星图用它把回响挂回具体记忆条目。 */
+  ref?: SpiritEchoRef;
+}
+
+/** 回响条目指向的真源（memid）：kind 定表，id 定行，label 是给人看的一句。 */
+export interface SpiritEchoRef {
+  kind: 'task' | 'delivery' | 'experience' | 'memory' | 'goal';
+  id: string;
+  label: string;
+}
+
 /** 一轮 pre-step 的注入/跳过快照（进程内环形缓冲，最新在前回给面板）。 */
 export interface SpiritEchoSnapshot {
   at: number;
@@ -671,6 +750,13 @@ export interface SpiritEchoSnapshot {
   sessionId: string;
   workspaceId: string;
   kind: 'injected' | 'skipped';
+  /**
+   * 数据源（v0.8.5）：live=进程内实时缓冲；persisted=内存空时回退读落档表（重启后仍在）。
+   * 旧消费方当缺省=live；面板用它标「落档回看」，不把重启回退冒充实时。
+   */
+  origin?: 'live' | 'persisted';
+  /** 落档行的编号（echo-&lt;ts&gt;，供 echo-detail 取全文）；live 行为省略。 */
+  recallId?: string;
   /** skipped 时的门名（no-new-user / duplicate-fingerprint …）；injected 为空串。 */
   reason: string;
   fingerprint: string;
@@ -678,6 +764,8 @@ export interface SpiritEchoSnapshot {
   text: string;
   bytes: number;
   segments: SpiritEchoSegment[];
+  /** 分段条目（v0.8.6）：已剔壳子行，带条目对应时间；旧消费方可忽略。 */
+  entries?: SpiritEchoEntry[];
 }
 
 /** sessionId 空 = 跨会话最近若干轮。 */
@@ -690,6 +778,184 @@ export interface SpiritInjectEchoResult {
   items: SpiritEchoSnapshot[];
   /** 缓冲区当前总条数（不只本次返回的）。 */
   total: number;
+  /** 本会话的记录聚合（v0.8.11）：每行 = 一条被想起的记录（echo-<uuid>）。 */
+  records?: SpiritEchoRecordRow[];
+  /** 最近一次回响事件（recall-<uuid>）：回响面按事件分组时用。 */
+  recall?: SpiritEchoRecallInfo;
+  /** 语气/状态（特殊格式·非引用）：最近一条含状态/开场的轮次。 */
+  tone?: SpiritEchoTone;
+}
+
+/** 一次回响事件（v0.8.11）：`recall-<uuid>`，一轮注入一个。 */
+export interface SpiritEchoRecallInfo {
+  recallId: string;
+  at: number;
+  /** 命中记录里有 >7 天的旧事 ⇒ true。 */
+  flashback: boolean;
+}
+
+/**
+ * 一条回响记录（v0.8.11）：`echoId = echo-<uuid>` **属于记录本身**（progress/done 卡片），
+ * 同一记录跨会话/重启同号；`times` 为被想起次数；`lastRecallId` 指向最近一次回响事件。
+ */
+export interface SpiritEchoRecordRow {
+  echoId: string;
+  sessionId: string;
+  kind: string;
+  memId: string;
+  title: string;
+  times: number;
+  /** 记录自身时间（星图/翻阅展示"记录时间"）。 */
+  recordTs: number;
+  firstTs: number;
+  lastTs: number;
+  lastRecallId: string;
+}
+
+/** 旧名保留一版（老消费方编译不破）；新代码用 SpiritEchoRecordRow。 */
+export type SpiritEchoRefRow = SpiritEchoRecordRow;
+
+/** 按 echo 号定位（v0.8.12）：短号/全号/去前缀都可；翻阅搜索与星图定位共用。 */
+export interface SpiritEchoLocateRequest {
+  q: string;
+}
+
+/** 命中的一条记录（跨会话：同一记录可能多会话被想起）。 */
+export interface SpiritEchoLocateHit {
+  echoId: string;
+  kind: string;
+  memId: string;
+  title: string;
+  /** 记录自身时间（无聚合行时退 0）。 */
+  recordTs: number;
+  /** 聚合行所在会话（无则空）。 */
+  sessionId: string;
+  /** 最近一次回响事件号（供原文）。 */
+  lastRecallId: string;
+  /** 可定位的星点 echo 号（v0.8.15）：交付/体验=自身；任务=其交付点；无星点类=空。 */
+  starEchoIds?: string[];
+}
+
+export interface SpiritEchoLocateResult {
+  /** 是否像 echo 号查询（false ⇒ 调用方走普通文本搜索）。 */
+  idQuery: boolean;
+  hits: SpiritEchoLocateHit[];
+}
+
+/** 全域搜索（v0.8.14）：按文本搜所有记录类型，不让“类型”挡住已经存在的东西。 */
+export interface SpiritSearchAllRequest {
+  q: string;
+  limit?: number;
+}
+
+export interface SpiritSearchHit {
+  kind: 'task' | 'delivery' | 'experience' | 'memory' | 'goal' | 'entity';
+  id: string;
+  /** 记录的 echo 号（星图定位用）。 */
+  echoId?: string;
+  title: string;
+  ts: number;
+  /**
+   * 经实体别名关联命中的实体 id（v19）：本条不是直接命中搜索词，
+   * 而是“这个词指的是某个实体，而这条记录属于它”。直接命中时缺省。
+   */
+  via?: string;
+}
+
+export interface SpiritSearchAllResult {
+  hits: SpiritSearchHit[];
+}
+
+/** 记录详情（v0.8.17）：搜索命中行内展开用，不跳页。 */
+export interface SpiritRecordDetailRequest {
+  kind: 'task' | 'delivery' | 'experience' | 'memory' | 'goal' | 'entity';
+  id: string;
+}
+
+export interface SpiritRecordDetailResult {
+  kind: string;
+  id: string;
+  echoId?: string;
+  title: string;
+  /** 明细行（按阅读顺序；空行不出现）。 */
+  lines: string[];
+  /** 记录时间。 */
+  ts: number;
+}
+/** 语气/状态行（不属于记忆引用）。 */
+export interface SpiritEchoTone {
+  at: number;
+  state?: string;
+  opening?: string;
+}
+
+export interface SpiritEchoRefsRequest {
+  sessionId?: string;
+  /** task|delivery|experience|memory|goal；省略 = 全部。 */
+  kind?: string;
+  /** 标题或 memid 的关键词（LIKE 字面量）。 */
+  q?: string;
+  sinceMs?: number;
+  untilMs?: number;
+  limit?: number;
+}
+
+export interface SpiritEchoRefsResult {
+  /** v0.8.11 正式字段。 */
+  records: SpiritEchoRecordRow[];
+  /** 旧名别名（一版兼容）：内容同 records。 */
+  refs: SpiritEchoRecordRow[];
+  total: number;
+  /** 语气/状态（特殊格式·非引用）：sessionId 空 = 跨会话最近一条。 */
+  tone?: SpiritEchoTone;
+}
+
+/**
+ * 回响分层检索（v0.8.6）：时间段 → 关键词 → 语义向量（最后一级，未配嵌入 ⇒ vector='unavailable'）。
+ * 命中层级回在 tier；不跳级也不假装命中。
+ */
+export interface SpiritEchoSearchRequest {
+  sessionId?: string;
+  workspaceId?: string;
+  /** 时间窗（含头含尾，毫秒）。 */
+  sinceMs?: number;
+  untilMs?: number;
+  /** 关键词（LIKE 包含匹配，%/_ 按字面量）。 */
+  q?: string;
+  limit?: number;
+}
+
+export interface SpiritEchoSearchResult {
+  items: SpiritEchoSnapshot[];
+  /** 本次实际命中的层级：time（只按时间段）/ keyword（时间窗内或全库关键词命中）/ none。 */
+  tier: 'time' | 'keyword' | 'none';
+  /** 向量层可用性（未配嵌入通道 ⇒ 'unavailable'；不假装能兜底）。 */
+  vector: 'available' | 'unavailable';
+  /** 落档表内参检总条数（与 items 条数不同：items 已被 limit 钳）。 */
+  scanned: number;
+}
+
+/** v0.8.2：按编号读一条回响的注入原文。 */
+export interface SpiritEchoDetailRequest {
+  sessionId: string;
+  /** `echo-<ts_ms>`（列表里显示的编号）。 */
+  id: string;
+}
+
+export interface SpiritEchoDetailItem {
+  id: string;
+  at: number;
+  kind: 'injected' | 'skipped';
+  reason: string;
+  fingerprint: string;
+  preview: string;
+  /** 当时注入的卡全文；旧版落档没有存过 ⇒ 空串（读侧当“无原文”）。 */
+  text: string;
+}
+
+export interface SpiritEchoDetailResult {
+  /** 找不到 ⇒ undefined（消费方展示“该条目已不在”）。 */
+  item?: SpiritEchoDetailItem;
 }
 
 export interface SpiritPersonaEffectiveResult {
@@ -757,7 +1023,13 @@ export interface SpiritEntriesListRequest {
   /** 「藏起来的回忆」视图：只看藏起的（恢复入口在这里）。 */
   hiddenOnly?: boolean;
   sessionId?: string;
+  /** 偏移分页（旧口径）：与 `cursor` 同时给时以 cursor 为准。 */
   offset?: number;
+  /**
+   * 游标分页（v19）：上一页最后一行的 `(ts_ms, id)`。
+   * append-only 库上 OFFSET 随页深线性变慢，游标能直接吃 `exp_ts` 索引。
+   */
+  cursor?: { tsMs: number; id: string };
   limit?: number;
 }
 
@@ -768,6 +1040,8 @@ export interface SpiritEntriesListResult {
   /** 搜索候选池被扫描窗吃满 ⇒ 更早的可能没勾起（诚实截断，不假装是全）。 */
   truncated: boolean;
   offset: number;
+  /** 下一页游标（v19）：`hasMore=true` 时给出，缺省表示到底或本路未用游标。 */
+  nextCursor?: { tsMs: number; id: string };
   /** 首屏（offset===0）下发枚举 slug 目录：client 拿自己的 label 单源翻译，不手抄枚举。 */
   catalogs?: { triggers: string[]; lanes: string[] };
 }
@@ -877,6 +1151,8 @@ export interface SpiritTxnRow {
   summary?: string;
   sourceTrust: string;
   topics: string[];
+  /** v0.8.11：记录号 `echo-<uuid>`（交付也是一条记录；旧行缺省）。 */
+  echoId?: string;
   cues: string[];
 }
 
@@ -994,6 +1270,34 @@ export interface SpiritEntityGraphResult {
   nodes: SpiritEntityNode[];
   edges: SpiritEntityEdgeView[];
 }
+
+/** 疑似同一实体的候选（只读；结构同步 `store/ontology.EntityMergeSuggestion`）。 */
+export interface SpiritEntityMergeSuggestion {
+  a: string;
+  b: string;
+  left: string;
+  right: string;
+  reason: 'normalized-equal' | 'shared-upstream' | 'contains' | 'near-spelling';
+  score: number;
+}
+
+export interface SpiritEntityMergeSuggestRequest {
+  limit?: number;
+}
+
+export interface SpiritEntityMergeSuggestResult {
+  suggestions: SpiritEntityMergeSuggestion[];
+}
+
+/** 人工别名追加：**只写 entity_alias(source='user')**，不合并 id、不改 entity 行。 */
+export interface SpiritEntityAliasAddRequest {
+  entityId: string;
+  alias: string;
+}
+
+export interface SpiritEntityAliasAddResult {
+  ok: boolean;
+}
 export interface SpiritEntityLookupRequest {
   entityId?: string;
   /** 按实体名等值反查（写入侧同一归一口径）。 */
@@ -1011,6 +1315,8 @@ export interface SpiritTaskRow {
   status: string;
   nextStep?: string;
   updatedAt: number;
+  /** v0.8.11：记录号 `echo-<uuid>`（任务线就是 progress/done 卡片本身）。 */
+  echoId?: string;
 }
 export interface SpiritTaskListRequest {
   workspaceId: string;
@@ -1093,11 +1399,19 @@ export interface SpiritConfig {
      */
     fadeEnabled: boolean;
     /**
-     * 注意力衰减半衰期（ms）——淡出档位的 Δt 尺度，与 `halfLifeMs`（排序用）解耦。
-     * 缺省取情绪尺度（小时，见 decay.ts 注：与 prime 记忆面的“天”同式不同尺）；
-     * 面板可调（调参 SOP 见 README：held 占比过高→拉长；重发率升高→加宽量化档）。
+     * 注意力衰减半衰期（ms）——**v19 起语义收窄为冻结开关**：
+     * `0` = 全阶恒 1.000（不淡）；`>0` = 启用 0-7-30 台阶（具体尺度见下面四个键）。
+     * 保留键名与面板位置，避免已有配置/面板控件跳变。
      */
     fadeHalfLifeMs: number;
+    /** 台阶一「当下」的边界（天）：Δ t 小于它 ⇒ 权重 1000（默认 7）。`0` = 直接进「一周后」阶。 */
+    fadeHotDays: number;
+    /** 台阶二「一周后」的边界（天）：Δt 落在这里 ⇒ 权重 `fadeWarmWeight`；否则进末阶（默认 30）。 */
+    fadeColdDays: number;
+    /** 台阶二权重（千分位，默认 750，钳制 500..1000）。 */
+    fadeWarmWeight: number;
+    /** 末阶权重（千分位，默认 500 = 地板；钳制 500..1000，且不得大于 warm）。 */
+    fadeColdWeight: number;
     /** full 档分数地板（**千分位**整数，550=0.55；m = (salience/2)×注意力衰减；反馈只重排不回灌 m）。 */
     fadeFullMinScore: number;
     /** gist 档分数地板（千分位，250=0.25；低于 gist 地板 ⇒ held 不上卡）。 */
@@ -1260,7 +1574,13 @@ export interface SpiritLiveSettings {
   retentionDays: number;
   /** 淡出开关与窗口尺度热更（面板六腿的 volatile 腿；阈值属部署面，不热更）。 */
   fadeEnabled: boolean;
+  /** v19：半衰期语义收窄为冻结开关（0 = 全阶恒 1.000） */
   fadeHalfLifeMs: number;
+  /** v19 台阶三键（热更）：当下边界 / 一周后边界 / 两级权重（千分位）。 */
+  fadeHotDays: number;
+  fadeColdDays: number;
+  fadeWarmWeight: number;
+  fadeColdWeight: number;
   /** 人工反馈重排热更（只重排不回灌；闸关=卡片序与闸开前一致）。 */
   feedbackEnabled: boolean;
   /** 做梦开关热更（v0.3.4）：关掉后定时器每轮现判直接空转，手动「让鱼睡一觉」也拒——设置面可见即此键。 */
@@ -1302,7 +1622,12 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
     maxCharsPerEntry: 120,
     halfLifeMs: 5_400_000,
     fadeEnabled: false,
+    // v19 台阶：0-7-30。fadeHalfLifeMs 只作冻结开关（>0 = 启用台阶）
     fadeHalfLifeMs: 5_400_000,
+    fadeHotDays: 7,
+    fadeColdDays: 30,
+    fadeWarmWeight: 750,
+    fadeColdWeight: 500,
     fadeFullMinScore: 550,
     fadeGistMinScore: 250,
     gistMinSalience: 1,
@@ -1361,6 +1686,10 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
     retentionDays: SPIRIT_DEFAULTS_RETENTION_DAYS,
     fadeEnabled: false,
     fadeHalfLifeMs: 5_400_000,
+    fadeHotDays: 7,
+    fadeColdDays: 30,
+    fadeWarmWeight: 750,
+    fadeColdWeight: 500,
     feedbackEnabled: true,
     dreamEnabled: true,
     // 长觉热更开关缺省跟随部署面：没在 config.distill.enabled 显式 opt-in 前，eff = false && true 仍关（灰度不变）；
@@ -1382,6 +1711,10 @@ export const SPIRIT_RANGES: Record<string, readonly [number, number]> = {
   'recall.maxCharsPerEntry': [40, 400],
   'recall.halfLifeMs': [0, 604_800_000],
   'recall.fadeHalfLifeMs': [0, 2_592_000_000],
+  'recall.fadeHotDays': [0, 365],
+  'recall.fadeColdDays': [1, 365],
+  'recall.fadeWarmWeight': [500, 1_000],
+  'recall.fadeColdWeight': [500, 1_000],
   'recall.fadeFullMinScore': [0, 1_000],
   'recall.fadeGistMinScore': [0, 1_000],
   'recall.gistMinSalience': [0, 2],
@@ -1423,25 +1756,32 @@ export interface FadeStats {
 
 // ── v0.8 模型可写记忆（两本账 + 日记）与目的层 ──
 
-/** 记忆范围：life=生涯/人格面（心里话、约定）；work=长期工作（事实/决定/偏好）；diary=日记（追加、不自动注入）。 */
-export const SPIRIT_MEMORY_SCOPES = ['life', 'work', 'diary'] as const;
+/** 记忆范围：life=生涯/人格面（心里话、约定）；work=长期工作；diary=日记；episode=对话细节（v0.8.24，代理自记、不自动注入）。 */
+export const SPIRIT_MEMORY_SCOPES = ['life', 'work', 'diary', 'episode'] as const;
 export type SpiritMemoryScope = (typeof SPIRIT_MEMORY_SCOPES)[number];
 /** 各范围允许的 kind（越界拒写；kind 是给主人看的分类，不参与注入决策）。 */
 export const SPIRIT_MEMORY_KINDS: Record<SpiritMemoryScope, readonly string[]> = {
   life: ['bond', 'promise'],
   work: ['fact', 'decision', 'preference', 'promise'],
   diary: ['note'],
+  // 对话细节（v0.8.24）：主人原话/承诺/关键上下文——模型自记，不自动注入，靠 recall 取
+  episode: ['detail'],
 };
 
 export interface SpiritMemoryRow {
   id: string;
-  scope: SpiritMemoryScope;
+  /** 写入面只有 life/work/diary；`distill` 是只读投影（v0.8.18，来自蒸馏层 L1）。 */
+  scope: SpiritMemoryScope | 'distill';
   kind: string;
   text: string;
   workspaceId: string;
   pinned: boolean;
   createdAt: number;
   updatedAt: number;
+  /** v0.8.11：记录号 `echo-<uuid>`（记着/目的也是记录）。 */
+  echoId?: string;
+  /** 生涯流程档专用（v0.8.18）：该档关联的实体名（面板「关联实体」）。 */
+  entityNames?: string[];
 }
 
 export interface SpiritGoalRow {
@@ -1452,6 +1792,8 @@ export interface SpiritGoalRow {
   workspaceId: string;
   createdAt: number;
   updatedAt: number;
+  /** v0.8.11：记录号 `echo-<uuid>`（目的也是一条记录）。 */
+  echoId?: string;
 }
 
 export interface SpiritMemoryListRequest {
@@ -1465,13 +1807,80 @@ export interface SpiritMemoryListResult {
   life: SpiritMemoryRow[];
   work: SpiritMemoryRow[];
   diary: SpiritMemoryRow[];
+  /** 对话细节（v0.8.24）：模型自记的要点，不自动注入。 */
+  episode?: SpiritMemoryRow[];
   goals: SpiritGoalRow[];
+  /** 蒸馏层 L1 最近投影（v0.8.18）：只读，来源 dsh-prime-memory；没装就空。 */
+  distill?: SpiritMemoryRow[];
+}
+
+/** 生涯流程预总结档（v0.8.18）：spirit 自存，只含流程性（知识性归上游）。 */
+export interface DistillDigestRow {
+  category: 'procedural';
+  /** 档位：会话 / 7 天 / 30 天 / 里程碑（只增不改）。 */
+  tier: 'session' | 'week' | 'month' | 'milestone';
+  /** 档键：session=上游会话 id；week=YYYY-Www；month=YYYY-MM；milestone=上游 record_id。 */
+  periodKey: string;
+  /** 回看窗口（天）；会话档为 0（按会话而非时间窗）。 */
+  windowDays: number;
+  generatedAt: number;
+  /** 会话档的首条日期（YYYY-MM-DD）；week/month/milestone 可省略。 */
+  periodStart?: string;
+  /** 参与总结的流程性记录数。 */
+  count: number;
+  /** 多行摘要（每行：日期 · 类型 · 正文；重复合并标 `×N`）。 */
+  summary: string;
+  /** 关联的 spirit entity id（实体对齐后填充）。 */
+  entities?: string[];
+  /**
+   * 失效标注（v20，仅里程碑档有意义）：非空 = 来源已退场的时间，**只影响展示**，
+   * 正文一字不改（避免二次真源）。NULL = 仍有效 / 拿不到证据（保守判 fresh）。
+   */
+  staleAt?: number;
+}
+
+/** 按实体查生涯档（v0.8.18）。 */
+export interface SpiritEntityDigestRequest {
+  entity: string;
+  /** 里程碑上限（默认 5）。 */
+  limit?: number;
+}
+
+export interface SpiritDigestView {
+  tier: string;
+  periodKey: string;
+  generatedAt: number;
+  count: number;
+  lines: string[];
+}
+
+export interface SpiritEntityDigestResult {
+  entity: string;
+  entityId?: string;
+  digests: SpiritDigestView[];
+  /** 上游相关知识条数（只计数；正文用 memory_search）。 */
+  knowledgeRefs: number;
+}
+
+/** 手动刷新三档（面板按钮）。 */
+export interface SpiritDistillRunResult {
+  week: number;
+  month: number;
+  milestones: number;
+  weekCount: number;
+  knowledgeCount: number;
+  entities: number;
+  links: number;
+  /** 会话档：写入的会话数（v0.8.25）。 */
+  sessions?: number;
+  /** 会话档：被合并的重复流程行数（v0.8.25）。 */
+  merged?: number;
 }
 
 // ─────────────────────────────────────────────────────────── 版本与文件
 
-/** SQLite schema 版本；跨版本打开明确拒绝，不静默改库（v1→v2 加列、v2→v3 人设两表、v3→v4 主人档案、v4→v5 藏起列与分页索引、v5→v6 长觉阶梯五表、v6→v7 事务轨两张表、v7→v8 本体层（扩 txn_entry + 六表）、v8→v9 模型可写记忆与目的层，均正向迁移）。 */
-export const SPIRIT_DB_SCHEMA_VERSION = 9;
+/** SQLite schema 版本；跨版本打开明确拒绝，不静默改库（v1→v2 加列、v2→v3 人设两表、v3→v4 主人档案、v4→v5 藏起列与分页索引、v5→v6 长觉阶梯五表、v6→v7 事务轨两张表、v7→v8 本体层（扩 txn_entry + 六表）、v8→v9 模型可写记忆与目的层、v9→v10 召回回响段落档表、v10→v11 回响条目摘要列、v11→v12 回响条目编号与原文字列、v12→v13 回响条目时间反查索引、v13→v14 回响条目标题与 memid 引用列、v14→v15 回响引用记录 echo_ref、v15→v16 编号重整（echo_identity 注册表 + 记录 echo-<uuid> / 回响 recall-<uuid>），均正向迁移）。 */
+export const SPIRIT_DB_SCHEMA_VERSION = 20;
 /** `persona.json` 文件形状版本。 */
 export const SPIRIT_PERSONA_FILE_VERSION = 1;
 /** `owner.json` 文件形状版本（db=null 降级面；与 persona 分键，形状互不牵连）。 */
@@ -1479,7 +1888,10 @@ export const SPIRIT_OWNER_FILE_VERSION = 1;
 /** `session-modes.json` 文件形状版本。 */
 export const SPIRIT_MODES_FILE_VERSION = 1;
 /** 插件版本（与 package.json / dsh.plugin.json 同串，由门禁核对）。 */
-export const SPIRIT_VERSION = '0.8.0';
+export const SPIRIT_VERSION = '0.9.0';
+
+
+
 
 
 

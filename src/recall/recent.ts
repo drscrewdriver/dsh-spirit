@@ -44,29 +44,73 @@ export function recentLines(entries: readonly ExperienceEntry[], opts: RecentOpt
  * 重排只改“先进哪条”不改“进不进”：held 的判定始终由 formOf（salience×注意力）说了算。
  */
 export function recentForms(entries: readonly ExperienceEntry[], opts: RecentOptions & { fade?: FadeConfig }): FormedEntry[] {
-  const usable = entries.filter((entry) => entry.supersededBy === undefined && entry.text !== '');
-  const ranked = takeTop(
-    rankBy(
-      usable,
-      () => 1,
-      { now: opts.now, halfLifeMs: opts.halfLifeMs, tsOf: (item) => (item as ExperienceEntry).tsMs, idOf: (item) => (item as ExperienceEntry).id },
-    ),
-    opts.limit,
+  return recentFormsDetailed(entries, opts).formed;
+}
+
+/** 被挡在卡外的条目及原因（P0 观测面：回答“这条为什么没上来”）。 */
+export interface RecallReject {
+  kind: 'experience';
+  id: string;
+  /** 近因路四种 + 历史路两种（同一张观测表里可对账） */
+  reason: 'superseded' | 'empty-text' | 'limit' | 'held' | 'exclude-dup' | 'own-card';
+}
+
+export interface RecentFormsResult {
+  formed: FormedEntry[];
+  rejected: RecallReject[];
+}
+
+/**
+ * 同 `recentForms`，但多返回负样本（被过滤/被挤掉/被逐出注意力）。
+ *
+ * 纯观测：`formed` 与旧实现逐字节一致；`rejected` 不进卡、不进指纹。
+ */
+export function recentFormsDetailed(
+  entries: readonly ExperienceEntry[],
+  opts: RecentOptions & { fade?: FadeConfig },
+): RecentFormsResult {
+  const rejected: RecallReject[] = [];
+  const usable: ExperienceEntry[] = [];
+  for (const entry of entries) {
+    if (entry.supersededBy !== undefined) {
+      rejected.push({ kind: 'experience', id: entry.id, reason: 'superseded' });
+      continue;
+    }
+    if (entry.text === '') {
+      rejected.push({ kind: 'experience', id: entry.id, reason: 'empty-text' });
+      continue;
+    }
+    usable.push(entry);
+  }
+  const rankedAll = rankBy(
+    usable,
+    () => 1,
+    { now: opts.now, halfLifeMs: opts.halfLifeMs, tsOf: (item) => (item as ExperienceEntry).tsMs, idOf: (item) => (item as ExperienceEntry).id },
   );
+  const ranked = takeTop(rankedAll, opts.limit);
+  for (const dropped of rankedAll.slice(ranked.length)) {
+    rejected.push({ kind: 'experience', id: dropped.item.id, reason: 'limit' });
+  }
   const fade = opts.fade;
   if (fade === undefined || !fade.fadeEnabled) {
     // v0.1 兼容臂：无反馈重排、无档位，文本即原文（逐字节回归冻结在这里，不在渲染侧）
-    return ranked.map((entry) => ({ entry, form: 'full' as const, text: entry.text }));
+    return { formed: ranked.map((entry) => ({ entry, form: 'full' as const, text: entry.text })), rejected };
   }
   // 反馈只重排（两轴分离）：未打分保持原序，打分不改任何条目能不能进卡
   const ordered = fade.feedbackEnabled && ranked.some((entry) => typeof entry.feedbackScore === 'number')
     ? feedbackFirst(ranked, (entry) => entry.feedbackScore ?? 0)
     : ranked;
-  const formed = ordered.map((entry) => {
+  const formed: FormedEntry[] = [];
+  for (const entry of ordered) {
     const form = formOf(entry, opts.now, fade);
-    return { entry, form, text: formText(entry, form) };
-  });
-  return formed.filter((item) => item.text !== '');
+    const text = formText(entry, form);
+    if (text === '') {
+      rejected.push({ kind: 'experience', id: entry.id, reason: 'held' });
+      continue;
+    }
+    formed.push({ entry, form, text });
+  }
+  return { formed, rejected };
 }
 
 /** 形态摘要（进指纹：同档位集合 ⇒ 同摘要；不含时间戳）。 */

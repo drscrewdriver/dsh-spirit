@@ -16,6 +16,9 @@ import type { MinimalLogger } from '../persona/store.js';
 import type { AnchorMode, EntityKind, EvalKind, SourceTrust } from '../types.js';
 import { ANCHOR_MODES, ENTITY_KINDS, EVAL_KINDS, SOURCE_TRUST_VALUES } from '../types.js';
 import { hitsInjection } from '../words.js';
+import { normalizeEntityName } from '../prime/entity-align.js';
+import { indexDoc } from '../search/fts.js';
+import { indexText } from '../search/tokens.js';
 
 /** 读侧上界（与 TXN_READ_MAX 同口径：一次读不搬空整库）。 */
 export const ONT_READ_MAX = 200;
@@ -142,6 +145,42 @@ function capRead(limit: number): number {
 /** LIKE 字面量转义：用户输入的 % _ \ 不当通配符（配合 ESCAPE '\\' 用）。 */
 function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/** 疑似同一实体的候选对（只读建议；落点是人工别名，不是合并）。 */
+export interface EntityMergeSuggestion {
+  a: string;
+  b: string;
+  left: string;
+  right: string;
+  reason: 'normalized-equal' | 'shared-upstream' | 'contains' | 'near-spelling';
+  score: number;
+}
+
+/** 编辑距离 ≤ 1 的快速判定（长度差先判否，不做完整 DP）。 */
+function editDistanceAtMostOne(a: string, b: string): boolean {
+  if (a === b) return true;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  if (long.length - short.length > 1) return false;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < short.length && j < long.length) {
+    if (short[i] === long[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    edits += 1;
+    if (edits > 1) return false;
+    if (short.length === long.length) {
+      i += 1;
+      j += 1;
+    } else {
+      j += 1;
+    }
+  }
+  return edits + (long.length - j) <= 1;
 }
 
 export class OntologyStore {
@@ -316,9 +355,116 @@ export class OntologyStore {
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET importance = excluded.importance, aliases_json = excluded.aliases_json, first_seen_ms = excluded.first_seen_ms, last_seen_ms = excluded.last_seen_ms`)
         .run(id, input.kind, name, JSON.stringify([...aliases]), importance, firstSeen, lastSeen);
+      // v19：别名表增量写（多名称搜索的底座；幂等）。
+      // 为什么在这里而不只依赖回填：新实体要能**立即可按别名搜到**，否则得等下一次全量重建。
+      try {
+        const aliasInsert = db.prepare(`INSERT OR IGNORE INTO entity_alias (alias_norm, entity_id, source) VALUES (?, ?, 'spirit')`);
+        for (const label of [name, ...aliases]) {
+          const norm = normalizeEntityName(label);
+          if (norm !== '') aliasInsert.run(norm, id);
+        }
+      } catch {
+        /* 别名写失败不影响实体本体 */
+      }
+      indexDoc(db, 'entity', id, lastSeen, indexText(name, [...aliases].join(' ')));
       return { id };
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * 疑似同一实体的候选对（B-3，**只读**）。
+   *
+   * 四类依据（按强度降序）：归一化相等 > 共享上游 id > 一方包含另一方（差≤4）> 编辑距离≤1（长度≥4）。
+   * 只出候选：确认后的落点是 `entity_alias(source='user')`，**永不合并 id、不改 entity 行**
+   * （合并不可逆，误配比漏配贵）。
+   */
+  suggestEntityMerges(limit = 20): EntityMergeSuggestion[] {
+    const db = this.deps.db();
+    if (db === null) return [];
+    const cap = Math.max(1, Math.min(50, Math.floor(limit)));
+    try {
+      const rows = db.prepare(`SELECT id, name, aliases_json FROM entity ORDER BY importance DESC, last_seen_ms DESC LIMIT 300`)
+        .all() as Array<Record<string, SQLOutputValue>>;
+      const entities = rows.map((row) => {
+        const id = asText(row['id']);
+        const names: string[] = [asText(row['name'])];
+        try {
+          const parsed: unknown = JSON.parse(asText(row['aliases_json']) || '[]');
+          if (Array.isArray(parsed)) for (const item of parsed) if (typeof item === 'string') names.push(item);
+        } catch {
+          /* 坏 JSON ⇒ 只用主名 */
+        }
+        const norms = [...new Set(names.map((n) => normalizeEntityName(n)).filter((n) => n !== ''))];
+        return { id, names: names.filter((n) => n !== ''), norms };
+      }).filter((entity) => entity.id !== '' && entity.norms.length > 0);
+
+      // 共享上游 id：entity_id → upstream_id 集合
+      const upstream = new Map<string, Set<string>>();
+      try {
+        for (const row of db.prepare(`SELECT entity_id, upstream_id FROM entity_upstream_link`).all() as Array<Record<string, SQLOutputValue>>) {
+          const id = asText(row['entity_id']);
+          const up = asText(row['upstream_id']);
+          if (id === '' || up === '') continue;
+          const set = upstream.get(id) ?? new Set<string>();
+          set.add(up);
+          upstream.set(id, set);
+        }
+      } catch {
+        /* 无链接表/无行 ⇒ 该类候选不出 */
+      }
+
+      const weight = { 'normalized-equal': 100, 'shared-upstream': 80, contains: 60, 'near-spelling': 40 } as const;
+      const out: EntityMergeSuggestion[] = [];
+      for (let i = 0; i < entities.length; i += 1) {
+        for (let j = i + 1; j < entities.length; j += 1) {
+          const a = entities[i]!;
+          const b = entities[j]!;
+          if (a.id === b.id) continue;
+          let reason: EntityMergeSuggestion['reason'] | undefined;
+          for (const norm of a.norms) {
+            if (b.norms.includes(norm)) {
+              reason = 'normalized-equal';
+              break;
+            }
+          }
+          if (reason === undefined) {
+            const upA = upstream.get(a.id);
+            const upB = upstream.get(b.id);
+            if (upA !== undefined && upB !== undefined && [...upA].some((id) => upB.has(id))) reason = 'shared-upstream';
+          }
+          if (reason === undefined) {
+            reason = a.norms.some((x) => b.norms.some((y) => (x.includes(y) || y.includes(x)) && Math.abs(x.length - y.length) <= 4 && Math.min(x.length, y.length) >= 3))
+              ? 'contains'
+              : undefined;
+          }
+          if (reason === undefined) {
+            reason = a.norms.some((x) => b.norms.some((y) => x.length >= 4 && y.length >= 4 && editDistanceAtMostOne(x, y)))
+              ? 'near-spelling'
+              : undefined;
+          }
+          if (reason === undefined) continue;
+          out.push({ a: a.id, b: b.id, left: a.names[0] ?? a.id, right: b.names[0] ?? b.id, reason, score: weight[reason] });
+        }
+      }
+      return out.sort((x, y) => y.score - x.score).slice(0, cap);
+    } catch {
+      return [];
+    }
+  }
+
+  /** 面板确认后写人工别名（source='user'；只加别名，不碰 entity 行与 id）。 */
+  addUserAlias(entityId: string, alias: string): boolean {
+    const db = this.deps.db();
+    if (db === null || entityId === '') return false;
+    const norm = normalizeEntityName(alias);
+    if (norm === '') return false;
+    try {
+      db.prepare(`INSERT OR IGNORE INTO entity_alias (alias_norm, entity_id, source) VALUES (?, ?, 'user')`).run(norm, entityId);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -407,6 +553,8 @@ export class OntologyStore {
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET title = excluded.title, status = excluded.status, next_step = excluded.next_step, updated_at = excluded.updated_at`)
         .run(input.id, title, status, nextStep, input.workspaceId, createdAt, input.tsMs);
+      // v19 检索索引（失败自吞）：任务线是“最近在干什么”的主入口
+      indexDoc(db, 'task', input.id, input.tsMs, indexText(title, nextStep));
       return true;
     } catch {
       return false;

@@ -38,6 +38,8 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
   // 上次梦境读数（v0.3.4 设置面可见性：睡眠块要说话，不只在做梦 tab 里）
   const [dreamReport, setDreamReport] = useState<SpiritDreamReport | null>(null);
   const [halfLifeDraft, setHalfLifeDraft] = useState<string>('');
+  /** v19 台阶四键的输入草稿（失焦才提交；与回显真值比较，不重复写） */
+  const [ladderDraft, setLadderDraft] = useState<{ hot: string; cold: string; warm: string; coldW: string }>({ hot: '', cold: '', warm: '', coldW: '' });
   const [error, setError] = useState<string | null>(null);
   const [guideCopied, setGuideCopied] = useState(false);
   const guideRef = useRef<HTMLTextAreaElement | null>(null);
@@ -63,6 +65,12 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
       if (s.ok) {
         setSettings(s.value);
         setHalfLifeDraft(String(Math.round(s.value.fadeHalfLifeMs / 60_000)));
+        setLadderDraft({
+          hot: String(s.value.fadeHotDays),
+          cold: String(s.value.fadeColdDays),
+          warm: String(s.value.fadeWarmWeight),
+          coldW: String(s.value.fadeColdWeight),
+        });
       }
       // 上次梦境：读 meta 单键（本地冷路径，失败不阻断——面板退「还没做过梦」）
       const dr = await rpc('dream-report', {});
@@ -149,7 +157,17 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
    * 写 volatile 面（六腿的写腿）：淡出两键 + 做梦开关；反馈闸不常改，只随 fadeEnabled 一起开关。
    * 保存后重拉一次 settings-get 回显真值（update 可能被宿主拒 → 面板不能自报已生效）。
    */
-  const saveSettings = (patch: { fadeEnabled?: boolean; fadeHalfLifeMs?: number; dreamEnabled?: boolean; distillEnabled?: boolean; ontologyEnabled?: boolean }) => {
+  const saveSettings = (patch: {
+    fadeEnabled?: boolean;
+    fadeHalfLifeMs?: number;
+    fadeHotDays?: number;
+    fadeColdDays?: number;
+    fadeWarmWeight?: number;
+    fadeColdWeight?: number;
+    dreamEnabled?: boolean;
+    distillEnabled?: boolean;
+    ontologyEnabled?: boolean;
+  }) => {
     if (rpc === undefined) return;
     setExportNote(null);
     void rpc('settings-set', patch)
@@ -163,6 +181,30 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
       })
       .catch(() => setExportNote(copy['panel.settingsFailed']));
   };
+  /** 台阶输入（失焦提交）：min 为下限，提交前与当前回显值比较，不重复写 volatile。 */
+  const ladderInput = (
+    draftKey: 'hot' | 'cold' | 'warm' | 'coldW',
+    label: string,
+    current: number,
+    commit: (value: number) => void,
+    min: number,
+  ) => createElement(
+    'label',
+    { style: { display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 } },
+    label,
+    createElement('input', {
+      type: 'number',
+      min,
+      value: ladderDraft[draftKey],
+      style: { width: 64 },
+      onChange: (e: { target: { value: string } }) => setLadderDraft((prev) => ({ ...prev, [draftKey]: e.target.value })),
+      onBlur: () => {
+        const n = Number.parseFloat(ladderDraft[draftKey]);
+        if (Number.isFinite(n) && Math.round(n) !== current) commit(Math.max(min, Math.round(n)));
+      },
+    }),
+  );
+
   return createElement(
     'section',
     { style: { padding: '12px 16px' } },
@@ -242,6 +284,12 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
                 if (Number.isFinite(minutes) && Math.round(minutes * 60_000) !== settings.fadeHalfLifeMs) saveSettings({ fadeHalfLifeMs: Math.max(0, Math.round(minutes * 60_000)) });
               },
             }),
+            // v19 台阶四键（0-7-30）：边界天 + 两级千分位权重（均在 RPC 侧有区间钳制）
+            createElement('span', { style: mutedStyle }, copy['panel.fadeLadder']),
+            ladderInput('hot', copy['panel.fadeHotDays'], settings.fadeHotDays, (v) => saveSettings({ fadeHotDays: v }), 0),
+            ladderInput('cold', copy['panel.fadeColdDays'], settings.fadeColdDays, (v) => saveSettings({ fadeColdDays: v }), 1),
+            ladderInput('warm', copy['panel.fadeWarmWeight'], settings.fadeWarmWeight, (v) => saveSettings({ fadeWarmWeight: v }), 500),
+            ladderInput('coldW', copy['panel.fadeColdWeight'], settings.fadeColdWeight, (v) => saveSettings({ fadeColdWeight: v }), 500),
             settings.hotUpdatable
               ? null
               : createElement('span', { style: mutedStyle }, copy['panel.settingsCold']),

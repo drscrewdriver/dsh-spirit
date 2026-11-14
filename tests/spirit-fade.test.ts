@@ -93,16 +93,18 @@ async function step(h: Harness, over: Partial<PreStepInput>) {
 }
 
 describe('刀1 集成：淡出档内不重发（量化纪律的编排面回归）', () => {
-  it('fadeEnabled=true：同档跨多个半衰期 ⇒ 确认后的档内轮 unchanged（now 漂移不破门）', async () => {
+  it('fadeEnabled=true：同档内 now 漂移不破门；跨档才重发（v19 台阶语义）', async () => {
     const h = harness({ cfg: deepCfg({ recall: { fadeEnabled: true, fadeHalfLifeMs: 1_000 } }, { fadeEnabled: true, fadeHalfLifeMs: 1_000 }) });
     h.seed([entry({ id: 'x1', tsMs: 0, salience: 2 })]);
-    const first = await step(h, { now: 500 });
+    const DAY_MS = 86_400_000;
+    const first = await step(h, { now: DAY_MS }); // 1 天：「当下」阶
     expect(first.kind).toBe('injected');
-    const second = await step(h, { now: 1_500 });
-    expect(second.kind).toBe('injected');
-    const third = await step(h, { now: 2_500 });
-    expect(third.kind + ':' + third.reason).toBe('passthrough:unchanged');
-    void second;
+    // 同一阶内把 now 往后推几天：形态与文本都不变 ⇒ 沿用上一张
+    const second = await step(h, { now: 3 * DAY_MS });
+    expect(second.kind + ':' + second.reason).toBe('passthrough:unchanged');
+    // 跨到末阶（>30 天）：full → gist，必须重发
+    const third = await step(h, { now: 40 * DAY_MS });
+    expect(third.kind).toBe('injected');
     expect(h.fades.length).toBeGreaterThanOrEqual(1);
     expect(h.fades[0]?.pool).toBe(1);
   });
@@ -121,7 +123,8 @@ describe('刀1 集成：淡出档内不重发（量化纪律的编排面回归�
   it('gist 降级后卡文本仍可被 isOwnCardText 识别（签名行不受形态影响）', async () => {
     const h = harness({ cfg: deepCfg({ recall: { fadeEnabled: true, fadeHalfLifeMs: 1_000, fadeFullMinScore: 999 } }, { fadeEnabled: true, fadeHalfLifeMs: 1_000 }) });
     h.seed([entry({ id: 'x1', tsMs: 0, salience: 2 })]);
-    const one = await step(h, { now: 1_500 });
+    // v19：末阶（>30 天）m=500 < 999 ⇒ 走 gist 形态
+    const one = await step(h, { now: 40 * 86_400_000 });
     expect(one.kind).toBe('injected');
     if (one.kind === 'injected') {
       expect(isOwnCardText(one.text)).toBe(true);

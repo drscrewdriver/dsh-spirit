@@ -38,8 +38,19 @@ export interface FadeConfig {
   fadeEnabled: boolean;
   /** 人工反馈重排闸（两轴分离：只重排，永不进 m）。 */
   feedbackEnabled: boolean;
-  /** 注意力衰减半衰期（ms）；0 ⇒ 冻结窗口（不随时间淡出，pin 基线用）。 */
+  /**
+   * **冻结开关**（v19）：`0` ⇒ 全阶恒 1000（不淡）；`>0` ⇒ 启用 0-7-30 台阶。
+   * 名字保留是为了不跳变已有配置与面板控件，新尺度看下面四个键。
+   */
   fadeHalfLifeMs: number;
+  /** 台阶一「当下」的边界（天）：Δt 小于它 ⇒ 1000。`0` = 直接进「一周后」阶。 */
+  fadeHotDays?: number;
+  /** 台阶二「一周后」的边界（天）。 */
+  fadeColdDays?: number;
+  /** 台阶二权重（千分位，500..1000）。 */
+  fadeWarmWeight?: number;
+  /** 末阶权重（千分位，500..1000，且 ≤ warm）。 */
+  fadeColdWeight?: number;
 }
 
 /** salience ∈ 0..2 归一到 0..1（0 的条目本就不入库，兜底时按最低档）。 */
@@ -57,6 +68,12 @@ function salienceUnit(salience: number): number {
  * salience 低于 gist 档（v1 旧行落 0 正是此路）、把 gistMinScore 调高于时间下限。
  * 这不是缺陷而是价值观：人会想起很久以前的事，只要它真的还重要（与 decay.ts 同一句话）。
  */
+/**
+ * 旧连续半衰期曲线（v19 起**不再参与定档**）：保留导出只为对照/诊断。
+ *
+ * 为什么弃用：`max(0.5, 0.5^floor(Δt/halfLife))` 在 halfLife=90min 时 Δt≥90min 一律 0.5，
+ * 实际只产出「1.0 / 0.5」两档——台阶分辨率被地板抹平了。
+ */
 export function attentionWeight(tsMs: number, now: number, halfLifeMs: number): number {
   if (!(halfLifeMs > 0)) return 1;
   const delta = Math.max(0, now - tsMs);
@@ -66,9 +83,51 @@ export function attentionWeight(tsMs: number, now: number, halfLifeMs: number): 
 }
 
 /** m = salience 归一 × 注意力权重，缩到千分位整数（离散、可进指纹）。 */
+const DAY_MS = 86_400_000;
+
+/** 末阶地板：时间单独永远至多让一条经历「变淡一半」。 */
+export const FADE_FLOOR_PERMILLE = 500;
+
+function clampPermille(value: number, fallback: number): number {
+  const n = Number.isFinite(value) ? Math.round(value) : fallback;
+  return Math.max(FADE_FLOOR_PERMILLE, Math.min(1_000, n));
+}
+
+/**
+ * 0-7-30 台阶权重（千分位整数）：
+ * - `Δt < fadeHotDays` ⇒ 1000（当下）
+ * - `Δt < fadeColdDays` ⇒ `fadeWarmWeight`（一周后）
+ * - 其余 ⇒ `fadeColdWeight`（一月后，地板）
+ *
+ * 三条设计纪律：
+ * 1. **地板只作用末阶**——这是「真台阶」与「只有两档」的唯一分界；
+ * 2. **离散取值**——同一阶内 m 不变，卡文本才稳定（连续漂移会让「同档不重发」每轮失效）；
+ * 3. `fadeHalfLifeMs <= 0` ⇒ 全阶 1000（冻结语义保留，作对照臂用）。
+ */
+export function ladderWeightPermille(
+  tsMs: number,
+  now: number,
+  cfg: Pick<FadeConfig, 'fadeHalfLifeMs' | 'fadeHotDays' | 'fadeColdDays' | 'fadeWarmWeight' | 'fadeColdWeight'>,
+): number {
+  if (!(cfg.fadeHalfLifeMs > 0)) return 1_000;
+  const delta = Math.max(0, now - tsMs);
+  const hotDays = Math.max(0, Math.round(cfg.fadeHotDays ?? 7));
+  const coldDays = Math.max(hotDays, Math.round(cfg.fadeColdDays ?? 30));
+  if (delta < hotDays * DAY_MS) return 1_000;
+  const warm = clampPermille(cfg.fadeWarmWeight ?? 750, 750);
+  const cold = Math.min(warm, clampPermille(cfg.fadeColdWeight ?? FADE_FLOOR_PERMILLE, FADE_FLOOR_PERMILLE));
+  return delta < coldDays * DAY_MS ? warm : cold;
+}
+
+/**
+ * 分数 m（千分位）：`salience 归一 × 台阶权重`。
+ *
+ * v19 起不再用连续半衰期——旧曲线在半衰期 90 分钟 + 地板 0.5 下只有「1.0 / 0.5」两个值，
+ * 「昨天的事」与「上个月的事」权重完全一样。
+ */
 export function fadeScoreMs(entry: Pick<ExperienceEntry, 'tsMs' | 'salience'>, now: number, cfg: FadeConfig): number {
-  const w = attentionWeight(entry.tsMs, now, cfg.fadeHalfLifeMs);
-  return Math.round(salienceUnit(entry.salience ?? 0) * w * 1000);
+  const w = ladderWeightPermille(entry.tsMs, now, cfg);
+  return Math.round(salienceUnit(entry.salience ?? 0) * w);
 }
 
 /**

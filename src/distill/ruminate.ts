@@ -66,6 +66,8 @@ export interface RuminateDeps {
    * **不进 batchIds**（不能当 evidence，也不会污染 experience_topic）。
    */
   recentTxnForPrompt?: () => string[];
+  /** 睡眠完成后回调（v0.8.24）：用于把 L1 总结成生涯流程档（不阻断长觉本身）。 */
+  onComplete?: () => void;
   cfg: () => SpiritConfig;
   logger: MinimalLogger;
 }
@@ -349,6 +351,12 @@ export class RuminateRunner {
       this.failStreak = 0;
       this.nextAllowedAt = 0;
       this.state = { ...this.state, phase: 'done', detail: '梦醒了，领悟记下了', running: false, finishedAt: Date.now(), error: '', cancelRequested: false };
+      // 睡眠后总结 L1 → 生涯流程档（v0.8.24）：失败不影响长觉结果
+      try {
+        this.deps.onComplete?.();
+      } catch (err) {
+        this.deps.logger.warn(`长觉后生涯档总结失败（已忽略）：${err instanceof Error ? err.message : String(err)}`);
+      }
       return this.status();
     } catch (err) {
       const isConfig = err instanceof NoDistillRouteError;

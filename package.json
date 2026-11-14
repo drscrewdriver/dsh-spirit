@@ -1,6 +1,6 @@
 {
   "name": "dsh-spirit",
-  "version": "0.8.4-local.28",
+  "version": "0.9.0",
   "description": "DSH 第一人称体验与本体记忆插件：把流程事件编译成角色的体验点滴，并从交付/实体/任务线维度建立可回查的工作记忆（SQLite），在模型步骤前注入「此刻状态 + 刚发生的 + 被勾起的回忆 + 正在推进的事」。",
   "type": "module",
   "main": "dist/index.js",
@@ -32,6 +32,7 @@
     "test": "vitest run",
     "compat": "node scripts/compat-precheck.mjs",
     "smoke": "node scripts/smoke.mjs",
+    "echo-gate": "node scripts/echo-gate.mjs",
     "check": "npm run typecheck && npm run lint && npm run test && npm run build && npm run smoke",
     "prepack": "npm run build",
     "ab": "node scripts/ab-report.mjs"
@@ -72,6 +73,9 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "optionalDependencies": {
+    "@node-rs/jieba": "^2.0.2"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-agent": ">=0.2.0-rc.1 <0.3.0-0",

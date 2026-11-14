@@ -12,7 +12,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { MAIN_SEAT, PILL_SEAT, SEA_PANEL_ID, SETTINGS_SEAT, TOP_TOOL_SEAT, apply } from '../client/src/entry.js';
+import { MAIN_SEAT, PILL_SEAT, SEA_PANEL_ID, SETTINGS_SEAT, TOP_TOOL_SEAT, apply, handleOpenSeaEvent } from '../client/src/entry.js';
+import { seaIntent } from '../client/src/sea/sea-intent.js';
 import type { SpiritClientCtx } from '../client/src/env.js';
 
 interface Registration {
@@ -23,7 +24,7 @@ interface Registration {
   label?: unknown;
 }
 
-function fakeCtx(declared: readonly string[]) {
+function fakeCtx(declared: readonly string[], opts: { throwOnSelect?: boolean } = {}) {
   const ledger: Registration[] = [];
   const closed: Array<string | null> = [];
   const ctx = {
@@ -42,6 +43,7 @@ function fakeCtx(declared: readonly string[]) {
     get: () => undefined,
     layout: {
       selectPanel: (key: string | null): void => {
+        if (opts.throwOnSelect === true) throw new Error(`main panel "${key}" is not registered`);
         closed.push(key);
       },
     },
@@ -118,5 +120,64 @@ describe('顶部星海入口', () => {
     const label = (row!.label as () => string)();
     expect(typeof label).toBe('string');
     expect(label.length).toBeGreaterThan(0);
+  });
+});
+
+describe('回响深链', () => {
+  it('已挂载：切到星海面板、回执 ok、defaultPrevented', () => {
+    const { ctx, closed } = fakeCtx(ALL_SEATS);
+    apply(ctx);
+    vi.runAllTimers();
+    let prevented = false;
+    const detail: Record<string, unknown> = { tab: 'records', view: 'echo' };
+    handleOpenSeaEvent({ detail, preventDefault: () => { prevented = true; } });
+    expect(closed).toContain(SEA_PANEL_ID);
+    expect(detail['ack']).toEqual({ ok: true });
+    expect(prevented).toBe(true);
+  });
+
+  it('未挂载：只回 ack，不调 selectPanel', () => {
+    const { ctx, closed } = fakeCtx([SETTINGS_SEAT, PILL_SEAT]);
+    apply(ctx);
+    vi.runAllTimers();
+    let prevented = false;
+    const detail: Record<string, unknown> = { tab: 'records', view: 'echo' };
+    handleOpenSeaEvent({ detail, preventDefault: () => { prevented = true; } });
+    expect(closed).toEqual([]);
+    expect(detail['ack']).toEqual({ ok: false, reason: 'unmounted' });
+    expect(prevented).toBe(false);
+  });
+
+  it('selectPanel 抛错：回执 unregistered，异常不外泄', () => {
+    const { ctx } = fakeCtx(ALL_SEATS, { throwOnSelect: true });
+    apply(ctx);
+    vi.runAllTimers();
+    const detail: Record<string, unknown> = { tab: 'records', view: 'echo' };
+    expect(() => {
+      handleOpenSeaEvent({ detail, preventDefault: () => {} });
+    }).not.toThrow();
+    expect(detail['ack']).toEqual({ ok: false, reason: 'unregistered', detail: expect.any(String) });
+  });
+
+  it('target=graph：只切星图页签（不动翻阅子视图）', () => {
+    const { ctx, closed } = fakeCtx(ALL_SEATS);
+    apply(ctx);
+    vi.runAllTimers();
+    seaIntent.take(); // 清掉可能残留的意图
+    const detail: Record<string, unknown> = { target: 'graph' };
+    handleOpenSeaEvent({ detail, preventDefault: () => {} });
+    expect(closed).toContain(SEA_PANEL_ID);
+    expect(seaIntent.take()?.intent).toEqual({ tab: 'sea' });
+    expect(detail['ack']).toEqual({ ok: true });
+  });
+
+  it('非法 detail 一律忽略', () => {
+    const { ctx, closed } = fakeCtx(ALL_SEATS);
+    apply(ctx);
+    vi.runAllTimers();
+    for (const detail of [undefined, null, {}, { tab: 'persona', view: 'echo' }, { tab: 'records', view: 'entries' }, { target: 'elsewhere' }]) {
+      handleOpenSeaEvent({ detail, preventDefault: () => {} });
+    }
+    expect(closed).toEqual([]);
   });
 });

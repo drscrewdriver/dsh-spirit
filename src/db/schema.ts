@@ -2,8 +2,11 @@
  * SQLite schema 单源（v0.3.5 = schema v6：长觉阶梯五张派生表；v7 = 事务轨两张表；v8 = 本体层：扩 txn_entry 为 delivery + 六张实体/关系/任务/评价表）。
  *
  * 三条例外要先说明，避免后来者以为是“没做完”：
- * 1. **不建 FTS5 虚表**：条目规模就是事件数量级（每轮最多一条，且被 salience 筛掉
- *    一部分），小表打分 + 近因权重足够；等实测不达标再补索引，不预开工。
+ * 1. **FTS5 虚表不进本数组**（v19 调整，原为“不建 FTS5”）：条目规模与检索需求都变了，
+ *    `search_doc` 索引登记表在这里，而 `search_fts` 虚表由 `search/fts.ts` 运行时在
+ *    try/catch 里创建。理由：`applySchema` 逐条 `exec` 且**无错误隔离**——一条建表失败会让
+ *    整库开不起来（openSpiritDb 返回 ok:false ⇒ 全插件降级内存镜像）。FTS5 与
+ *    `contentless_delete` 依赖 SQLite 版本，属于“增强能力”：建不出来应当只失去检索质量。
  * 2. **无 DELETE 路径**：更正走“插新行 + 旧行置 `superseded_by`”，旧行永远读得回来
  *    （可回滚优先）。清理不在本文件，在 `store/journal-retention.ts`，且默认干跑。
  * 3. `ts_ms` 只服务衰减与排序，**禁止**进任何对外文本。
@@ -332,6 +335,128 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
      done_at INTEGER
    )`,
   `CREATE INDEX IF NOT EXISTS goal_status_updated ON goal (status, updated_at)`,
+  // ── v10：回响落档（注入决策 + 被召回的回响段）──
+  // 为什么要库：回响在侧栏是「本会话的回响段」，重启不能归零；而进程内 EchoLog 只适合当观测灯。
+  // echo_step：每轮 one 行（注入/跳过 + 门名 + 指纹 + 分段计数），留着回答「这一轮为什么没卡」。
+  // v14 补两列：title（内容优先的标题，如线程任务名）+ refs_json（memid 引用）——
+  // 注意：注释只能写在模板串外（SQL 里的 `//` 不是注释，会把建表弄坏）。
+  `CREATE TABLE IF NOT EXISTS echo_step (
+     session_id TEXT NOT NULL,
+     ts_ms INTEGER NOT NULL,
+     agent_id TEXT NOT NULL DEFAULT '',
+     kind TEXT NOT NULL,
+     reason TEXT NOT NULL DEFAULT '',
+     fingerprint TEXT NOT NULL DEFAULT '',
+     segments_json TEXT NOT NULL DEFAULT '[]',
+     preview TEXT NOT NULL DEFAULT '',
+     id TEXT NOT NULL DEFAULT '',
+     text TEXT NOT NULL DEFAULT '',
+     title TEXT NOT NULL DEFAULT '',
+     refs_json TEXT NOT NULL DEFAULT '[]',
+     flashback INTEGER NOT NULL DEFAULT 0,
+     -- v19：召回负样本观测列（P0）。旧库靠迁移链 ALTER 补列，全新库直接带列建出。
+     rejected_json TEXT NOT NULL DEFAULT '[]',
+     PRIMARY KEY (session_id, ts_ms)
+   )`,
+  `CREATE INDEX IF NOT EXISTS echo_step_session ON echo_step (session_id, ts_ms DESC)`,
+  // echo_recall：本会话被「想起」的段落（同句去重，times 累计）——侧栏要展示的就是它。
+  `CREATE TABLE IF NOT EXISTS echo_recall (
+     session_id TEXT NOT NULL,
+     excerpt TEXT NOT NULL,
+     first_ts INTEGER NOT NULL,
+     last_ts INTEGER NOT NULL,
+     times INTEGER NOT NULL DEFAULT 1,
+     agent_id TEXT NOT NULL DEFAULT '',
+     PRIMARY KEY (session_id, excerpt)
+   )`,
+  `CREATE INDEX IF NOT EXISTS echo_recall_session ON echo_recall (session_id, last_ts DESC)`,
+  // ── v13：回响条目时间反查用的两条索引 ──
+  // 回响页要把「线程：X」「事务：<card_line>」这类行回查到真源时刻；没索引就是全表扫（perf 闸会追）。
+  // 这两条会同时落进 V7/V8 子集（按表名筛），无害：子集全部 IF NOT EXISTS 幂等，多跑一次不报错。
+  `CREATE INDEX IF NOT EXISTS txn_card_line ON txn_entry (card_line)`,
+  `CREATE INDEX IF NOT EXISTS task_title ON task (title)`,
+  // ── v15：回响引用记录（echo-id ≡ memid） ──
+  // echo_step = 每轮观测（为什么没卡/原文卡）；echo_ref = 每条"被想起的记忆"一行（跨轮合并）：
+  // ref_id 是映射编号 `echo:<kind>:<id>`，能直接解回真源主键。两个生命周期不同，不合并。
+  `CREATE TABLE IF NOT EXISTS echo_ref (
+     session_id TEXT NOT NULL,
+     ref_id TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     mem_id TEXT NOT NULL,
+     title TEXT NOT NULL DEFAULT '',
+     times INTEGER NOT NULL DEFAULT 1,
+     first_ts INTEGER NOT NULL,
+     last_ts INTEGER NOT NULL,
+     last_echo_step_id TEXT NOT NULL DEFAULT '',
+     record_ts INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (session_id, ref_id)
+   )`,
+  `CREATE INDEX IF NOT EXISTS echo_ref_session_last ON echo_ref (session_id, last_ts DESC)`,
+  `CREATE INDEX IF NOT EXISTS echo_ref_mem ON echo_ref (mem_id)`,
+  // ── v16：编号注册表（记录持 echo-<uuid>，一记录一号，避免重复） ──
+  `CREATE TABLE IF NOT EXISTS echo_identity (
+     echo_id TEXT NOT NULL PRIMARY KEY,
+     kind TEXT NOT NULL,
+     mem_id TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     UNIQUE (kind, mem_id)
+   )`,
+  // ── v17/v18：生涯预总结档（上游 L1 只作输入；spirit 自存流程档，运行时不再依赖上游） ──
+  `CREATE TABLE IF NOT EXISTS distill_digest (
+     category TEXT NOT NULL,
+     tier TEXT NOT NULL DEFAULT 'week',
+     period_key TEXT NOT NULL DEFAULT '',
+     window_days INTEGER NOT NULL,
+     generated_at INTEGER NOT NULL,
+     period_start TEXT NOT NULL DEFAULT '',
+     period_end TEXT NOT NULL DEFAULT '',
+     count INTEGER NOT NULL DEFAULT 0,
+     summary TEXT NOT NULL DEFAULT '',
+     source_ids_json TEXT NOT NULL DEFAULT '[]',
+     entities_json TEXT NOT NULL DEFAULT '[]',
+     -- v20：里程碑失效标注（派生、可重算；NULL = 无证据/仍有效，只影响展示）
+     stale_at INTEGER,
+     PRIMARY KEY (category, tier, period_key)
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS distill_digest_tier ON distill_digest (category, tier, period_key)`,
+  // ── v18：实体双向对齐（spirit entity ↔ 上游 graph_node/repo/workspace；知识性只存引用） ──
+  `CREATE TABLE IF NOT EXISTS entity_alias (
+     alias_norm TEXT NOT NULL,
+     entity_id TEXT NOT NULL,
+     source TEXT NOT NULL DEFAULT 'spirit',
+     PRIMARY KEY (alias_norm, entity_id)
+   )`,
+  `CREATE TABLE IF NOT EXISTS entity_upstream_link (
+     entity_id TEXT NOT NULL,
+     upstream_kind TEXT NOT NULL,
+     upstream_id TEXT NOT NULL,
+     confidence REAL NOT NULL DEFAULT 1,
+     created_at INTEGER NOT NULL,
+     PRIMARY KEY (entity_id, upstream_kind, upstream_id)
+   )`,
+  `CREATE TABLE IF NOT EXISTS entity_record_ref (
+     entity_id TEXT NOT NULL,
+     upstream_record_id TEXT NOT NULL,
+     l1_type TEXT NOT NULL,
+     ts_ms INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (entity_id, upstream_record_id)
+   )`,
+  // ── v19：检索索引登记表（派生缓存域）──
+  // 定性：与 `entry_vector` / `action_bias` / `topic` 同族——可删可重建、删光可再生、
+  // 绝不进 recent()/deriveMood/注入指纹。真源仍是 experience/model_memory/txn_entry/
+  // task/entity/goal；`doc_rowid` 与 `search_fts.rowid` 一一对应。
+  // FTS 虚表不在这里（见文件头第 1 条例外）；`echo_step.rejected_json` 是 v19 的加列，
+  // 由迁移链执行（CREATE 语句带新列只对全新库生效）。
+  `CREATE TABLE IF NOT EXISTS search_doc (
+     doc_rowid INTEGER PRIMARY KEY,
+     doc_key TEXT NOT NULL UNIQUE,
+     kind TEXT NOT NULL,
+     ref_id TEXT NOT NULL,
+     ts_ms INTEGER NOT NULL,
+     text_hash TEXT NOT NULL,
+     stamp TEXT NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS search_doc_kind ON search_doc (kind, ts_ms)`,
 ];
 
 /**
@@ -350,15 +475,61 @@ export const V8_ONTOLOGY_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filte
   /entity|task|evaluation/u.test(statement),
 );
 
+/** v16 新增语句子集（迁移链步 15→16 执行）：编号注册表 echo_identity。 */
+export const V16_ECHO_IDENTITY_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
+  /echo_identity/u.test(statement),
+);
+
+/** v17 新增语句子集（迁移链步 16→17 执行）：生涯预总结档 distill_digest。 */
+export const V17_DIGEST_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
+  /distill_digest/u.test(statement),
+);
+
+/** v18 新增语句子集（迁移链步 17→18 执行）：三档列/索引 + 实体对齐三表。 */
+export const V18_DIGEST_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
+  /distill_digest_tier|entity_alias|entity_upstream_link|entity_record_ref/u.test(statement),
+);
+
+/**
+ * v19 新增语句子集（迁移链步 18→19 执行）：检索索引登记表 `search_doc`。
+ * FTS 虚表由 `search/index.ts` 的 `ensureSearchIndex` 在 try/catch 里创建（不在本数组）。
+ */
+export const V19_SEARCH_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
+  /search_doc/u.test(statement),
+);
+
+/** v15 新增语句子集（迁移链步 14→15 执行）：回响引用记录 echo_ref 两索引一表。 */
+export const V15_ECHO_REF_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
+  /echo_ref/u.test(statement),
+);
+
+/** v13 新增语句子集（迁移链步 12→13 执行）：回响条目时间反查的两条索引。 */
+export const V13_ECHO_TIME_INDEXES: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
+  /txn_card_line|task_title/u.test(statement),
+);
+
 /** v9 新增语句子集（迁移链步 8→9 执行）：模型可写记忆 model_memory + 目的层 goal。 */
 export const V9_MEMORY_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
   /model_memory|goal/u.test(statement),
+);
+
+/** v10 新增语句子集（迁移链步 9→10 执行）：回响落档 echo_step + echo_recall。 */
+export const V10_ECHO_STATEMENTS: readonly string[] = SCHEMA_STATEMENTS.filter((statement) =>
+  /echo_step|echo_recall/u.test(statement),
 );
 
 /** `meta` 里的 schema 版本键。 */
 export const META_KEY_SCHEMA_VERSION = 'db_schema_version';
 /** `meta` 里的最小条目数计数键（stats 免扫全表）。 */
 export const META_KEY_ENTRY_COUNT = 'entry_count';
+/** `meta` 里构建当前检索索引所用的分词器戳（戳变 ⇒ 全量重建）。 */
+export const META_KEY_SEARCH_STAMP = 'search_index_stamp';
+/** `meta` 里检索索引回灌完成标志（'1'；半途崩掉时下次开库重跑）。 */
+export const META_KEY_SEARCH_BACKFILL = 'search_index_backfill';
+/** `meta` 里构建当前别名表所用的归一化算法戳（戳变 ⇒ 重建 entity_alias）。 */
+export const META_KEY_ALIAS_STAMP = 'entity_alias_stamp';
+/** `meta` 里的检索索引禁用原因（非空 ⇒ 整链回落 LIKE）。 */
+export const META_KEY_SEARCH_DISABLED = 'search_index_disabled';
 
 /**
  * 执行建表。

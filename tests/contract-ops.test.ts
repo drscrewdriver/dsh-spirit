@@ -92,4 +92,12 @@ describe('契约 op ⇄ 路由白名单', () => {
   it('v0.7 注入回响面端点在契约里（inject-echo）', () => {
     expect(SPIRIT_OPS).toContain('inject-echo');
   });
+
+  it('v0.8.6 回响分层检索端点在契约里（echo-search）', () => {
+    expect(SPIRIT_OPS).toContain('echo-search');
+  });
+
+  it('v0.8.8 回响引用列表端点在契约里（echo-refs）', () => {
+    expect(SPIRIT_OPS).toContain('echo-refs');
+  });
 });

@@ -10,9 +10,10 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 
 import { SPIRIT_DB_SCHEMA_VERSION } from '../contract.js';
-import { V7_TXN_STATEMENTS, V8_ONTOLOGY_STATEMENTS, V9_MEMORY_STATEMENTS } from './schema.js';
+import { V10_ECHO_STATEMENTS, V13_ECHO_TIME_INDEXES, V15_ECHO_REF_STATEMENTS, V16_ECHO_IDENTITY_STATEMENTS, V17_DIGEST_STATEMENTS, V18_DIGEST_STATEMENTS, V19_SEARCH_STATEMENTS, V7_TXN_STATEMENTS, V8_ONTOLOGY_STATEMENTS, V9_MEMORY_STATEMENTS } from './schema.js';
 
 /** `from → to` 的单步正向迁移（to = from + 1，链条不允许跳号）。 */
 export interface MigrationStep {
@@ -119,6 +120,221 @@ export const MIGRATIONS: readonly MigrationStep[] = [
     run: (db) => {
       // 纯加表：显式执行 v9 子集（IF NOT EXISTS 幂等，与 applySchema 同一份语句）
       for (const statement of V9_MEMORY_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    from: 9,
+    to: 10,
+    note: '回响落档：echo_step（注入决策）+ echo_recall（被召回的回响段）两张表（整表新增走幂等建表）',
+    run: (db) => {
+      // 纯加表：显式执行 v10 子集（IF NOT EXISTS 幂等，与 applySchema 同一份语句）。
+      // 回响是「本会话的回响段」，重启不能归零；进程内 EchoLog 继续当观测灯，两者不互相冒充。
+      for (const statement of V10_ECHO_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    from: 10,
+    to: 11,
+    note: '回响条目带摘要：echo_step 加 preview 列（侧栏一行摘要，不存整张注入卡）',
+    run: (db) => {
+      // 加法列：老库 v10 行取默认空串（读侧当“无摘要”合法形状）。
+      addColumnIfMissing(db, 'echo_step', 'preview', "preview TEXT NOT NULL DEFAULT ''");
+    },
+  },
+  {
+    from: 11,
+    to: 12,
+    note: '回响条目给编号与原文：echo_step 加 id / text 两列（旧行按 ts_ms 回填编号，原文留空）',
+    run: (db) => {
+      // 旧行没有原文可补（当时未存），只能把编号回填上；读侧把空原文当“早期条目（无原文）”。
+      addColumnIfMissing(db, 'echo_step', 'id', "id TEXT NOT NULL DEFAULT ''");
+      addColumnIfMissing(db, 'echo_step', 'text', "text TEXT NOT NULL DEFAULT ''");
+      db.exec(`UPDATE echo_step SET id = 'echo-' || ts_ms WHERE id = ''`);
+    },
+  },
+  {
+    from: 12,
+    to: 13,
+    note: '回响条目时间反查索引：txn_entry(card_line) + task(title)——回响页把分段行回查到真源时刻，没索引就是全表扫',
+    run: (db) => {
+      // 纯加索引：IF NOT EXISTS 幂等，与 applySchema 同一份语句。
+      for (const statement of V13_ECHO_TIME_INDEXES) db.exec(statement);
+    },
+  },
+  {
+    from: 13,
+    to: 14,
+    note: '回响条目内容优先：echo_step 加 title（如线程任务名）与 refs_json（memid 引用）两列',
+    run: (db) => {
+      // 加法列：老行取默认空串/空数组（读侧退到 preview，不编造）
+      addColumnIfMissing(db, 'echo_step', 'title', "title TEXT NOT NULL DEFAULT ''");
+      addColumnIfMissing(db, 'echo_step', 'refs_json', "refs_json TEXT NOT NULL DEFAULT '[]'");
+    },
+  },
+  {
+    from: 14,
+    to: 15,
+    note: '回响引用记录：echo_ref 表（echo:<kind>:<id> 映射编号，跨轮合并 times）两索引——echo-id ≡ memid',
+    run: (db) => {
+      // 纯加表：显式执行 v15 子集（IF NOT EXISTS 幂等，与 applySchema 同一份语句）
+      for (const statement of V15_ECHO_REF_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    from: 15,
+    to: 16,
+    note: '编号重整：记录持 echo-<uuid>（echo_identity 注册表去重）、回响持 recall-<uuid>；echo_ref 加 record_ts、echo_step 加 flashback；旧行重编号（幂等）',
+    run: (db) => {
+      addColumnIfMissing(db, 'echo_ref', 'record_ts', 'record_ts INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(db, 'echo_step', 'flashback', 'flashback INTEGER NOT NULL DEFAULT 0');
+      for (const statement of V16_ECHO_IDENTITY_STATEMENTS) db.exec(statement);
+
+      const claimEchoId = (kind: string, memId: string): string => {
+        const found = db.prepare(`SELECT echo_id FROM echo_identity WHERE kind = ? AND mem_id = ? LIMIT 1`).get(kind, memId) as { echo_id?: unknown } | undefined;
+        if (typeof found?.echo_id === 'string' && found.echo_id !== '') return found.echo_id;
+        const fresh = `echo-${randomUUID()}`;
+        db.prepare(
+          `INSERT INTO echo_identity (echo_id, kind, mem_id, created_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(kind, mem_id) DO NOTHING`,
+        ).run(fresh, kind, memId, Date.now());
+        const after = db.prepare(`SELECT echo_id FROM echo_identity WHERE kind = ? AND mem_id = ? LIMIT 1`).get(kind, memId) as { echo_id?: unknown } | undefined;
+        return typeof after?.echo_id === 'string' && after.echo_id !== '' ? after.echo_id : fresh;
+      };
+
+      // 1) 旧引用号 echo:<kind>:<id> → echo-<uuid>（同一条记录领同一号）；冲突则删旧行保新行
+      const legacyRefs = db.prepare(
+        `SELECT session_id, ref_id, kind, mem_id FROM echo_ref WHERE ref_id LIKE 'echo:%'`,
+      ).all() as Array<{ session_id?: string; ref_id?: string; kind?: string; mem_id?: string }>;
+      for (const row of legacyRefs) {
+        const sessionId = String(row.session_id ?? '');
+        const oldId = String(row.ref_id ?? '');
+        const kind = String(row.kind ?? '');
+        const memId = String(row.mem_id ?? '');
+        if (sessionId === '' || oldId === '' || kind === '' || memId === '') continue;
+        const echoId = claimEchoId(kind, memId);
+        try {
+          db.prepare(`UPDATE echo_ref SET ref_id = ? WHERE session_id = ? AND ref_id = ?`).run(echoId, sessionId, oldId);
+        } catch {
+          // 新号行已存在（上次跑到一半）：合并次数/时间包络后删旧行，不丢数据
+          const oldRow = db.prepare(
+            `SELECT times, first_ts, last_ts FROM echo_ref WHERE session_id = ? AND ref_id = ?`,
+          ).get(sessionId, oldId) as { times?: number; first_ts?: number; last_ts?: number } | undefined;
+          if (oldRow !== undefined) {
+            db.prepare(
+              `UPDATE echo_ref SET
+                 times = times + ?,
+                 first_ts = MIN(first_ts, ?),
+                 last_ts = MAX(last_ts, ?)
+               WHERE session_id = ? AND ref_id = ?`,
+            ).run(Number(oldRow.times) || 1, Number(oldRow.first_ts) || 0, Number(oldRow.last_ts) || 0, sessionId, echoId);
+          }
+          db.prepare(`DELETE FROM echo_ref WHERE session_id = ? AND ref_id = ?`).run(sessionId, oldId);
+        }
+      }
+
+      // 2) 旧轮次号 echo-<ts> → recall-<uuid>（逐行一个）；收集映射供第 3 步同步
+      const legacySteps = db.prepare(
+        `SELECT session_id, ts_ms, id FROM echo_step WHERE id LIKE 'echo-%'`,
+      ).all() as Array<{ session_id?: string; ts_ms?: number; id?: string }>;
+      const stepMap = new Map<string, string>();
+      for (const row of legacySteps) {
+        const sessionId = String(row.session_id ?? '');
+        const oldId = String(row.id ?? '');
+        if (oldId === '') continue;
+        const recallId = `recall-${randomUUID()}`;
+        db.prepare(`UPDATE echo_step SET id = ? WHERE session_id = ? AND ts_ms = ?`).run(recallId, sessionId, Number(row.ts_ms) || 0);
+        stepMap.set(oldId, recallId);
+      }
+      // 3) 引用行的 last_echo_step_id 同步成 recall 号
+      for (const [oldId, recallId] of stepMap) {
+        db.prepare(`UPDATE echo_ref SET last_echo_step_id = ? WHERE last_echo_step_id = ?`).run(recallId, oldId);
+      }
+      // 4) record_ts 补默认（旧行取 first_ts；再不行取 last_ts）
+      db.exec(`UPDATE echo_ref SET record_ts = CASE WHEN first_ts > 0 THEN first_ts ELSE last_ts END WHERE record_ts = 0`);
+    },
+  },
+  {
+    from: 16,
+    to: 17,
+    note: '生涯流程预总结档：distill_digest（上游 L1 只作输入，知识性归上游，spirit 只落流程档）',
+    run: (db) => {
+      // 纯加表：显式执行 v17 子集（IF NOT EXISTS 幂等，与 applySchema 同一份语句）
+      for (const statement of V17_DIGEST_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    from: 17,
+    to: 18,
+    note: '生涯档三档化（week/month/milestone）+ 实体双向对齐三表；旧档重建为 (category,tier,period_key) 主键并回填 week/ISO 周',
+    run: (db) => {
+      const isoWeek = (ms: number): string => {
+        const date = new Date(Number.isFinite(ms) && ms > 0 ? ms : Date.now());
+        const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+        const dayNum = target.getUTCDay() === 0 ? 7 : target.getUTCDay();
+        target.setUTCDate(target.getUTCDate() + 4 - dayNum);
+        const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
+        const week = Math.ceil(((target.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+        return `${target.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+      };
+      // v17 的主键是 (category, window_days)，三档需要 (category, tier, period_key) ⇒ 重建表
+      const legacyRows = db.prepare(`SELECT * FROM distill_digest`).all() as Array<Record<string, unknown>>;
+      db.exec(`DROP TABLE IF EXISTS distill_digest_new`);
+      db.exec(`CREATE TABLE distill_digest_new (
+        category TEXT NOT NULL,
+        tier TEXT NOT NULL DEFAULT 'week',
+        period_key TEXT NOT NULL DEFAULT '',
+        window_days INTEGER NOT NULL,
+        generated_at INTEGER NOT NULL,
+        period_start TEXT NOT NULL DEFAULT '',
+        period_end TEXT NOT NULL DEFAULT '',
+        count INTEGER NOT NULL DEFAULT 0,
+        summary TEXT NOT NULL DEFAULT '',
+        source_ids_json TEXT NOT NULL DEFAULT '[]',
+        entities_json TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (category, tier, period_key)
+      )`);
+      const insert = db.prepare(
+        `INSERT OR REPLACE INTO distill_digest_new
+         (category, tier, period_key, window_days, generated_at, period_start, period_end, count, summary, source_ids_json, entities_json)
+         VALUES (?, 'week', ?, ?, ?, ?, ?, ?, ?, ?, '[]')`,
+      );
+      for (const row of legacyRows) {
+        insert.run(
+          String(row['category'] ?? 'procedural'),
+          isoWeek(Number(row['generated_at']) || Date.now()),
+          Number(row['window_days']) || 7,
+          Number(row['generated_at']) || Date.now(),
+          String(row['period_start'] ?? ''),
+          String(row['period_end'] ?? ''),
+          Number(row['count']) || 0,
+          String(row['summary'] ?? ''),
+          String(row['source_ids_json'] ?? '[]'),
+        );
+      }
+      db.exec(`DROP TABLE distill_digest`);
+      db.exec(`ALTER TABLE distill_digest_new RENAME TO distill_digest`);
+      for (const statement of V18_DIGEST_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    from: 18,
+    to: 19,
+    note: '检索索引：search_doc 登记表（FTS 虚表由 search/index.ts 运行时建）+ echo_step 加负样本观测列 rejected_json',
+    run: (db) => {
+      // 纯加表：显式执行 v19 子集（IF NOT EXISTS 幂等，与 applySchema 同一份语句）。
+      // FTS 虚表**不**在这里建：它依赖 SQLite 版本，建不出来只该失去检索质量，
+      // 而不是让迁移抛错导致整库拒开（openSpiritDb 会把任何异常判成降级）。
+      for (const statement of V19_SEARCH_STATEMENTS) db.exec(statement);
+      // 召回负样本观测列（P0）：旧行取默认空数组，读侧当合法形状。
+      addColumnIfMissing(db, 'echo_step', 'rejected_json', "rejected_json TEXT NOT NULL DEFAULT '[]'");
+    },
+  },
+  {
+    from: 19,
+    to: 20,
+    note: '里程碑失效标注：distill_digest 加派生列 stale_at（NULL = 无证据/仍有效；只影响展示）',
+    run: (db) => {
+      addColumnIfMissing(db, 'distill_digest', 'stale_at', 'stale_at INTEGER');
     },
   },
 ];

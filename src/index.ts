@@ -45,7 +45,9 @@ import { TxnStore } from './store/transaction.js';
 import { OntologyStore } from './store/ontology.js';
 import { OntologyWatcher } from './ontology/watcher.js';
 import { OntologyExtractor } from './ontology/extractor.js';
-import { BackfillRunner, type BackfillScan } from './ontology/backfill.js';
+import { ingestL1 } from './prime/l1-ingest.js';
+import { L1BackfillRunner } from './prime/l1-backfill.js';
+import { buildSessionDigests, summarizeSessionDigests } from './prime/session-digest.js';
 import { resolveWorkspaceId } from './ontology/workspace.js';
 import { TransactionWatcher } from './transaction/watcher.js';
 import { TxnCollector } from './transaction/collector.js';
@@ -55,9 +57,22 @@ import { readRuntimeRoute, writeRuntimeRoute } from './distill/runtime-route.js'
 import { Spirit } from './spirit.js';
 import { registerPersonaSection } from './hooks/persona-section.js';
 import { PersonaPresetStore } from './persona/presets.js';
-import { EchoLog } from './echo-log.js';
+import { EchoLog, parseEchoSegments, previewOfEcho, splitEchoEntries } from './echo-log.js';
+import { resolveEntryTimes, titleOfEntries } from './echo-times.js';
+import { backfillEchoText } from './echo/text-backfill.js';
+import { backfillEchoRefs } from './echo/refs-backfill.js';
+import { summarizeProcedural } from './prime/distill-summary.js';
+import { buildDigests, readDigests } from './prime/distill-digest.js';
+import { searchL1Records, loadL1Entities } from './prime/l1-source.js';
+import { buildEntityAliases, buildEntityLinks, ensureEntityAliases, linkKnowledgeRecords, resolveEntityId } from './prime/entity-align.js';
+import { searchAll } from './search/all.js';
+import { describeSearchIndex, ensureSearchIndex } from './search/index.js';
+import { loadRecordDetail } from './search/detail-records.js';
+import { loadExperienceDetail } from './search/detail-exp.js';
 import { pickBest } from './recall/txn-score.js';
 import { ModelMemoryStore, GoalStore } from './memory/store.js';
+import { EchoRefStore } from './store/echo-ref.js';
+import { isFlashback, newRecallId, resolveEchoId, echoQueryPrefix, findEchoIdentities } from './echo/identity.js';
 import { registerMemoryTools } from './tools/memory.js';
 import { registerCardPreStep } from './hooks/card-pre-step.js';
 import { registerCardObserve } from './hooks/card-observe.js';
@@ -65,7 +80,10 @@ import { registerTxnObserve } from './hooks/txn-observe.js';
 import { registerOntologyObserve } from './hooks/ontology-observe.js';
 import { registerSelfNameTool } from './tools/selfname.js';
 import { registerSpiritRpc } from './rpc.js';
+import { registerEchoProjection } from './projection/echo.js';
+import { EchoRecallStore } from './store/echo-recall.js';
 import { SpiritStats } from './stats.js';
+import { registerSpiritCommand } from './tui-command.js';
 import { isSubagentAgent, ownerSessionIdOfAgent, sessionIdOfSession, workspaceIdOfAgent } from './util/host-shape.js';
 
 export const name = SPIRIT_PLUGIN_NAME;
@@ -98,11 +116,26 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     logger.warn(`[spirit] 存储降级（${decision.reason}）`);
   }
 
+  // v19 检索索引：开库即对齐（表空 / 分词器戳变 ⇒ 全量回填；失败只降到 LIKE，不阻开库）。
+  // 这里而不是 open.ts：回填需要 logger 把“降级/耗时”说清楚，而 openSpiritDb 是无日志的纯函数面。
+  if (db !== null) {
+    const index = ensureSearchIndex(db, { warn: (message) => logger.warn(message) });
+    logger.info(`[spirit] 检索索引：${describeSearchIndex(index)}`);
+    // B-3：归一化算法换代（NFKC）后别名表必须重建，否则“搜得到旧的、搜不到新的”且两边都不报错
+    const alias = ensureEntityAliases(db, { warn: (message) => logger.warn(message) });
+    if (alias.rebuilt) logger.info(`[spirit] 别名表已按新归一化重建（${alias.aliases} 条）`);
+  }
+
   const personas = new PersonaStore({ dataDir, logger, db });
   // v0.7 人格预设库：文件型（激活=走 personas.save 写入；作用域覆盖=只读投影）
   const personaPresets = new PersonaPresetStore({ dataDir, logger });
   // v0.7 注入回响面：进程内环形缓冲（观测面，不落库）
   const echoLog = new EchoLog();
+  // v0.8.2 回响落档（v10 两表）：侧栏「本会话回响段」的持久面——重启不归零。
+  // 与 EchoLog 并存不互冒充：星海「翻阅→回响」仍读进程内实时快照（RPC），侧栏读这张表。
+  const echoRecall = new EchoRecallStore({ db: () => db ?? undefined, logger });
+  // v0.8.8 回响引用（echo-id ≡ memid）：每条被想起的记忆一行，跨轮合并 times
+  const echoRefs = new EchoRefStore({ db: () => db ?? undefined, logger });
   // v0.8 模型可写记忆（两本账+日记）与目的层
   const modelMemory = new ModelMemoryStore({ db: () => db, logger });
   const goals = new GoalStore({ db: () => db, logger });
@@ -178,6 +211,8 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     // 事务轨混喂（Phase 4）：card_line 当归纳背景。惰性闭包——构造时 txnStore 尚未建（下一行），
     // 但只在长觉 run 时调用，届时已就绪。关轨 ⇒ 空数组（长觉照旧只吃体验条目）。
     recentTxnForPrompt: () => (eff().txn.enabled ? txnStore.listRecent(12).map((t) => t.cardLine) : []),
+    // 睡眠完成后总结 L1 → 生涯流程档（v0.8.24）：长觉跑完顺手刷三档，失败不影响睡眠结果
+    onComplete: () => { alignAndDigest(); },
   });
   // 事务轨（Phase 3）：与情绪轨并行的第二条线。采集是旁路（见 hooks/txn-observe.ts），跑模型只由
   // 攒批触发——绝不进 pre-step 串行链，也绝不每轮同步调用；关时整条休眠（零落库）。
@@ -187,12 +222,19 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   const ontologyStore = new OntologyStore({ db: () => db, logger });
   const ontologyWatcher = new OntologyWatcher();
   const ontologyExtractor = new OntologyExtractor({ db: () => db, txnStore, store: ontologyStore, channel: () => llmChannel, defaultModel: distillDefaultModel, cfg: eff, logger });
-  // 历史回填（Phase E）：扫既有会话经 DRSC API（不直读其 db）；无 DRSC ⇒ scan undefined ⇒ 回填拒。
-  const backfillRunner = new BackfillRunner({
-    db: () => db,
-    scan: (): BackfillScan | undefined => (client === undefined ? undefined : { sessions: (offset, limit) => client.listSessions(offset, limit), sessionAll: (sessionId) => client.sessionAll(sessionId) }),
-    extractor: ontologyExtractor,
-    cfg: eff,
+  // 历史重建（v0.8.24）：不再扫会话（DRSC），改读上游 L1（蒸馏激活中的记忆）重建本体/交付/实体。
+  // v0.8.25：重建完顺便重算会话流程档（与定时/睡眠同一条 alignAndDigest 链）。
+  const backfillRunner = new L1BackfillRunner({
+    run: (dryRun) => {
+      if (dryRun) return { total: 0, tasks: 0, deliveries: 0, entities: 0, links: 0, refs: 0, knowledge: 0 };
+      const result = ingestL1({ db: () => db, ontology: ontologyStore, txn: txnStore, logger }, { days: 0, limit: 2000 });
+      try {
+        alignAndDigest();
+      } catch (err) {
+        logger.warn(`重建后流程档重算失败（已忽略）：${err instanceof Error ? err.message : String(err)}`);
+      }
+      return result;
+    },
     logger,
   });
   const txnWatcher = new TransactionWatcher();
@@ -208,6 +250,78 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   });
 
   const stats = new SpiritStats();
+
+  // ── dsh-tui 终端面：`/spirit` ──────────────────────────────────────────
+  // TUI 不加载星海面板/pill，也调不到插件 RPC → 记忆在终端里不可见。
+  // 命令层只读：experience 表计数/最近条目/LIKE 召回，不新增写入路径。
+  ;(ctx as unknown as {
+    inject?: (deps: string[], cb: (scope: Context) => void) => void
+  }).inject?.(['commands'], (scope) => {
+    // 取数一律走 ExperienceStore（listRecent / searchText / countVisible）：
+    // 本体层隔离闸要求「读 experience 的文件不得也读本体表」，所以这段 SQL 住在
+    // store/experience.ts，index.ts 只做映射与排版。
+    const toRow = (entry: { tsMs?: number; lane?: string; trigger?: string; text?: string }) => ({
+      ts_ms: entry.tsMs,
+      lane: entry.lane,
+      trigger: entry.trigger,
+      text: String(entry.text ?? '').slice(0, 140),
+    })
+    registerSpiritCommand(scope, {
+      status: () => {
+        const latest = stats.latest()
+        // 两条分支都赋值的确定性写法（不带无用的初始值）
+        let ledger: number
+        try {
+          const row = db?.prepare('SELECT COUNT(*) AS c FROM session_ledger').get() as { c?: number } | undefined
+          ledger = typeof row?.c === 'number' ? row.c : 0
+        } catch { ledger = 0 }
+        return {
+          db: db !== null,
+          entries: store.countVisible(),
+          ledger,
+          latest,
+          session: latest === null
+            ? null
+            : (stats.snapshot(latest.agentId, { off: false, bypass: false }) as unknown as Record<string, unknown> | null),
+        }
+      },
+      recent: (limit) => store.listRecent(limit).map(toRow),
+      recall: (query, limit) => store.searchText(query, limit).map(toRow),
+      // 本体实体与交付：读侧只投影，不写（本体层隔离闸只管 experience 同文件读写面）。
+      entity: (query, limit) => {
+        try {
+          return (db?.prepare(
+            'SELECT id, kind, name, importance, last_seen_ms FROM entity WHERE name LIKE ? ORDER BY importance DESC, last_seen_ms DESC LIMIT ?',
+          ).all(`%${query}%`, limit) ?? []) as Array<{ id?: string; kind?: string; name?: string; importance?: number; last_seen_ms?: number }>
+        } catch { return [] }
+      },
+      txn: (limit) => {
+        try {
+          return (db?.prepare(
+            'SELECT ts_ms, summary, card_line, source_trust FROM txn_entry ORDER BY ts_ms DESC LIMIT ?',
+          ).all(limit) ?? []) as Array<{ ts_ms?: number; summary?: string; card_line?: string; source_trust?: string }>
+        } catch { return [] }
+      },
+      // 回响投影：与星海/侧栏同源的 summary()，只读。
+      echo: () => {
+        const latest = stats.latest()
+        const sessionId = latest?.sessionId ?? store.latestSessionId()
+        if (sessionId === '') return { total: 0, segments: [] as Array<[string, number]>, steps: 0 }
+        try {
+          const summary = echoRecall.summary(sessionId, 20, 5) as unknown as {
+            total?: number
+            segments?: Array<{ segment?: string; name?: string; count?: number }>
+            steps?: unknown[]
+          }
+          const segments = (summary.segments ?? []).map((entry) => [
+            String(entry.segment ?? entry.name ?? ''),
+            Number(entry.count ?? 0),
+          ] as [string, number])
+          return { total: Number(summary.total ?? 0), segments, steps: (summary.steps ?? []).length, sessionId }
+        } catch { return { total: 0, segments: [] as Array<[string, number]>, steps: 0 } }
+      },
+    })
+  })
   const spirit = new Spirit(
     {
       cfg,
@@ -292,7 +406,7 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   // 部署总闸关 ⇒ 根本不注册（关闸时模型看不见这个工具，零副作用纪律）。
   if (config.enabled) registerSelfNameTool(ctx, { personas, logger });
   // v0.8 模型可写记忆工具（两本账+日记）与目的层工具：部署总闸关 ⇒ 不注册（零副作用纪律）
-  if (config.enabled) registerMemoryTools(ctx, { memory: modelMemory, goals, logger });
+  if (config.enabled) registerMemoryTools(ctx, { memory: modelMemory, goals, logger, digests: () => readDigests(db, { milestoneLimit: 3 }) });
   registerSpiritRpc(ctx, {
     spirit,
     stats,
@@ -301,7 +415,91 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     personas,
     presets: personaPresets,
     echo: echoLog,
+    // 条目化 + 时间反查（v0.8.6）：切段后按真源表回查条目时刻（降级面全标 unknown）
+    echoEntries: ({ sessionId, text, at }) => resolveEntryTimes(db, sessionId, splitEchoEntries(text), at),
+    echoRefs,
+    // 读面取号（v0.8.11）：星图点/翻阅行都要带 "记录时间 + echo id"
+    echoIdOf: (kind: string, memId: string) => resolveEchoId(db, kind, memId),
+    // 按 echo 号定位（v0.8.12）：注册表找身份 → echo_ref 补标题/记录时间/最近回响号（跨会话取最新）
+    echoLocate: (q: string) => {
+      if (db === null || echoQueryPrefix(q) === undefined) return { idQuery: false, hits: [] };
+      // 星点可达性（v0.8.15）：交付/体验自身就是星点；任务线→取它的交付点；记着/目的/实体无星点。
+      const starEchoIdsOf = (kind: string, memId: string, echoId: string): string[] => {
+        if (kind === 'delivery' || kind === 'experience') return [echoId];
+        if (kind === 'task') {
+          try {
+            return ontologyStore
+              .listDeliveriesByTask(memId)
+              .slice(0, 5)
+              .map((id) => resolveEchoId(db, 'delivery', id))
+              .filter((value): value is string => typeof value === 'string');
+          } catch {
+            return [];
+          }
+        }
+        return [];
+      };
+      const hits = findEchoIdentities(db, q).map((hit) => {
+        const ref = db!
+          .prepare(`SELECT session_id, title, record_ts, last_echo_step_id FROM echo_ref WHERE ref_id = ? ORDER BY last_ts DESC LIMIT 1`)
+          .get(hit.echoId) as { session_id?: string; title?: string; record_ts?: number; last_echo_step_id?: string } | undefined;
+        return {
+          echoId: hit.echoId,
+          kind: hit.kind,
+          memId: hit.memId,
+          title: ref?.title !== undefined && ref.title !== '' ? ref.title : hit.memId,
+          recordTs: Number(ref?.record_ts ?? 0) || 0,
+          sessionId: ref?.session_id ?? '',
+          lastRecallId: ref?.last_echo_step_id ?? '',
+          starEchoIds: starEchoIdsOf(hit.kind, hit.memId, hit.echoId),
+        };
+      });
+      return { idQuery: true, hits };
+    },
+    // 全域搜索（v0.8.14）：任务/交付/体验/记着/目的/实体一起搜，不让类型挡住命中
+    searchAll: (q: string, limit: number) => searchAll(db, q, limit),
+    // 记录详情（v0.8.17）：体验轨与本体轨分开读，继续守 TA.6(b)
+    recordDetail: (kind: string, id: string) =>
+      (kind === 'experience' ? loadExperienceDetail(db, id) : loadRecordDetail(db, kind as 'task' | 'delivery' | 'memory' | 'goal' | 'entity', id)),
+    echoRecall,
     memory: modelMemory,
+    distillDigest: () => readDigests(db, { milestoneLimit: 5, tiers: ['session', 'week', 'month', 'milestone'], sessionLimit: 10 }),
+    entityNamesOf: (ids: string[]) => {
+      if (db === null || ids.length === 0) return [];
+      try {
+        const get = db.prepare(`SELECT name FROM entity WHERE id = ?`);
+        return ids.map((id) => (get.get(id) as { name?: string } | undefined)?.name ?? '').filter((name) => name !== '');
+      } catch {
+        return [];
+      }
+    },
+    entityDigest: (entity: string, limit?: number) => {
+      const entityId = resolveEntityId(db, entity);
+      const rows = readDigests(db, { milestoneLimit: limit ?? 5 });
+      // 严格按实体过滤：未对齐 ⇒ 空（不拿“全部档”冒充该实体）
+      const digests = entityId === undefined
+        ? []
+        : rows
+          .filter((row) => (row.entities ?? []).includes(entityId))
+          .map((row) => ({
+            tier: row.tier,
+            periodKey: row.periodKey,
+            generatedAt: row.generatedAt,
+            count: row.count,
+            lines: row.summary.split('\n').filter((line) => line.trim() !== ''),
+          }));
+      let knowledgeRefs = 0;
+      if (entityId !== undefined) {
+        try {
+          const hit = db?.prepare(`SELECT COUNT(*) AS c FROM entity_record_ref WHERE entity_id = ?`).get(entityId) as { c?: number } | undefined;
+          knowledgeRefs = Number(hit?.c ?? 0);
+        } catch {
+          knowledgeRefs = 0;
+        }
+      }
+      return { entity, ...(entityId === undefined ? {} : { entityId }), digests, knowledgeRefs };
+    },
+    runDistillDigest: () => alignAndDigest(),
     goals,
     dataDir,
     cfg,
@@ -352,6 +550,9 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
       webPort = port;
     },
   });
+  // 回响服务端投影（v0.8.1 / v0.8.2 换源）：侧栏「回响」页签的读面。
+  // 读 v10 落档表（echo_recall / echo_step），所以重启后仍在；state 只带 {sessionId, token}。
+  registerEchoProjection(ctx, echoRecall, echoRefs);
   registerCardPreStep(ctx, {
     spirit,
     logger,
@@ -384,7 +585,152 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
       } else {
         echoLog.record({ at: input.now, agentId: input.agentId, sessionId: input.sessionId, workspaceId: input.workspaceId, kind: 'skipped', reason: String(outcome.reason) });
       }
+      // 回响落档（v10 / v14）：与上面同一处写，避免两条写路径各自算账；失败只 warn，不影响注入。
+      // 注入轮额外算一遍条目（时间 + memid 引用）——标题内容优先，侧栏不再拿 `echo-<ts>` 当条目名。
+      const echoEntries = outcome.kind === 'injected' ? resolveEntryTimes(db, input.sessionId, splitEchoEntries(outcome.text), input.now) : [];
+      // 回响事件号（v16）：一轮注入一个 recall-<uuid>；命中旧记录（>7d）打 flashback 标。
+      const recallId = newRecallId();
+      const oldestRefTs = echoEntries
+        .filter((entry) => entry.ref !== undefined)
+        .map((entry) => entry.ts ?? 0)
+        .filter((ts) => ts > 0)
+        .sort((a, b) => a - b)[0];
+      const flashback = isFlashback(oldestRefTs, input.now);
+      echoRecall.record({
+        sessionId: input.sessionId,
+        agentId: input.agentId,
+        at: input.now,
+        id: recallId,
+        kind: outcome.kind === 'injected' ? 'injected' : 'skipped',
+        reason: String(outcome.reason),
+        flashback,
+        ...(outcome.kind === 'injected'
+          ? {
+              fingerprint: outcome.fingerprint,
+              segments: parseEchoSegments(outcome.text),
+              excerpts: outcome.recalled ?? [],
+              // 侧栏列表只要一行（兼容旧数据）：挑分段行连成一句（剔除 <system-reminder> 壳子）。
+              preview: previewOfEcho(outcome.text),
+              // 内容优先标题（v0.8.7）：线程任务名 > 反馈 > 交付句 > …；找不到才空串（读侧退到 preview）。
+              title: titleOfEntries(echoEntries),
+              // memid 引用：每条回响挂回具体记忆条目（任务/交付/体验/记忆/目标），供侧栏/星图定位。
+              refs: echoEntries.flatMap((entry) => (entry.ref === undefined ? [] : [entry.ref])),
+              // 查看原文用：整张卡落库（侧栏只显示 title，全文由 echo-detail 按编号取）。
+              text: outcome.text,
+              // P0：负样本落档（纯观测列）
+              rejected: outcome.rejected ?? [],
+            }
+          : {}),
+      });
+      // 回响记录（v16）：只收**记忆类且有 ref** 的条目——语气/状态不产生记录行；
+      // echo 号由 identity 注册表领（一记录一号，跨会话稳定）；lastRecallId 指本轮事件。
+      if (outcome.kind === 'injected') {
+        for (const entry of echoEntries) {
+          if (entry.ref === undefined) continue;
+          const echoId = resolveEchoId(db, entry.ref.kind, entry.ref.id);
+          if (echoId === undefined) continue;
+          echoRefs.upsert({
+            sessionId: input.sessionId,
+            echoId,
+            kind: entry.ref.kind,
+            memId: entry.ref.id,
+            title: titleOfEntries([entry]),
+            at: input.now,
+            recordTs: entry.ts ?? input.now,
+            lastRecallId: recallId,
+          });
+        }
+      }
     },
+  });
+
+  // 回响原文回填（v0.8.3）：v12 之前落的行只有摘要没原文，原文还在 DRSC 会话日志里。
+  // 启动后错峰跑一次（近 7 天），补完就不再跑；扫描/库缺席 ⇒ 直接休眠，不影响启动。
+  const runEchoTextBackfill = (): void => {
+    const timer = setTimeout(() => {
+      void backfillEchoText({
+        store: echoRecall,
+        scan: () => (client === undefined ? undefined : { sessionAll: (sessionId) => client.sessionAll(sessionId) }),
+        logger,
+      }).catch((err: unknown) => {
+        logger.warn(`回响原文回填失败（已忽略）：${err instanceof Error ? err.message : String(err)}`);
+      });
+    }, 8_000);
+    // 不把进程/preview 挂住：回填只是锦上添花，随时可以没跑完就被关掉。
+    (timer as { unref?: () => void }).unref?.();
+  };
+  runEchoTextBackfill();
+
+  // 回响引用回填（v0.8.8）：历史 echo_step 有原文的轮次解析成引用行（水位幂等，只跑一次）。
+  // 排在正文回填之后：正文回填会把 v11 的行补上 text，引用回填才能解析到条目。
+  const runEchoRefsBackfill = (): void => {
+    const timer = setTimeout(() => {
+      try {
+        const result = backfillEchoRefs({
+          db: () => db ?? undefined,
+          refs: echoRefs,
+          resolve: (sessionId, text, at) => resolveEntryTimes(db, sessionId, splitEchoEntries(text), at),
+          logger,
+        });
+        if (!result.skipped) logger.info(`回响记录回填：会话 ${result.sessions} · 轮次 ${result.steps} · 记录 ${result.records}`);
+      } catch (err) {
+        logger.warn(`回响引用回填失败（已忽略）：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }, 20_000);
+    (timer as { unref?: () => void }).unref?.();
+  };
+  runEchoRefsBackfill();
+
+  // 生涯流程预总结（v0.8.18）：启动后错峰一次（读上游 L1 的流程性记录 → 三档落 spirit 库）。
+  // 知识性归上游：这里只取 work_task/episodic，知识行只建 entity_record_ref（不存正文）。
+  const alignAndDigest = (): { week: number; month: number; milestones: number; weekCount: number; knowledgeCount: number; entities: number; links: number; sessions: number; merged: number } => {
+    // v0.8.25：先按会话重组流程档（会话内 + 跨会话去重），week/month 再基于会话档聚合。
+    const session = buildSessionDigests(db, { days: 0, limit: 2000 });
+    const build = buildDigests(db, (opts) => summarizeProcedural(opts), {
+      summarizeSessions: (opts) => summarizeSessionDigests(db, opts),
+    });
+    const aliases = buildEntityAliases(db);
+    const align = buildEntityLinks(db, loadL1Entities());
+    const refs = linkKnowledgeRecords(db, searchL1Records({ days: 30, limit: 200 }));
+    return {
+      week: build.week === undefined ? 0 : 1,
+      month: build.month === undefined ? 0 : 1,
+      milestones: build.milestones,
+      weekCount: build.weekCount,
+      knowledgeCount: build.knowledgeCount,
+      entities: aliases,
+      links: align.links + refs,
+      sessions: session.sessions,
+      merged: session.merged,
+    };
+  };
+  const runProceduralDigest = (): void => {
+    const timer = setTimeout(() => {
+      try {
+        const result = alignAndDigest();
+        if (result.weekCount > 0 || result.milestones > 0) {
+          logger.info(`生涯流程档：会话 ${result.sessions}（合并重复 ${result.merged}）· week ${result.weekCount} 条 · 里程碑新增 ${result.milestones} · 知识性 ${result.knowledgeCount} 条归上游 · 对齐 alias ${result.entities}/link ${result.links}`);
+        }
+      } catch (err) {
+        logger.warn(`生涯流程预总结失败（已忽略）：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }, 25_000);
+    (timer as { unref?: () => void }).unref?.();
+  };
+  runProceduralDigest();
+
+  // 每日重算（v0.8.18）：流程档滚动窗口需要每天推进；失败只告警不阻断。
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      try {
+        const result = alignAndDigest();
+        if (result.weekCount > 0) logger.info(`生涯流程档（日更）：week ${result.weekCount} · 里程碑新增 ${result.milestones}`);
+      } catch (err) {
+        logger.warn(`生涯流程档日更失败（已忽略）：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }, 24 * 60 * 60 * 1000);
+    (timer as { unref?: () => void }).unref?.();
+    return () => clearInterval(timer);
   });
 
   ctx.on('agent/disposed', (payload) => {
@@ -478,3 +824,4 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     `[spirit] 已装载 entry=${SPIRIT_ENTRY_ID} 存储=${db ? 'sqlite' : '内存降级'} 历史路=${client ? '开（待探测）' : '关'} section=${caps.systemPromptSection ? '可用' : '不可用'}`,
   );
 }
+

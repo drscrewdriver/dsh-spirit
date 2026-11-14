@@ -17,7 +17,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, SPIRIT_RANGES, type SpiritConfig, type SpiritExportResult, type SpiritFeedbackRequest, type SpiritJournalPage, type SpiritJournalRow, type SpiritLiveSettings, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats, type SpiritSettingsView, type SpiritTimelineResult, type SpiritResourceResult, type SpiritTxnRow, type SpiritDistillRouteView, type SpiritDistillModelListResult, type SpiritDistillModelSetResult, type SpiritEvaluationRow, type SpiritEvaluationListResult, type SpiritEntityGraphResult, type SpiritEntityNode, type SpiritEntityLookupResult, type SpiritTaskListResult, type SpiritTaskRow, type SpiritTaskDetailResult, type SpiritBackfillRunResult, type SpiritInjectEchoResult, type SpiritMemoryRow, type SpiritMemoryListResult } from './contract.js';
+import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, SPIRIT_RANGES, type SpiritConfig, type SpiritExportResult, type SpiritFeedbackRequest, type SpiritJournalPage, type SpiritJournalRow, type SpiritLiveSettings, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats, type SpiritSettingsView, type SpiritTimelineResult, type SpiritResourceResult, type SpiritTxnRow, type SpiritDistillRouteView, type SpiritDistillModelListResult, type SpiritDistillModelSetResult, type SpiritEvaluationRow, type SpiritEvaluationListResult, type SpiritEntityGraphResult, type SpiritEntityMergeSuggestResult, type SpiritEntityAliasAddResult, type SpiritEntityNode, type SpiritEntityLookupResult, type SpiritTaskListResult, type SpiritTaskRow, type SpiritTaskDetailResult, type SpiritBackfillRunResult, type SpiritBackfillStatus, type SpiritInjectEchoResult, type SpiritEchoDetailResult, type SpiritEchoEntry, type SpiritEchoSearchResult, type SpiritEchoRefsResult, type SpiritEchoLocateResult, type SpiritSearchHit, type SpiritSearchAllResult, type SpiritRecordDetailRequest, type SpiritRecordDetailResult, type SpiritEchoSnapshot, type SpiritMemoryRow, type SpiritMemoryListResult } from './contract.js';
 import type { Spirit } from './spirit.js';
 import type { SpiritStats } from './stats.js';
 import type { SessionModeStore } from './store/session-modes.js';
@@ -36,10 +36,18 @@ import { exportSessionEntries } from './store/journal-retention.js';
 import type { ExperienceStore } from './store/experience.js';
 import type { TxnStore, TxnEntry } from './store/transaction.js';
 import type { OntologyStore, OntologyEvaluation } from './store/ontology.js';
-import type { BackfillRunner } from './ontology/backfill.js';
 import type { PersonaPresetStore } from './persona/presets.js';
 import type { EchoLog } from './echo-log.js';
+import type { EchoRecallStore } from './store/echo-recall.js';
+import type { EchoRefStore } from './store/echo-ref.js';
 import type { ModelMemoryStore, GoalStore } from './memory/store.js';
+
+/** 历史重建执行器最小面（v0.8.24）：旧 BackfillRunner 与 L1BackfillRunner 都满足。 */
+interface BackfillRunnerLike {
+  start(dryRun: boolean): SpiritBackfillRunResult;
+  status(): SpiritBackfillStatus;
+}
+import type { DistillDigestRow, SpiritEntityDigestResult, SpiritDistillRunResult } from './contract.js';
 import { LANES, TRIGGER_KINDS, type EntityKind, type SpiritVerdict } from './types.js';
 import type { ExperienceEntry, PersonaCard } from './types.js';
 import { validatePersona } from './persona/types.js';
@@ -91,8 +99,36 @@ export interface RpcDeps {
   presets?: PersonaPresetStore;
   /** 注入回响面（v0.7）：每轮注入/跳过快照；省略 ⇒ inject-echo 报 unavailable。 */
   echo?: EchoLog;
+  /**
+   * 条目化 + 时间反查（v0.8.6）：把卡文本切成分段条目并回查真源时刻（要库，所以由装配点注入）。
+   * 省略 ⇒ 快照只回 text/segments（旧行为），不编时间。
+   */
+  echoEntries?: (input: { sessionId: string; text: string; at: number }) => SpiritEchoEntry[];
+  /** 回响落档（v0.8.2）：按编号取注入原文；省略 ⇒ echo-detail 报 unavailable。 */
+  echoRecall?: EchoRecallStore;
+  /** 回响引用（v0.8.8，echo-id ≡ memid）：引用列表与语气读面；省略 ⇒ echo-refs 报 unavailable。 */
+  echoRefs?: EchoRefStore;
+  /**
+   * 记录号分配/查询（v0.8.11）：给定 (kind, memId) 返回稳定的 `echo-<uuid>`。
+   * 读面用它把“记录时间 + echo id”一起下发（星图卡片/翻阅列表都要显示）；省略 ⇒ 不下发。
+   */
+  echoIdOf?: (kind: string, memId: string) => string | undefined;
+  /** 按 echo 号定位记录（v0.8.12）：翻阅搜索与星图定位共用；省略 ⇒ echo-locate unavailable。 */
+  echoLocate?: (q: string) => SpiritEchoLocateResult;
+  /** 全域文本搜索（v0.8.14）：记录不分类型；省略 ⇒ spirit-search unavailable。 */
+  searchAll?: (q: string, limit: number) => SpiritSearchHit[];
+  /** 记录详情（v0.8.17）：搜索命中行内展开；省略 ⇒ record-detail unavailable。 */
+  recordDetail?: (kind: SpiritRecordDetailRequest['kind'], id: string) => SpiritRecordDetailResult | undefined;
   /** 模型可写记忆（v0.8）：两本账+日记；省略 ⇒ memory-list 报 unavailable。 */
   memory?: ModelMemoryStore;
+  /** 生涯流程档（v0.8.18）：读 spirit 自存的三档预总结；省略 ⇒ 面板该组为空。 */
+  distillDigest?: () => DistillDigestRow[];
+  /** 实体名反查（v0.8.18）：面板「关联实体」用。 */
+  entityNamesOf?: (ids: string[]) => string[];
+  /** 按实体查三档（v0.8.18）。 */
+  entityDigest?: (entity: string, limit?: number) => SpiritEntityDigestResult;
+  /** 手动刷新三档（v0.8.18）。 */
+  runDistillDigest?: () => SpiritDistillRunResult;
   /** 目的层（v0.8）：惦记的事；省略 ⇒ memory-list 的 goals 回空。 */
   goals?: GoalStore;
   /** 导出件写到哪（数据目录本身）；由 index 传入，不从配置重算。 */
@@ -129,7 +165,8 @@ export interface RpcDeps {
    */
   ontology?: OntologyStore;
   /** 历史回填触发面（Phase E）：ontology-backfill-run 用；省略 ⇒ 报 unavailable。 */
-  backfill?: BackfillRunner;
+  /** 历史重建触发面（Phase E→v0.8.24 换源）：start/status 形状不变，实现改读 L1；省略 ⇒ 报 unavailable。 */
+  backfill?: BackfillRunnerLike;
   /**
    * 长觉模型选择面（面板切蒸馏模型）：枚举宿主供应商/模型 + 读三路（部署pin/运行时覆盖/宿主默认）+ 写覆盖。
    * 省略 ⇒ distill-models 等三端点报 unavailable（未装配是诚实状态）。
@@ -172,7 +209,7 @@ function int(value: unknown, fallback: number): number {
  * 不分两套字段——prime 旧缺陷（检索命中只带部分列致锚点恒空）的反面教材。
  * cues 同批取：证据面不能靠前端再发一次请求拼；≤4 条预算见 v0.3 卡片纪律。
  */
-function entryRow(entry: ExperienceEntry, cueMap: Map<string, string[]>): SpiritJournalRow {
+function entryRow(entry: ExperienceEntry, cueMap: Map<string, string[]>, echoId?: string): SpiritJournalRow {
   return {
     id: entry.id,
     tsMs: entry.tsMs,
@@ -183,6 +220,7 @@ function entryRow(entry: ExperienceEntry, cueMap: Map<string, string[]>): Spirit
     text: entry.text,
     lane: entry.lane,
     sourceRef: entry.sourceRef ?? null,
+    ...(echoId === undefined ? {} : { echoId }),
     // v0.2 淡出可见性：面板要能区分“库里有但不在焦点”与“没记”
     gist: entry.gist ?? null,
     salience: entry.salience ?? null,
@@ -200,11 +238,12 @@ function entryRow(entry: ExperienceEntry, cueMap: Map<string, string[]>): Spirit
  * 本面是只读面板——summary 可随详情下发（面板不是 system prompt 注入路）。
  * cues 取归一后的 basename（写入侧已剥目录）；topics 取语义安全子集。
  */
-function txnRow(entry: TxnEntry): SpiritTxnRow {
+function txnRow(entry: TxnEntry, echoId?: string): SpiritTxnRow {
   return {
     id: entry.id,
     sessionId: entry.sessionId,
     workspaceId: entry.workspaceId,
+    ...(echoId === undefined ? {} : { echoId }),
     tsMs: entry.tsMs,
     turnSeq: entry.turnSeq,
     cardLine: entry.cardLine,
@@ -486,29 +525,213 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       });
     }
     case 'inject-echo': {
-      if (deps.echo === undefined) return err('unavailable', '回响面未装配');
+      if (deps.echo === undefined && deps.echoRecall === undefined) return err('unavailable', '回响面未装配');
       const sessionId = str(payload['sessionId']);
       const limit = int(payload['limit'], 20);
+      // 记录 + 回响事件 + 语气（v0.8.11）：与轮次观测同一次返回——回响面按 recall → echo 两级渲染。
+      // echoRefs 未装配 ⇒ 不附带字段（旧消费方行为不变）。
+      const withRecords = (value: SpiritInjectEchoResult): SpiritInjectEchoResult => {
+        if (deps.echoRefs === undefined) return value;
+        const listed = deps.echoRefs.list({ ...(sessionId === '' ? {} : { sessionId }), limit });
+        const tone = deps.echoRefs.toneOf(sessionId);
+        // 最近一次回响事件（recall-<uuid>）：从落档取最新一轮（内存缓冲无事件号）。
+        const latest = deps.echoRecall === undefined
+          ? undefined
+          : deps.echoRecall.recent({ ...(sessionId === '' ? {} : { sessionId }), limit: 1 })[0];
+        return {
+          ...value,
+          records: listed.rows,
+          ...(latest === undefined ? {} : { recall: { recallId: latest.id, at: latest.at, flashback: latest.flashback } }),
+          ...(tone === undefined ? {} : { tone }),
+        };
+      };
+      // 条目化 + 时间反查（v0.8.6）：没装配解析器就只回 text/segments（旧行为），不编时间
+      const attach = (item: SpiritEchoSnapshot, text: string): SpiritEchoSnapshot =>
+        deps.echoEntries === undefined || text === '' ? item : { ...item, entries: deps.echoEntries({ sessionId: item.sessionId, text, at: item.at }) };
+      // 内存缓冲有数据 ⇒ 用它（实时、带全文）；空（刚重启）⇒ 回退读落档表，回响页不再空屏。
+      // 两路不混排：混了会让「同一条在两处各出现一次」，面板无法解释。
+      if (deps.echo !== undefined) {
+        const live = deps.echo.list({ ...(sessionId === '' ? {} : { sessionId }), limit });
+        if (live.length > 0) {
+          return ok(withRecords({
+            items: live.map((item) => attach({ ...item, origin: 'live' as const }, item.text)),
+            total: deps.echo.size(),
+          } satisfies SpiritInjectEchoResult));
+        }
+      }
+      if (deps.echoRecall === undefined) {
+        return ok(withRecords({ items: [], total: deps.echo?.size() ?? 0 }));
+      }
+      const rows = deps.echoRecall.recent({ ...(sessionId === '' ? {} : { sessionId }), limit });
+      return ok(withRecords({
+        items: rows.map((row) => {
+          const text = row.text !== '' ? row.text : row.preview;
+          return attach({
+            at: row.at,
+            agentId: '',
+            sessionId: row.sessionId,
+            workspaceId: '',
+            kind: row.kind,
+            origin: 'persisted' as const,
+            recallId: row.id,
+            reason: row.reason,
+            fingerprint: row.fingerprint,
+            // 落档行早期版本没存全文：退到 preview（一行摘要），面板按 text 空串不展全文块
+            text,
+            bytes: text.length,
+            segments: row.segments,
+          } satisfies SpiritEchoSnapshot, text);
+        }),
+        total: deps.echoRecall.count(sessionId),
+      } satisfies SpiritInjectEchoResult));
+    }
+    case 'echo-records':
+    case 'echo-refs': {
+      // 记录列表（v0.8.11）：每行 = 一条被想起的记录（echo-<uuid>）；echo-refs 为旧名别名
+      if (deps.echoRefs === undefined) return err('unavailable', '回响记录未装配');
+      const sessionId = str(payload['sessionId']);
+      const kind = str(payload['kind']);
+      const keyword = str(payload['q']);
+      const sinceMs = Number.isFinite(Number(payload['sinceMs'])) ? Number(payload['sinceMs']) : undefined;
+      const untilMs = Number.isFinite(Number(payload['untilMs'])) ? Number(payload['untilMs']) : undefined;
+      const order = str(payload['order']) === 'record' ? 'record' : 'recall';
+      const listed = deps.echoRefs.list({
+        ...(sessionId === '' ? {} : { sessionId }),
+        ...(kind === '' ? {} : { kind }),
+        ...(keyword === '' ? {} : { q: keyword }),
+        ...(sinceMs === undefined ? {} : { sinceMs }),
+        ...(untilMs === undefined ? {} : { untilMs }),
+        limit: int(payload['limit'], 20),
+        order,
+      });
+      const tone = deps.echoRefs.toneOf(sessionId);
       return ok({
-        items: deps.echo.list({ ...(sessionId === '' ? {} : { sessionId }), limit }),
-        total: deps.echo.size(),
-      } satisfies SpiritInjectEchoResult);
+        records: listed.rows,
+        refs: listed.rows,
+        total: listed.total,
+        ...(tone === undefined ? {} : { tone }),
+      } satisfies SpiritEchoRefsResult);
+    }
+    case 'echo-locate': {
+      // 按 echo 号定位（v0.8.12）：返回命中的记录；不是号查询 ⇒ idQuery=false（调用方走文本搜）。
+      if (deps.echoLocate === undefined) return err('unavailable', '记录定位未装配');
+      return ok(deps.echoLocate(str(payload['q'])) satisfies SpiritEchoLocateResult);
+    }
+    case 'spirit-search': {
+      // 全域文本搜索（v0.8.14）：任务/交付/体验/记着/目的/实体一起搜，不让类型挡住命中。
+      if (deps.searchAll === undefined) return err('unavailable', '全域搜索未装配');
+      const hits = deps.searchAll(str(payload['q']), int(payload['limit'], 24));
+      return ok({ hits } satisfies SpiritSearchAllResult);
+    }
+    case 'record-detail': {
+      // 记录详情（v0.8.17）：搜索命中行内展开用；找不到如实报 not-found。
+      if (deps.recordDetail === undefined) return err('unavailable', '记录详情未装配');
+      const kind = str(payload['kind']);
+      if (!['task', 'delivery', 'experience', 'memory', 'goal', 'entity'].includes(kind)) return err('bad-request', `kind 非法：${kind}`);
+      const id = str(payload['id']);
+      if (id === '') return err('bad-request', 'id 必填');
+      const detail = deps.recordDetail(kind as SpiritRecordDetailRequest['kind'], id);
+      if (detail === undefined) return err('not-found', '这条记录不在了');
+      return ok(detail satisfies SpiritRecordDetailResult);
+    }
+    case 'entity-digest': {
+      // 按实体查生涯流程档（v0.8.18）：知识性只回计数，不返正文。
+      if (deps.entityDigest === undefined) return err('unavailable', '实体生涯档未装配');
+      const entity = str(payload['entity']).trim();
+      if (entity === '') return err('bad-request', 'entity 必填');
+      return ok(deps.entityDigest(entity, int(payload['limit'], 5)) satisfies SpiritEntityDigestResult);
+    }
+    case 'distill-digest-run': {
+      // 手动刷新三档（v0.8.18）：幂等，连点不增行（milestone 靠唯一键去重）。
+      if (deps.runDistillDigest === undefined) return err('unavailable', '生涯档刷新未装配');
+      return ok(deps.runDistillDigest() satisfies SpiritDistillRunResult);
+    }
+    case 'echo-search': {
+      if (deps.echoRecall === undefined) return err('unavailable', '回响落档未装配');
+      const sessionId = str(payload['sessionId']);
+      const keyword = str(payload['q']);
+      const sinceMs = Number.isFinite(Number(payload['sinceMs'])) ? Number(payload['sinceMs']) : undefined;
+      const untilMs = Number.isFinite(Number(payload['untilMs'])) ? Number(payload['untilMs']) : undefined;
+      const limit = int(payload['limit'], 20);
+      const found = deps.echoRecall.search({
+        ...(sessionId === '' ? {} : { sessionId }),
+        ...(keyword === '' ? {} : { q: keyword }),
+        ...(sinceMs === undefined ? {} : { sinceMs }),
+        ...(untilMs === undefined ? {} : { untilMs }),
+        limit,
+      });
+      const attach = (item: SpiritEchoSnapshot, text: string): SpiritEchoSnapshot =>
+        deps.echoEntries === undefined || text === '' ? item : { ...item, entries: deps.echoEntries({ sessionId: item.sessionId, text, at: item.at }) };
+      return ok({
+        items: found.rows.map((row) => {
+          const text = row.text !== '' ? row.text : row.preview;
+          return attach({
+            at: row.at,
+            agentId: '',
+            sessionId: row.sessionId,
+            workspaceId: '',
+            kind: row.kind,
+            origin: 'persisted' as const,
+            recallId: row.id,
+            reason: row.reason,
+            fingerprint: row.fingerprint,
+            text,
+            bytes: text.length,
+            segments: row.segments,
+          } satisfies SpiritEchoSnapshot, text);
+        }),
+        tier: found.tier,
+        // 向量层：回响未接嵌入通道 ⇒ 如实回 unavailable（不假装能兜底）
+        vector: 'unavailable' as const,
+        scanned: found.scanned,
+      } satisfies SpiritEchoSearchResult);
+    }
+    case 'echo-detail': {
+      if (deps.echoRecall === undefined) return err('unavailable', '回响落档未装配');
+      const sessionId = str(payload['sessionId']);
+      const id = str(payload['id']);
+      if (sessionId === '' || id === '') return err('invalid-request', 'sessionId 与 id 都是必填');
+      const row = deps.echoRecall.detail(sessionId, id);
+      return ok({ ...(row === undefined ? {} : { item: row }) } satisfies SpiritEchoDetailResult);
     }
     case 'memory-list': {
       if (deps.memory === undefined) return err('unavailable', '记忆库未装配');
       const ws = str(payload['workspaceId']);
       const limit = int(payload['limit'], 50);
       const opts = { ...(ws === '' ? {} : { workspaceId: ws }), limit };
-      const memoryRows = (scope: 'life' | 'work' | 'diary'): SpiritMemoryRow[] =>
-        deps.memory!.recent({ scope, ...opts }).map((row) => ({
-          id: row.id, scope: row.scope, kind: row.kind, text: row.text, workspaceId: row.workspaceId, pinned: row.pinned, createdAt: row.createdAt, updatedAt: row.updatedAt,
-        }));
+      const memoryRows = (scope: 'life' | 'work' | 'diary' | 'episode'): SpiritMemoryRow[] =>
+        deps.memory!.recent({ scope, ...opts }).map((row) => {
+          const echoId = deps.echoIdOf?.('memory', row.id);
+          return {
+            id: row.id, scope: row.scope, kind: row.kind, text: row.text, workspaceId: row.workspaceId,
+            pinned: row.pinned, createdAt: row.createdAt, updatedAt: row.updatedAt,
+            ...(echoId === undefined ? {} : { echoId }),
+          };
+        });
       return ok({
         life: memoryRows('life'),
         work: memoryRows('work'),
         diary: memoryRows('diary'),
-        goals: (deps.goals?.list(opts) ?? []).map((goal) => ({
-          id: goal.id, title: goal.title, status: goal.status, why: goal.why, workspaceId: goal.workspaceId, createdAt: goal.createdAt, updatedAt: goal.updatedAt,
+        episode: memoryRows('episode'),
+        goals: (deps.goals?.list(opts) ?? []).map((goal) => {
+          const echoId = deps.echoIdOf?.('goal', goal.id);
+          return {
+            id: goal.id, title: goal.title, status: goal.status, why: goal.why, workspaceId: goal.workspaceId,
+            createdAt: goal.createdAt, updatedAt: goal.updatedAt,
+            ...(echoId === undefined ? {} : { echoId }),
+          };
+        }),
+        // 生涯流程预总结档（v0.8.18）：spirit 自存，只含流程性；知识性归上游（memory_search）
+        distill: (deps.distillDigest?.() ?? []).map((digest) => ({
+          id: `digest-${digest.tier}-${digest.periodKey}`,
+          scope: 'distill' as const,
+          kind: digest.tier,
+          text: digest.summary,
+          workspaceId: '',
+          pinned: false,
+          createdAt: digest.generatedAt,
+          updatedAt: digest.generatedAt,
+          ...((digest.entities ?? []).length === 0 || deps.entityNamesOf === undefined ? {} : { entityNames: deps.entityNamesOf(digest.entities ?? []) }),
         })),
       } satisfies SpiritMemoryListResult);
     }
@@ -552,6 +775,15 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
     case 'entries-list': {
       // 翻阅 tab 主查询：全库跨会话筛选+分页（store.listAdmin 承担形状纪律，这里只做入参守卫）
       const offset = Math.max(0, int(payload['offset'], 0));
+      // v19 游标：形状不对就当没给（不报错不阻断——老客户端只会发 offset）
+      const rawCursor = payload['cursor'];
+      const cursor = (() => {
+        if (typeof rawCursor !== 'object' || rawCursor === null) return undefined;
+        const c = rawCursor as Record<string, unknown>;
+        const tsMs = typeof c['tsMs'] === 'number' && Number.isFinite(c['tsMs']) ? Math.floor(c['tsMs']) : Number.NaN;
+        const id = typeof c['id'] === 'string' ? c['id'] : '';
+        return Number.isFinite(tsMs) && id !== '' ? { tsMs, id } : undefined;
+      })();
       const trigger = str(payload['trigger']);
       const lane = str(payload['lane']);
       // 非法枚举拒收不静默空查：筛选器值来自首屏 catalogs，拼错了是调用方的 bug
@@ -570,14 +802,16 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         ...(payload['hiddenOnly'] === true ? { hiddenOnly: true } : {}),
         ...(str(payload['sessionId']) === '' ? {} : { sessionId: str(payload['sessionId']) }),
         offset,
+        ...(cursor === undefined ? {} : { cursor }),
         limit: int(payload['limit'], 50),
       });
       const cueMap = deps.store.cuesFor(result.rows.map((row) => row.id));
       return ok({
-        rows: result.rows.map((entry) => entryRow(entry, cueMap)),
+        rows: result.rows.map((entry) => entryRow(entry, cueMap, deps.echoIdOf?.('experience', entry.id))),
         hasMore: result.hasMore,
         truncated: result.truncated,
         offset,
+        ...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }),
         // 首屏下发 slug 目录：client 拿自己的 label 单源翻译，枚举新增值不用改两端
         ...(offset === 0 ? { catalogs: { triggers: [...TRIGGER_KINDS], lanes: [...LANES] } } : {}),
       });
@@ -608,7 +842,7 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         ...(hasSalience ? { salience: int(payload['salience'], 0) } : {}),
       });
       if (revised === null) return err('not-found', '条目不存在，或已被取代/已藏起，不可改');
-      return ok(entryRow(revised, deps.store.cuesFor([revised.id])));
+      return ok(entryRow(revised, deps.store.cuesFor([revised.id]), deps.echoIdOf?.('experience', revised.id)));
     }
     case 'dream-run': {
       if (deps.dream === undefined) return err('unavailable', '做梦未装配');
@@ -671,7 +905,8 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       // 显式 from 优先；否则按 days 回推（闭区间两端交给 store.timelineQuery）。
       const from = typeof payload['from'] === 'number' ? int(payload['from'], to - days * 86_400_000) : to - days * 86_400_000;
       const workspaceId = str(payload['workspaceId']) || undefined;
-      const rows = deps.txn.timelineQuery(from, to, workspaceId, int(payload['limit'], 200)).map(txnRow);
+      const rows = deps.txn.timelineQuery(from, to, workspaceId, int(payload['limit'], 200))
+        .map((entry) => txnRow(entry, deps.echoIdOf?.('delivery', entry.id)));
       return ok({ rows, from, to } satisfies SpiritTimelineResult);
     }
     case 'resource-lookup': {
@@ -679,7 +914,7 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       const cue = str(payload['cue']);
       if (cue === '') return err('bad-request', 'cue 不能为空');
       const hits = deps.txn.resourceLookup(cue, int(payload['limit'], 100))
-        .map((h) => ({ row: txnRow(h.entry), matchedCue: h.matchedCue, matchedKind: h.matchedKind }));
+        .map((h) => ({ row: txnRow(h.entry, deps.echoIdOf?.('delivery', h.entry.id)), matchedCue: h.matchedCue, matchedKind: h.matchedKind }));
       return ok({ hits } satisfies SpiritResourceResult);
     }
     case 'distill-models': {
@@ -750,6 +985,19 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       }
       return ok({ nodes, edges } satisfies SpiritEntityGraphResult);
     }
+    case 'entity-merge-suggest': {
+      // B-3：疑似同一实体（**只读**候选；合并由人确认，落点是别名不是 id）
+      if (deps.ontology === undefined) return err('unavailable', '本体层未装配');
+      return ok({ suggestions: deps.ontology.suggestEntityMerges(int(payload['limit'], 20)) } satisfies SpiritEntityMergeSuggestResult);
+    }
+    case 'entity-alias-add': {
+      // B-3：确认候选 → 写 entity_alias(source='user')；不碰 entity 行、不合并 id
+      if (deps.ontology === undefined) return err('unavailable', '本体层未装配');
+      const entityId = str(payload['entityId']);
+      const alias = str(payload['alias']);
+      if (entityId === '' || alias.trim() === '') return err('bad-request', 'entityId 与 alias 都必需');
+      return ok({ ok: deps.ontology.addUserAlias(entityId, alias) } satisfies SpiritEntityAliasAddResult);
+    }
     case 'entity-lookup': {
       if (deps.ontology === undefined || deps.txn === undefined) return err('unavailable', '本体层未装配');
       const entityId = str(payload['entityId']);
@@ -766,7 +1014,8 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         return err('bad-request', 'entityId 或 name 至少给一个');
       }
       const deliveryIds = entity === null ? [] : deps.ontology.listDeliveriesByEntity(entity.id, int(payload['limit'], 50));
-      const deliveries = deps.txn.getByIds(deliveryIds).map(txnRow);
+      const deliveries = deps.txn.getByIds(deliveryIds)
+        .map((entry) => txnRow(entry, deps.echoIdOf?.('delivery', entry.id)));
       return ok({ entity, deliveries } satisfies SpiritEntityLookupResult);
     }
     case 'task-list': {
@@ -780,7 +1029,12 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         ? deps.ontology.listAllTasks({ ...(status === undefined ? {} : { status }), ...(taskQ === undefined ? {} : { q: taskQ }), limit })
         : deps.ontology.listTasks(workspaceId, { ...(status === undefined ? {} : { status }), ...(taskQ === undefined ? {} : { q: taskQ }), limit });
       const tasks: SpiritTaskRow[] = source
-        .map((t) => ({ id: t.id, title: t.title, status: t.status, ...(t.nextStep !== undefined ? { nextStep: t.nextStep } : {}), updatedAt: t.updatedAt }));
+        .map((t) => ({
+          id: t.id, title: t.title, status: t.status,
+          ...(t.nextStep !== undefined ? { nextStep: t.nextStep } : {}),
+          updatedAt: t.updatedAt,
+          ...(deps.echoIdOf?.('task', t.id) === undefined ? {} : { echoId: deps.echoIdOf?.('task', t.id) }),
+        }));
       return ok({ tasks } satisfies SpiritTaskListResult);
     }
     case 'task-detail': {
@@ -788,8 +1042,14 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       const taskId = str(payload['taskId']);
       if (taskId === '') return err('bad-request', 'taskId 必填');
       const found = deps.ontology.getTask(taskId);
-      const task: SpiritTaskRow | null = found === null ? null : { id: found.id, title: found.title, status: found.status, ...(found.nextStep !== undefined ? { nextStep: found.nextStep } : {}), updatedAt: found.updatedAt };
-      const deliveries = deps.txn.getByIds(deps.ontology.listDeliveriesByTask(taskId)).map(txnRow);
+      const task: SpiritTaskRow | null = found === null ? null : {
+        id: found.id, title: found.title, status: found.status,
+        ...(found.nextStep !== undefined ? { nextStep: found.nextStep } : {}),
+        updatedAt: found.updatedAt,
+        ...(deps.echoIdOf?.('task', found.id) === undefined ? {} : { echoId: deps.echoIdOf?.('task', found.id) }),
+      };
+      const deliveries = deps.txn.getByIds(deps.ontology.listDeliveriesByTask(taskId))
+        .map((entry) => txnRow(entry, deps.echoIdOf?.('delivery', entry.id)));
       return ok({ task, deliveries } satisfies SpiritTaskDetailResult);
     }
     case 'ontology-backfill-run': {
@@ -847,6 +1107,10 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       return ok({
         fadeEnabled: live.fadeEnabled,
         fadeHalfLifeMs: live.fadeHalfLifeMs,
+        fadeHotDays: live.fadeHotDays,
+        fadeColdDays: live.fadeColdDays,
+        fadeWarmWeight: live.fadeWarmWeight,
+        fadeColdWeight: live.fadeColdWeight,
         feedbackEnabled: live.feedbackEnabled,
         dreamEnabled: live.dreamEnabled,
         distillEnabled: live.distillEnabled,
@@ -871,7 +1135,21 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         if (v < lo || v > hi) return err('bad-request', `fadeHalfLifeMs 只接受 ${lo}..${hi}`);
         patch.fadeHalfLifeMs = v;
       }
-      if (Object.keys(patch).length === 0) return err('bad-request', '没有可应用的合法键（只收 fadeEnabled/fadeHalfLifeMs/feedbackEnabled/dreamEnabled/distillEnabled/ontologyEnabled）');
+      // v19 台阶三键（热更）：逐个按区间校验，越界拒绝并指路
+      for (const [key, rangeKey] of [
+        ['fadeHotDays', 'recall.fadeHotDays'],
+        ['fadeColdDays', 'recall.fadeColdDays'],
+        ['fadeWarmWeight', 'recall.fadeWarmWeight'],
+        ['fadeColdWeight', 'recall.fadeColdWeight'],
+      ] as const) {
+        const raw = payload[key];
+        if (typeof raw !== 'number' || !Number.isFinite(raw)) continue;
+        const [lo, hi] = SPIRIT_RANGES[rangeKey] ?? [0, 0];
+        const v = Math.floor(raw);
+        if (v < lo || v > hi) return err('bad-request', `${key} 只接受 ${lo}..${hi}`);
+        patch[key] = v;
+      }
+      if (Object.keys(patch).length === 0) return err('bad-request', '没有可应用的合法键（只收 fadeEnabled/fadeHalfLifeMs/fadeHotDays/fadeColdDays/fadeWarmWeight/fadeColdWeight/feedbackEnabled/dreamEnabled/distillEnabled/ontologyEnabled）');
       try {
         await Promise.resolve(ref.update(patch));
       } catch (err2) {
@@ -881,6 +1159,10 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       return ok({
         fadeEnabled: live.fadeEnabled,
         fadeHalfLifeMs: live.fadeHalfLifeMs,
+        fadeHotDays: live.fadeHotDays,
+        fadeColdDays: live.fadeColdDays,
+        fadeWarmWeight: live.fadeWarmWeight,
+        fadeColdWeight: live.fadeColdWeight,
         feedbackEnabled: live.feedbackEnabled,
         dreamEnabled: live.dreamEnabled,
         distillEnabled: live.distillEnabled,
@@ -943,11 +1225,17 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
               .map((row) => ({
                 id: row.id, tsMs: row.tsMs, sessionId: row.sessionId, turnSeq: row.turnSeq,
                 cardLine: row.cardLine, summary: row.summary ?? null,
+                ...(deps.echoIdOf?.('delivery', row.id) === undefined ? {} : { echoId: deps.echoIdOf?.('delivery', row.id) }),
               }))
           : [],
       });
+      // 星点也带记录号（v0.8.11）：星图卡片要显示“记录时间 + echo id”；体验/交付各按真源类型取号。
+      const pointsWithEcho = graph.points.map((point) => {
+        const echoId = deps.echoIdOf?.(point.kind === 'delivery' ? 'delivery' : 'experience', point.id);
+        return echoId === undefined ? point : { ...point, echoId };
+      });
       // 顶栏短提示的判定单源在探测面（deps.drscVerdict），装配点补进响应——场景几何不掺探测事实
-      return ok({ ...graph, drscVerdict: deps.drscVerdict() });
+      return ok({ ...graph, points: pointsWithEcho, drscVerdict: deps.drscVerdict() });
     }
     default:
       return err('not-found', `unknown endpoint ${endpoint}`);
@@ -1060,3 +1348,4 @@ export function registerSpiritRpc(ctx: Context, deps: RpcDeps): void {
 
 /** 白名单导出（门禁核对 client 与 host 两端一致）。 */
 export const SPIRIT_RPC_METHODS: readonly string[] = SHORT_METHODS;
+

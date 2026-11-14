@@ -2,6 +2,297 @@
 
 本项目的所有值得记录的变更都写在这里。版本号遵循语义化版本。
 
+## 0.9.0 (2026-11-14)
+
+**检索可搜索化（schema v19）· 召回链质量 · 淡出台阶 0-7-30 · 运维闸门 · 实体卫生（schema v20）**
+
+- **FTS5 六类索引（派生缓存）**：新增 `search_doc`（登记表）+ `search_fts`（contentless +
+  `contentless_delete=1`，只存 token 串）。体验 / 记着 / 交付 / 任务线 / 实体 / 目的统一进一张索引，
+  开库时按分词器戳判定是否全量回填（`search/index.ts`，分批 500 行、单事务、失败回滚）。
+- **分词**：`@node-rs/jieba` 进 **optionalDependencies**（未装/无预编译二进制 ⇒ 自动退 CJK 二元组）；
+  词元 = jieba 词 ∪ 拉丁词 ∪ CJK 二元组，读写共用同一函数，版本戳 `jieba-v1` / `bigram-v1` 控制重建。
+  词级精度由此成立：「车」不会命中「车站」。
+- **读侧接线**：`searchLocal`（每轮「想起」段）/ `searchText`（TUI recall）/ `listAdmin`（翻阅搜索）
+  与全域搜索（`search/*`）改为 **FTS 优先、LIKE 回落**。FTS 只做候选过滤，可见面过滤与时间排序
+  一律回源表（ghost / hidden / 已遗忘搜不出来），排序语义与改前一致。
+- **失败了就整链回落**：建表失败（老 SQLite / 无 FTS5）或回填失败 ⇒ 写 meta `search_index_disabled`
+  + 本进程负缓存，所有入口退 LIKE；**不做半残索引**（残缺索引会静默漏召回）。
+- **召回链 P0**：① 来源判定从白名单改**黑名单**（`recall/query-source.ts`）——第三方 IM 桥不再
+  静默失去历史召回；② 短句向前拼上文（≤6 条 / ≤240 字），且 `recallQuery` 与 `newUserText`
+  **字段分离**（拼长的串绝不进 quote 与体验正文）；③ 每轮被挡在卡外的条目与原因写入
+  `echo_step.rejected_json`（superseded / held / limit / exclude-dup / own-card，纯观测）。
+- **实体多名称关联**：`search/entity-alias-search.ts` 三级解析（精确归一化 → 双向包含 → FTS）后，
+  展开该实体的**交付与任务线**（命中行带 `via=<entityId>`），上游知识只计数量；`upsertEntity`
+  改为增量写 `entity_alias`，新实体立即可按别名搜到。`SpiritSearchHit` 增可选 `via`。
+- **已知一次性漂移**：升级首启会全量回填索引（万级库数百毫秒）；「想起」段候选从字面子串变为
+  词级命中，个别轮次内容会与旧版不同；召回查询串在短句场景变长（更易命中，属预期）。
+
+### 淡出台阶 0-7-30（同批）
+
+- **尺度换成三段台阶**：`Δt < 7 天 ⇒ 1000` / `< 30 天 ⇒ fadeWarmWeight(750)` / 其余 ⇒
+  `fadeColdWeight(500，地板)`。地板**只作用末阶**——旧曲线在 90 分钟 + 地板 0.5 下实际只产出
+  「1.0 / 0.5」两档，时间分辨率被抹平。
+- **配置**：新增 `recall.fadeHotDays/fadeColdDays/fadeWarmWeight/fadeColdWeight`，四个键都进
+  `live.*` volatile 与 `settings-get/set` RPC（面板可热更）；`fadeHalfLifeMs` 保留键名，语义收窄为
+  **冻结开关**（`0` = 全阶恒 1000）。钳制：`1 ≤ hot < cold ≤ 365`、`500 ≤ cold ≤ warm ≤ 1000`。
+- **已知代价**：升级首日条目会「变清楚」（30 天内的强条目从 gist 回到 full）；第 7/30 天跨档时
+  卡文本会变一次（设计使然，一天最多跨一次）。保守臂：`fadeHotDays=0`。
+- **面板**：新四键已在 RPC 面可写；面板输入行沿用旧「窗口半衰期」一行的位置，三段台阶的控件
+  尚待下一批 UI 改动（服务端已生效）。
+
+### 运维闸门（同批）
+
+- **翻阅游标分页**：`entries-list` 接受 `cursor: {tsMs,id}` 并返回 `nextCursor`；`cursor` 与 `offset`
+  同给时以 cursor 为准（老客户端只发 offset 时行为逐字不变）。append-only 库上避免 OFFSET
+  随页深线性变慢；降级（内存镜像）面同样支持游标。面板翻页已改游标。
+- **工具面边界声明**：`spirit_memory` 描述首句改为「只写生涯账/工作账/日记/对话细节；事实、
+  方法论、踩坑、规则一律用上游 `memory_search`/`memory_add`」；`gates.test.ts` 增断言防回退。
+- **回声链检测闸**：新增 `npm run echo-gate`（`scripts/echo-gate.mjs`，只读）：读 spirit
+  `echo_step(kind='injected')` 的卡首行片段，到上游 `l1_records.content` 里查是否被收成知识；
+  干净退 0、命中退 1（打印样本）、无法检查退 2。**不写上游、不改配置**。
+
+### 实体卫生（同批，schema v20）
+
+- **归一化补 NFKC**：`normalizeEntityName` 先做 `normalize('NFKC')`、去零宽字符、分隔符与引号/
+  括号统一——「ＤＳＨ」与「dsh」不再各算一条别名。**不做繁简折叠**（大表 + 语义误伤），
+  繁简差异交给下面的“疑似同一实体”人工确认。
+- **别名重建闸**：`meta.entity_alias_stamp = 'nfkc-v2'`；戳变 ⇒ 删 `source='spirit'` 旧键后重建，
+  `source='user'`（人工确认）**永不删**。开库时 `ensureEntityAliases` 自动执行，
+  避免“搜得到旧的、搜不到新的”且两边都不报错。
+- **疑似同一实体（只读）**：`entity-merge-suggest` 出候选（归一化相等 / 共享上游 id /
+  包含且差≤4 / 编辑距离≤1），`entity-alias-add` 确认后**只写** `entity_alias(source='user')`；
+  **永不改 entity 行、永不合并 id**。
+- **里程碑失效标注（v20）**：`distill_digest.stale_at` 派生列 + `markDigestStale` 三分支
+  （引用指向已消失实体 ⇒ 标；指向活实体 ⇒ 不标；无引用行 ⇒ 不标）；**只影响展示，正文一字不改**。
+  局限已写进注释：真正的上游退场检测需要上游证据面，本判定只看 spirit 侧引用是否还有活实体支撑。
+
+## 0.8.4-local.28 (2026-11-11)
+
+**流程档改为按会话组织 + 去重；L1 读口带 session 维度**
+
+- **会话级流程档（新 tier=`session`）**：`buildSessionDigests` 先按会话把流程性记录（work_task/episodic）归组，再做两层去重：
+  会话内同签名只留一行；跨会话同文/前缀包含（长度比≥0.8）并入首个会话，行尾标 `×N`，
+  重复来源记进 `source_ids_json`（流程只记一次，出处不丢）。重建幂等：先清 `tier='session'` 再写。
+- **week/month 改以会话档为输入**：先会话去重、再按时间窗压行，避免同一件事把窗口挤满；`buildDigests` 新增可选
+  `summarizeSessions`（省略时保持旧逐条摘要，向后兼容）。
+- **L1 读口**：`L1RecordRow.sessionId`、`searchL1Records({ sessionId })`、列缺失自动降级；`limit` 封顶由 60 提到 2000——
+  重建/摘要不再只吃最新 60 条。
+- **触发链**：启动 25s、每日 24h、睡眠 `onComplete`、`distill-digest-run` 手动刷新，现在 `ontology-backfill-run` 重建完也会重算
+  会话档（同一条 `alignAndDigest` 链）。日志新增「会话数 / 合并重复数」。
+- **面板**：「记着」新增「生涯流程 · 按会话（已去重）」组（`memory-list` 的 distill 现含 session 档，最多 10 条）。
+
+## 0.8.4-local.24 (2026-11-11)
+
+**换源：历史重建改读 L1；睡眠总结 L1；代理可记对话细节**
+
+- **历史重建（全记忆重建）换源**：`ontology-backfill-run` 不再是 DRSC 会话扫描，改由 `L1BackfillRunner` 读上游 L1（蒸馏激活中的记忆）：
+  `work_task`→task（完成/交付语义 ⇒ done）、`work_artifact`→交付、`graph_nodes`/repo/workspace→entity；
+  随后重算 alias/link/引用；id 由 record_id 派生 ⇒ 重跑幂等；L1 缺失 ⇒ 空结果不报错。
+- **睡眠（长觉）总结 L1**：`RuminateRunner` 加 `onComplete`，梦醒后重算三档生涯流程档（周/月/里程碑），失败不影响睡眠结果。
+- **代理可记对话细节**：`spirit_memory` 新增 `scope=episode`（`kind=detail`，不自动注入，靠 recall 取）；面板「记着」新增「对话细节」组。
+
+## 0.8.4-local.23 (2026-11-11)
+
+- **修上游 400（invalid schema for function spirit_goal）**：`tools/memory.ts` 之前用的是本地 identity `defineTool`，把裸字段表直接发给上游；
+  改为宿主 `@deepseek-ai/dsh-tools` 的 `defineTool`（自动包成 `{type:'object', properties, required}`）。
+- `spirit_memory` / `spirit_goal` 的 `action` 标为 `required: true`（schema 更严）；新增回归断言：注册对象的 `parameters.type === 'object'`、`action` 在 required 里。
+
+## 0.8.4-local.22 (2026-11-11)
+
+**路由修正：时间性问题走 `spirit_history`，别再拿关键词 recall 硬捣**（用户实报：问「一周做了什么」先去启动 spirit 的错误入口）：
+
+- **新工具 `spirit_history`**：专职时间性查询（默认近 7 天；>7 天加近 30 天档；始终带里程碑），**不占 memory_search 每轮配额**；
+  `days/q/limit` 三个参数，q 可省略（时间性问题本来就没关键词）。
+- **提示词写清分工**：`spirit_history` 描述里直接写明“事实/方法论/踩坑/项目规则 → 上游 memory_search；写记忆 → spirit_memory write；关键词找自写记忆 → spirit_memory recall”；
+  `spirit_memory` 描述同步改成路由口径，不再让人误以为它能只看关键词。
+- **`spirit_memory action=recent`**：旧入口也支持时间性查询（与 spirit_history 同一套选档逻辑）。
+
+## 0.8.4-local.21 (2026-11-11)
+
+- **面板「关联实体」**：记着页三档组头下方显示该档串到的实体名（`memory-list.distill[].entityNames` 从 entity 表反查），实体串联在面上可读。
+
+## 0.8.4-local.20 (2026-11-11)
+
+- **按实体查询严格化**：`entity-digest` 未对齐实体 ⇒ 空（不再拿“全部档”冒充）；week/month/里程碑都写入 `entities_json`（别名索引一次加载，200 条生成降到 **33.9ms**）。
+
+## 0.8.4-local.19 (2026-11-11)
+
+- **回响面接流程档**：回响页在 pinned 生涯补充下方展示「生涯流程（近 7 天 · 预总结）」前 3 行（不抢 pinned 位）。
+- **记着页「刷新流程档」按钮**：手动触发 `distill-digest-run` 并重新拉取三档（幂等，里程碑不重复）。
+- **README**：补「生涯流程档」段（三档/知识性归上游/实体对齐/边界收口）。
+
+## 0.8.4-local.18 (2026-11-11)
+
+**生涯流程档：从上游 L1 预总结（三档）+ 实体双向对齐**（用户口径：知识性归上游，流程性归 spirit；先不失忆）：
+
+- **开口子（边界经用户授权）**：只允许 `src/prime/l1-source.ts` 只读上游记忆库 `l1_records`/`graph_nodes`；门禁 task_7.3 改为“收口允许 + 正向断言”（仅该文件可出现库路径/表名）。
+- **三档防失忆**：`distill_digest` 三档——`week`（近 7 天，ISO 周）/`month`（近 30 天，YYYY-MM）/`milestone`（done/交付语义，近 90 天，**只增不改**，按上游 record_id 去重）；摘要为空不覆盖旧档，上游不可用保留旧档；启动 25s + 每日 + 手动刷新（`distill-digest-run`）。
+- **知识性零正文**：`work_fact/work_method/踩坑/决定/规范` 一律不落正文，只建 `entity_record_ref`（实体→上游 record_id）；查询引导 `memory_search`。
+- **实体双向对齐**：`entity_alias`（spirit 名/别名归一）+ `entity_upstream_link`（上游 graph_node/repo_key/workspace）；**只建链接不新建/不合并实体**；`spirit_memory recall entity=<名>` 可按实体取三档流程行 + 知识引用计数。
+- **schema v18**：`distill_digest` 重建为 `(category,tier,period_key)` 主键，新增实体三表；迁移 `17→18` 幂等回填。
+- **面板**：记着页三档分组（近 7 天/近 30 天/里程碑）；空档显示（空）。
+
+## 0.8.4-local.17 (2026-11-11)
+
+- **搜索结果行内展开详情**（用户要求：条目展示对了，但要看详细内容）：每条命中多一个「展开/收起」，
+  新端点 `record-detail` 按类型给明细（不跳页）：
+  - 任务线：状态 / 下一步 / 记录时间 / **交付列表**（最多 6 条，只算未取代的归属）/ 工作区；
+  - 交付：摘要 / 记录时间 / 会话 / 来源；
+  - 体验：一句话残句 / 情绪三连 / 在意度 / 来源 / 时间 / 会话；
+  - 记着：账本+类型 / 是否钉住 / 时间；目的：状态 / 为什么 / 时间；实体：类型 / 在意度 / 别名 / 时间。
+  详情按需取、取过缓存；找不到如实说「这条记录不在了」。体验轨与本体轨分两个读面文件，继续守 TA.6(b)。
+
+## 0.8.4-local.16 (2026-11-11)
+
+- **号查不到时继续走文本搜**：以前只要是“像 echo 号”的输入就停在注册表空结果（碎片号尤其明显），
+  现在 `id` 命中才用号模式；号查不到 ⇒ 自动回落到全域文本搜，短片段/写错号都能看到真实命中或诚实的空结果。
+
+## 0.8.4-local.15 (2026-11-11)
+
+- **星图定位支持“有号无星”的任务记录**（用户实报：`echo-4238aab1f51a` 定位失败）：
+  任务线/记着/目的本身不是星点，以前只回一句“没找到”。现在 `echo-locate` 每条命中附带
+  `starEchoIds`（交付/体验=自身；**任务线=它的交付点**；无星点类=空），星海定位按此
+  顺着找到对应星点并弹出卡片；实在无星点才如实提示「这条记录本身没有星点……可在翻阅里打开」。
+- **星海定位框支持模糊/文本**：输入不是 echo 号（或号命中但无星点）⇒ 自动回落全域文本搜，
+  取第一条带星点的命中定位——不必先猜是哪个类型。
+
+## 0.8.4-local.14 (2026-11-11)
+
+- **按 echo 号搜索修好（不是正则，是归一化）**：展示短号去连字符、库里存带连字符的全号，
+  直接前缀 LIKE 会在 UUID 第 8 位跨连字符时全部落空（用户实报：星图卡片上看得见的号搜不到）。
+  改为两侧都 `REPLACE(echo_id,'-','')` 后比前缀——短号/全号/去前缀三种输入都能命中。
+- **搜索打通（v0.8.14 全域）**：翻阅两处搜索框统一走同一套：先试号（注册表），不是号就跨类型搜
+  任务/交付/体验/记着/目的/实体（新端点 `spirit-search`，体验轨单独文件守法 TA.6(b) 门禁），
+  命中块带 kind + 标题 + echo 号 + 时间 + 「打开」/「星图定位」；不再“因为当前分页的类型搜不到”。
+- **星海设置行只在星海显示**：辉光/组织星盘/高质量辉光/只看本轮/主题/范围/echo 定位等，
+  切到人设/翻阅/做梦时不再顶在页头（用户实报：翻阅页像误入另一个视图）。
+
+## 0.8.4-local.13 (2026-11-11)
+
+- 搜索框加稳定标记（`data-spirit="onto-search-input"` / `"entries-search-input"` / `"sea-locate-input"`）：
+  真机验证与后续 e2e 用稳定选择器定位（合成 input 事件驱动不了受控框，真实键盘注入需要可寻址的锚点）。
+
+## 0.8.4-local.12 (2026-11-11)
+
+**用 echo 号搜索记录 + 星图定位**（用户实报：目前还无法使用 id 搜索条目和定位星图）：
+
+- **新端点 `echo-locate`**：`echo-xxxx` / 短码 / 全 UUID / 去前缀都能查——注册表 `echo_identity` 前缀匹配（不扫汇总表），再回 `echo_ref` 补标题、记录时间、最近回响号；不是号查询 ⇒ `idQuery:false`，调用方继续文本搜。
+- **翻阅搜索接入**：本体搜索与条目流搜索先试号查询，号命中则在列表上方出「按 echo 号找到的记录」块（kind + 标题 + echo 短号 + 记录时间 + 「打开」+「星图定位」）；号查询不再拿号去拼文本 LIKE（避免“这个搜索词没有命中”的假空态）。
+- **星图定位**：星海头部新增 echo 号输入框 + 「定位」；`seaIntent` 支持 `focusEchoId`，星图就位后按短号/全号匹配星点并选中（弹详情卡）；找不到时如实提示，不假装成功。
+
+## 0.8.4-local.11 (2026-11-11)
+
+**编号模型 v2：记录持 echo 号、回响持 recall 号**（用户口径：这些记录有 echo 号，回响记录有 recall/flashback 号；UUID 级别避免重复）。
+
+- **身份层** `src/echo/identity.ts`：`echo-<uuid>` 由注册表 `echo_identity(kind, mem_id UNIQUE)` 保证“一记录一号”（跨会话/重启同号，不重生）；`recall-<uuid>` 一轮注入一个；短号 = UUID 前 12 位，全号进 tooltip。
+- **schema v15→v16**：新增 `echo_identity`；`echo_ref.record_ts`（记录自身时间）、`echo_step.flashback`；迁移把旧 `echo:<kind>:<id>` → echo UUID、旧 `echo-<ts>` → recall UUID（幂等、不重生）。
+- **读面**：`echo-records`（旧名 echo-refs 保留一版）；`inject-echo` 返回 `records[] + recall{recallId,at,flashback} + tone`；**星图点/条目流/任务线/本周/记着/目的 全部下发 `echoId`**。
+- **UI**：星图详情卡与翻阅各列表显示 `记录时间 + echo-xxxx`；回响面新增 `recall-xxxx · 时间 [FLASHBACK]` 事件头，记录行带 echo 短号。
+- **回填**：水位 `echo.records.v2`，按注册表领号；重跑合并不重生。
+
+## 0.8.4-local.10 (2026-11-11)
+
+回响面渲染**组件化**（可测）：`EchoToneBar` / `EchoRefsList` 抽到 `client/src/sea/echo-refs-list.ts`，sea-records 只负责取数与回调。新增元素树渲染测试（`tests/sea-echo-rows.test.ts`）：钉住行文字（`plugin-9lang-five-dim ×3`）、`data-spirit="echo-ref-title"`、tooltip 里的 `echo:<kind>:<id>`、原文展开/「早期落档」话术、空态文案；语气栏钉住徽标与状态/开场各一行。行为与 local.9 一致，只是把「只能靠肉眼」的部分变成可断言。
+
+## 0.8.4-local.9 (2026-11-11)
+
+补齐回响引用面的**可点、可测、可量**：
+
+- **点行定位真源**：引用行标题变成按钮，点击按 kind 跳到对应视图（task/delivery → 本体任务线；memory/goal → 记着；experience → 条目流；未知 kind → 条目流）。原来只有「原文」，用户看得到引用却走不到那条记忆。
+- **纯函数抽离 + 单测**：新增 `client/src/sea/echo-view.ts`（`echoRefLabel`/`echoToneLines`/`echoRefTarget`），测试直接钉「行文字是什么、语气几行、点开去哪」——行文字绝不含 `echo:` 编号。
+- **规模闸**：`tests/perf-echo-ref.test.ts` 在 1 万行 echo_ref 上钉 50ms 预算——实测会话列表 ~4ms、关键词 0.17ms、跨会话 4.27ms。
+
+## 0.8.4-local.8 (2026-11-11)
+
+回响升级为**记忆引用模型**（echo-id ≡ memid）：回响不再只是"每轮注入观测"，而是"想起过哪些记忆条目"；语气/状态单独成栏。
+
+- **新表 `echo_ref`（schema v14→v15）**：一行 = 一条被想起的记忆，`ref_id = echo:<kind>:<id>`（映射编号，可解回 memid）；同一记忆跨轮召回合并（`times` 累计、`first/last_ts` 包络、`last_echo_step_id` 指最近那轮原文）。索引 `(session_id,last_ts)` + `(mem_id)`。`echo_step` 保留为轮次观测（为什么没卡/原文卡/语气来源）。
+- **写入链**：注入轮解析出的条目里，只收**记忆类且有 ref**（线程/反馈/事务/记着/惦记/刚刚/想起）→ `EchoRefStore.upsert`；状态/开场不产生引用行。
+- **读面**：新 op `echo-refs`（sessionId/kind/q/时间窗/limit + tone）；`inject-echo` 附带 `refs` 与 `tone`；投影 `spiritEcho` 升 **v6**（`refs[]` + `tone?`，新增字段存在才校验，老帧不破）。
+- **回响页（星海）**：主列表改引用行——kind 徽标 + 内容标题 + `×N` + 时间 + 「原文」（按 lastEchoStepId 取注入卡）；顶部独立「此刻/语气」栏（标特殊格式·非引用）；轮次观测折叠保留。
+- **回填**：`echo-refs-backfill` 启动错峰 20s 跑一次，仅扫近 7 天且有 text 的轮次，水位 `echo.refs.backfilled` 幂等（无 text 不猜）。
+- 清场：撤销了在途的 `echo_recall.echo_id` 残留列（版本未登记、形状不一致）。
+
+## 0.8.4-local.7 (2026-11-11)
+
+回响条目**内容优先 + memid 引用**（用户实报：侧栏条目显示的是 `echo-…127843` 编号，期望的是 `plugin-9lang-five-dim` 这种内容）：
+
+- **内容优先标题**：新增 `titleOfEntries`——标题按 线程（任务名）> 反馈 > 事务（交付句）> 记着 > 惦记 > 刚刚 > 想起 > 状态 > 开场 取；线程取 ` · ` 前那段。落档进 `echo_step.title`（v14 新列）。
+- **memid 引用**：每条条目配 `ref {kind,id,label}`（task/delivery/experience/memory/goal），回响从此能挂回具体记忆条目（等价于 memid），而不是只有观测编号。
+- **投影 wire 升 v5**：`spiritEcho.steps[]` 增 `title` 与 `refs`（新增字段“存在才校验”，老帧仍合法）；侧栏据此把行文字改成内容名，`echo-<ts>` 退回 tooltip/原文查看。
+- **schema v13→v14**：`echo_step` 加 `title`、`refs_json` 两列（老行默认空串/空数组，读侧退到 preview）。
+- 提醒：schema 里的注释只能写模板串外——本次踩了一次 `//` 进 CREATE TABLE 导致新库开不起来（已修，db.test 全部回归）。
+
+## 0.8.4-local.6 (2026-11-11)
+
+回响页从“贴整张卡”改成**条目化 + 时间对应 + 分层检索**（用户实报：要的是像 progress 条目那样的东西，不是召回记录也不是卡原文）：
+
+- **条目化**：`splitEchoEntries` 按行首标签切段（词表补上「记着」「惦记」），壳子行（`<system-reminder>`、快照声明、免责声明）全剔；无标签的续行归入上一段。回响页改为逐条渲染（标签徽章 + 内容行 + 时间），旧数据没 entries 才退回原文块。
+- **条目对应时间**（`echo-times.ts`）：状态/开场=本轮时刻（tsSource='turn'）；线程→task.updated_at、事务/反馈→txn_entry.ts_ms、刚刚/想起→本会话 experience.ts_ms（前缀匹配）、记着→model_memory.updated_at、惦记→goal.updated_at（tsSource='item'）；**查不到一律标 unknown，不编时间**。
+- **分层检索**（新端点 `echo-search`）：第一刀时间段（sinceMs/untilMs）→ 第二刀关键词（LIKE 字面量，% _ 不当通配符）→ 语义向量作为第三级预留（未接嵌入 ⇒ 如实回 `vector:'unavailable'`，不假装兜底）；回 `tier`（time/keyword/none）与 `scanned`。
+- **schema v12→v13**：`txn_entry(card_line)` + `task(title)` 两条索引——条目时间反查没索引就是全表扫（perf 闸会追）。
+- 契约：`SpiritEchoSnapshot` 加可选 `entries`（带 `ts`/`tsSource`）；旧消费方忽略即可，不破。
+
+## 0.8.4-local.5 (2026-11-11)
+
+- **星海「翻阅→回响」重启后不再空屏**（用户实报：回响页只显“还没有注入快照”）：`inject-echo` 以前只读进程内环形缓冲（重启归零），现加**回退读落档表**：内存空 ⇒ 读 `echo_step` 最近 N 条（带分段计数与卡全文），并标 `origin:'persisted'` + 会话标记，面板用「落档回看」徽标区分，不冒充实时。
+  - 两路**不混排**：内存有数据就只用内存（否则同一条会在两处各出现一次，面板无法解释）。
+  - `EchoRecallStore` 新增 `recent({sessionId?,limit?})`（sessionId 空=跨会话全局最近）与 `count(sessionId?)`；旧行没存全文的退到 preview 一行摘要。
+  - 契约：`SpiritEchoSnapshot` 加 `origin?: 'live'|'persisted'` 与 `recallId?`（供 echo-detail 取全文）；旧消费方当缺省=live，不破。
+
+## 0.8.4-local.4 (2026-11-10)
+
+- **回填顺手补摘要**：`pendingText()` 改成「缺原文**或**缺摘要」都算待补，`setText()` 在写原文时把空 `preview` 一并填上（只填空值）。v10 行原本 `preview=''`，被侧栏当成「无摘要」筛掉——补完摘要后它才重新出现在回响列表里（实测 17:47 那条已回落）。
+- 新增 `setPreview()`：已有原文只缺摘要的行只补摘要，不碰正文。
+
+## 0.8.4-local.2..3 (2026-11-10)
+
+- **一周内旧条目回抽原文**：启动后错峰跑一次回填，把近 7 天「只有摘要、没原文」的 `echo_step` 行从 DRSC 会话日志里补回整张卡（`src/echo/text-backfill.ts`）。
+  - 匹配优先级：摘要归一化后一致 → 时间最近（摘要对不上放宽到 10 分钟，摘要为空只用 2 分钟）；一张卡只配一条，老条目先补。
+  - **忽略空白的比对**：DRSC `redact=1` 会在分段边界插空格（实测 `线程：` 变 `线 程：`），逐字比较会把本该匹配的两卡判成不同人。
+  - 纪律：只补空值、不覆盖已有原文；窗口 7 天 / 单次 500 条 / 单会话候选 200 张有顶；扫描或库缺席 ⇒ 整段休眠。
+  - 实测（本仓真库）：5 条历史注入行全部补齐原文，重启后仍在。
+
+## 0.8.3-local.1 (2026-11-10)
+
+- **回响条目编号 + 注入原文**：`echo_step` 新增 `id`（`echo-<ts_ms>`，旧行由迁移按 ts 回填）与 `text`（当时注入的整张卡）；新端点 `echo-detail` 按 `sessionId + id` 取原文，严格同会话定位（编号跨会话不通用）。
+- `spiritEcho` 帧（`stateVersion: 4`）条目带 `id`，侧栏据此打开原文查看器。
+- schema v11→v12：两列加法迁移。
+
+## 0.8.2-local.3 (2026-11-10)
+
+- **回响摘要清洗**：`previewOfEcho()` 只挑分段行（`状态：`/`刚刚：`/`想起：`…）用 ` · ` 连成一句，剔除 `<system-reminder>` 与「（角色体验快照…）」壳子——侧栏第一行不再是一串标签。
+- **回响条目列表**：`spiritEcho` 帧补 `steps`（最近 ≤5 轮，含跳过与摘要），`stateVersion: 3`；侧栏因此能逐条列出本会话的回响。
+
+## 0.8.2-local.2 (2026-11-10)
+
+- **schema v10→v11**：`echo_step` 加 `preview` 列（一行摘要，不存整张注入卡）；老库走加法迁移，v10 行取空串。
+
+## 0.8.2-local.1 (2026-11-10)
+
+### 新增
+
+- **回响落档（schema v10）**：新增 `echo_step`（每轮注入/跳过 + 门名 + 指纹 + 分段计数）与 `echo_recall`（本会话被「想起」的段落，同句去重、times 累计）。回响从「进程内观测灯」变成**跨重启保留**的本会话记忆面；`EchoLog` 继续当实时快照供星海「翻阅 → 回响」用。
+- **`spiritEcho` 投影换源**（`stateVersion: 2`）：view 改为 `{token, total, segments[], lastStep?}`，只含本会话被召回的回响段与上一轮决策；state 只存 `{sessionId, token}`，令牌由库派生（重启仍单调）。
+- **深链支持星图**：`dsh-spirit:open-sea` 接受 `{target: 'graph' | 'echo'}`（兼容旧 `{tab:'records', view:'echo'}`）；`graph` 直接切「星海」页签。
+
+### 验证
+
+- 768 测全绿（新增 `echo-recall-store` 8 例、投影重写 10 例、迁移链 9→10 断言）。
+
+## 0.8.1-local.3 (2026-11-10)
+
+### 修复
+
+- **回响深链恒返 `unregistered`**：宿主 0.2.2-rc.1 的严格代理下 `ctx.get('layout')` 拿不到布局服务，`查看 →` 永远打不开星海。改为四路解析（`ctx.inject(['layout'])` 捕获 → `ctx.layout` 属性 → `ctx.get` → `ctx.reflect.get`），并给回执加可选 `detail`（试过哪几路 / 抛了什么）供消费方挂 tooltip。实机回执从 `{ok:false,reason:'unregistered'}` 变为 `{ok:true}`，星海「翻阅 → 回响」真正打开。
+
+## 0.8.1-local.2 (2026-11-10)
+
+### 新增
+
+- **`spiritEcho` 服务端投影**：把每轮 `agent/pre-step` 的注入/跳过快照暴露给侧栏消费方（`dsh-brief-sidebar`）。state 只存 `{sessionId, rev}`（绝不落卡文本），`items` 只含本会话最新 20 条、每条带 160 字 `preview`，`total` 与 `inject-echo` RPC 同口径。`EchoLog` 新增 `revision()` 供 O(1) 判脏。
+- **星海回响深链**：监听 `dsh-spirit:open-sea` 事件（不可取消事件的 ack 协议），由面板主人调用 `layout.selectPanel` 并回执；`SeaPanel` 切到 `records` 页签、`SeaRecords` 切到 `echo` 子视图。未挂载 / main key 未注册分别回 `unmounted` / `unregistered`。
+
 ## Unreleased
 
 ### 修正
@@ -523,3 +814,6 @@ WebGL2 3000 点 4.5–5.1ms（与 2D 同视角对拍验证过色带分群/边网
 - 0.2.0-rc.2 的 web 壳子**不渲染 volatile 自动表单**（没有任何 client 包读 `autoGenerate`）
   ⇒ `live.*` 热改走部署面，不在设置页上
 - 不做：长期情绪检索、图谱、矛盾裁决、人设自动演化、压缩后端接管
+
+
+

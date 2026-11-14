@@ -160,17 +160,24 @@ describe('task_7.3 / 7.3b 解耦与不越界', () => {
     // v0.3.2 边界演进：主人档案要**消费** prime-memory 的只读 RPC（用户点名需求），
     // 所以禁的不再是"碰它的端点"，而是"散落式消费"：契约形状只许收在 client.ts 单文件，
     // 包引用与库直读仍是硬禁（那是把对方内部 schema 当自己依赖的开始）。
+    // v0.8.18 边界变更（用户明确授权）：生涯提取需要**预先总结** L1 流程记忆，
+    // 库直读收口到唯一文件 `../src/prime/l1-source.ts`（只读、表不在就空），其它处仍硬禁。
     const hardBan = ['dsh-prime-memory', '~/.dsh/memory'];
+    const ALLOW_L1_SOURCE = '../src/prime/l1-source.ts';
     const offenders: string[] = [];
     const endpointUsers: string[] = [];
     for (const { file, code } of readSources()) {
-      for (const needle of hardBan) if (code.includes(needle)) offenders.push(`${file} → ${needle}`);
+      for (const needle of hardBan) if (code.includes(needle) && file !== ALLOW_L1_SOURCE) offenders.push(`${file} → ${needle}`);
       if (code.includes('dsh-memory/') && file !== '../src/prime/client.ts') endpointUsers.push(file);
     }
     expect(offenders).toEqual([]);
     expect(endpointUsers).toEqual([]);
     // 正向断言：唯一消费面确实在 client.ts（否则"收口"会变成"根本没接线"的假绿）
     expect(readSources().some(({ file, code }) => file === '../src/prime/client.ts' && code.includes('dsh-memory/'))).toBe(true);
+    // 正向断言：L1 只读桥只在收口文件里出现（且有真实库路径与表名）
+    const l1Source = readSources().find(({ file }) => file === ALLOW_L1_SOURCE);
+    expect(l1Source?.code).toContain("'~/.dsh/memory/memory.db'");
+    expect(l1Source?.code).toContain('l1_records');
   });
 
   it('不直读 DRSC 的库文件（只走它的 op 面）', () => {
@@ -705,3 +712,17 @@ function userMsg(text: string): ReturnType<typeof createUserMessage> {
     source: { kind: 'user' } as never,
   });
 }
+
+/**
+ * 工具面分工闸（B-2）：`spirit_memory` 与上游 `memory_add` 语义重叠——
+ * 描述里必须把“知识性归上游”写在前面，且同时点名两个工具名，
+ * 否则模型在“该记哪”上没有任何线索，双写风险会静默回来。
+ */
+describe('工具面分工（B-2）', () => {
+  it('spirit_memory 描述声明边界并点名 memory_search / spirit_memory', () => {
+    const code = readFileSync(new URL('../src/tools/memory.ts', import.meta.url), 'utf8');
+    expect(code).toContain('只写生涯账');
+    expect(code).toContain('memory_search');
+    expect(code).toContain('spirit_memory');
+  });
+});
