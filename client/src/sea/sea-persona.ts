@@ -16,6 +16,7 @@ import type { NoticeKind, VoiceTier } from '../../../src/types.js';
 import { VOICE_WORDS } from '../../../src/words.js';
 import { copyOf } from '../copy.js';
 import type { RpcFn } from '../rpc.js';
+import { useHtmlLang } from '../use-html-lang.js';
 import { NOTICE_LABEL, TRIGGER_LABEL, TRIGGER_ORDER } from './sea-labels.js';
 
 const H_STYLE: CSSProperties = { margin: '0 0 6px', fontSize: 13, color: '#9fc1ff' };
@@ -60,7 +61,7 @@ function textToLines(text: string): string[] {
 
 export function SeaPersona(props: { rpc?: RpcFn; sessionId?: string }) {
   const { rpc, sessionId } = props;
-  const copy = copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
+  const copy = copyOf(useHtmlLang());
   const [card, setCard] = useState<SpiritPersonaView | null>(null);
   const [draft, setDraft] = useState<SpiritPersonaPatch>({});
   const [preview, setPreview] = useState<SpiritPersonaPreview | null>(null);

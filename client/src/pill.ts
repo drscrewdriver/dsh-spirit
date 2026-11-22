@@ -11,6 +11,7 @@ import { createElement, useCallback, useEffect, useRef, useState, type CSSProper
 import type { RpcFn } from './rpc.js';
 import { copyOf } from './copy.js';
 import { sessionIdOf, type SeatProps } from './env.js';
+import { useHtmlLang } from './use-html-lang.js';
 
 type Mode = 'on' | 'bypass' | 'off';
 
@@ -51,7 +52,7 @@ const itemStyle = (active: boolean): CSSProperties => ({
 export function SpiritPill(props: { rpc?: RpcFn } & SeatProps) {
   const rpc = props.rpc;
   const sessionId = sessionIdOf(props);
-  const copy = copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
+  const copy = copyOf(useHtmlLang());
   const [mode, setMode] = useState<Mode>('on');
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);

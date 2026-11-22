@@ -2,6 +2,26 @@
 
 本项目的所有值得记录的变更都写在这里。版本号遵循语义化版本。
 
+## 0.9.2 (2026-11-22)
+
+**语言切换重渲染触发（html lang 订阅面）· 检查先行，按结论接线**
+
+- **缺口（审计结论）**：全仓无任何语言变化观察机制——切语言本身不触发重渲染，各面文案
+  跟随全靠自驱轮询或用户交互。输入栏 pill 与星海四面（主面板/翻阅/线索头/人设）在无交互时
+  **无限期滞留旧语言**；最痛的形态是启动期冻结：宿主写 `<html lang>` 晚于 client apply
+  （entry.ts 头注实测，初始文档 `lang="en"`），zh 用户开屏看到英文 pill，直到点击才自愈。
+- **修复**：新增 `client/src/use-html-lang.ts`——MutationObserver 监听 documentElement 的
+  `lang` 属性（attributeFilter 只认 lang，单例防重复 observe）+ `useSyncExternalStore` 三参
+  形态；`subscribeHtmlLang` 稳定引用防反复重订阅；无 document 环境（node 用例）空订阅不抛。
+  真相源保持 html lang 而非宿主 locale 服务——spirit 刻意不声明宿主服务（inject 挂起风险），
+  MutationObserver 全宿主可用，多线适配零新依赖。
+- **接线（只接审计不达标的 5 面）**：pill / SeaPanel / SeaRecords / SeaTopics / SeaPersona
+  各自 `copyOf(useHtmlLang())`，同时治好启动期冻结。达标面不动：设置分节（轮询 ≤5s）、
+  做梦 tab（长觉轮询 ≤30s）、slot 标签（thunk 每读现调，宿主 resolveSlotLabel 源码级证实）。
+- **守卫**：`tests/client-html-lang.test.ts` 5 例钉死「lang 变化必须通知订阅者 / 观察者只挂
+  documentElement 只认 lang / 第二订阅者复用同一观察者 / 退订后不再通知 / 无 document 空订阅」。
+  全链 909 tests 绿（904 存量零回归 + 5 新增）。逐面证据表见计划 spirit-locale-rerender findings。
+
 ## 0.9.1 (2026-11-16)
 
 **星图 L1 交付入图 · 错误记录降噪（连击冷却 + 跨 workspace 去重）· 交付 id 前缀单源化**

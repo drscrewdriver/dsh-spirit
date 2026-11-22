@@ -13,6 +13,7 @@ import type { SpiritSeaGraph, SpiritSeaPoint } from '../../../src/contract.js';
 import { SPIRIT_VERSION } from '../../../src/contract.js';
 import { copyOf } from '../copy.js';
 import { sessionIdOf, type SeatProps } from '../env.js';
+import { useHtmlLang } from '../use-html-lang.js';
 import type { RpcFn } from '../rpc.js';
 import { SeaPersona } from './sea-persona.js';
 import { SeaRecords } from './sea-records.js';
@@ -57,7 +58,7 @@ function formatTime(ms: number): string {
 
 export function SeaPanel(props: SeaPanelProps) {
   const { rpc } = props;
-  const copy = copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
+  const copy = copyOf(useHtmlLang());
   const seatSessionId = sessionIdOf(props);
   const storageRef = useRef(browserStorage());
   const mountedRef = useRef(true);

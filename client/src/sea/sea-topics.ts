@@ -11,6 +11,7 @@ import { createElement, useCallback, useEffect, useRef, useState, type CSSProper
 import type { SpiritInsightView } from '../../../src/contract.js';
 import { copyOf } from '../copy.js';
 import type { RpcFn } from '../rpc.js';
+import { useHtmlLang } from '../use-html-lang.js';
 
 const HEAD_STYLE: CSSProperties = { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid rgba(120,160,255,.14)' };
 const LIST_STYLE: CSSProperties = { listStyle: 'none', padding: '10px 14px', margin: 0, display: 'grid', gap: 8, overflowY: 'auto' };
@@ -35,7 +36,7 @@ export interface SeaTopicsProps {
 
 export function SeaTopics(props: SeaTopicsProps) {
   const { rpc } = props;
-  const copy = copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
+  const copy = copyOf(useHtmlLang());
   const [topics, setTopics] = useState<TopicEntry[]>([]);
   const [conflicts, setConflicts] = useState<SpiritInsightView[]>([]);
   const [error, setError] = useState<string | null>(null);

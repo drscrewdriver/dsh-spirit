@@ -16,6 +16,7 @@ import { createElement, useCallback, useEffect, useRef, useState, type CSSProper
 import type { SpiritJournalRow, SpiritTxnRow, SpiritTaskRow, SpiritEntityNode, SpiritEvaluationRow, SpiritEchoSnapshot, SpiritEchoRecordRow, SpiritEchoTone, SpiritEchoRecallInfo, SpiritEchoLocateHit, SpiritSearchHit, SpiritRecordDetailResult, SpiritMemoryListResult } from '../../../src/contract.js';
 import { copyOf } from '../copy.js';
 import type { RpcFn } from '../rpc.js';
+import { useHtmlLang } from '../use-html-lang.js';
 import { SeaTopics } from './sea-topics.js';
 import { echoRefTarget, shortEcho } from './echo-view.js';
 import { EchoRecallHeader, EchoRefsList, EchoToneBar } from './echo-refs-list.js';
@@ -54,7 +55,7 @@ export interface SeaRecordsProps {
 
 export function SeaRecords(props: SeaRecordsProps) {
   const { rpc, refreshToken, requestedView, viewToken } = props;
-  const copy = copyOf(typeof document === 'undefined' ? undefined : document.documentElement.lang);
+  const copy = copyOf(useHtmlLang());
   /** 记录号徽标（v0.8.11）：星图/翻阅都要看得到 echo id（短号展示，全 UUID 进 tooltip）。 */
   const echoChip = (echoId: string | undefined): ReturnType<typeof createElement> | null =>
     echoId === undefined || echoId === ''
