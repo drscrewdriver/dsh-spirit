@@ -132,6 +132,7 @@ export const spiritSchema: ConfigSchema = Schema.object({
     userSnippet: bool(SPIRIT_DEFAULTS.capture.userSnippet),
     maxQuoteChars: num('capture.maxQuoteChars', SPIRIT_DEFAULTS.capture.maxQuoteChars),
     gapThresholdMs: num('capture.gapThresholdMs', SPIRIT_DEFAULTS.capture.gapThresholdMs),
+    cooldownMs: num('capture.cooldownMs', SPIRIT_DEFAULTS.capture.cooldownMs),
   }),
   drsc: Schema.object({
     enabled: bool(SPIRIT_DEFAULTS.drsc.enabled),
@@ -229,6 +230,7 @@ export const SCHEMA_FIELD_KEYS: readonly string[] = [
   'capture.userSnippet',
   'capture.maxQuoteChars',
   'capture.gapThresholdMs',
+  'capture.cooldownMs',
   'drsc.enabled',
   'drsc.baseUrl',
   'drsc.probeCacheTtlMs',

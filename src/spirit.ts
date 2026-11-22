@@ -13,6 +13,7 @@
  */
 
 import { compileTurn } from './experience/compile.js';
+import { COOLDOWN_TRIGGERS } from './experience/select.js';
 import type { TurnWatcher } from './experience/watcher.js';
 import { previousTone } from './experience/cross-session.js';
 import type { ExperienceStore } from './store/experience.js';
@@ -401,6 +402,21 @@ export class Spirit {
     }
     if (compiled.draft === undefined) return;
     const draft = compiled.draft;
+    /**
+     * 连击冷却（v0.9.1）：同 workspace 在 `capture.cooldownMs` 窗内同 trigger 已记过一条 ⇒ 本轮跳过落库。
+     * 治的是"同一个坑每轮刻一道同样的疤"——失败/恢复是连击型事件族，逐轮入库把星图刷成试错回声墙。
+     * 只读 trigger/workspace/ts_ms 三个结构化字段，不碰文本（注入红线正交）；窗只覆盖 COOLDOWN_TRIGGERS，
+     * 低频族不受影响。位置必须在 compile 之后、append 之前：compile 是纯函数拿不到历史，冷却是 IO 判定，
+     * 两者分开才不破 compileTurn 的同态断言契约。cooldownMs<=0 ⇒ 关闭冷却（退回每轮必记）。
+     */
+    const cooldownMs = this.deps.cfg().capture.cooldownMs;
+    if (cooldownMs > 0 && COOLDOWN_TRIGGERS.includes(draft.trigger)) {
+      const last = this.deps.store.lastTsByTrigger(input.workspaceId, draft.trigger, input.now - cooldownMs);
+      if (last !== undefined) {
+        this.deps.logger.info(`[spirit] 冷却窗内同族事件（${draft.trigger}）跳过落库，距上次 ${Math.round((input.now - last) / 1000)}s`);
+        return;
+      }
+    }
     /**
      * 用户原文只在**显式开启采集**时进 `fact.quote`（并按 maxQuoteChars 截断）。
      * 位置必须在 compile 之后：情绪判定那条链永远不该看到文本（信号包带自由文本会被整包拒），

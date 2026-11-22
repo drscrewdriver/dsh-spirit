@@ -2,6 +2,25 @@
 
 本项目的所有值得记录的变更都写在这里。版本号遵循语义化版本。
 
+## 0.9.1 (2026-11-16)
+
+**星图 L1 交付入图 · 错误记录降噪（连击冷却 + 跨 workspace 去重）· 交付 id 前缀单源化**
+
+- **交付 id 前缀单源化**：新增 `ontology/delivery-id.ts`，`isDeliveryId()` 同时认会话抽取轨
+  `dlv-` 与上游 L1 重建轨 `l1-dlv:`。此前星图投影（`rpc.ts` sea-graph）只按 `startsWith('dlv-')`
+  筛，把 `prime/l1-ingest.ts` 重建出的 L1 交付全数挡在图外（用户实报「从 prime-memory 整理出来的
+  记忆在星图里无显示」）；回填水位自愈（`backfill.ts`）同口径修正。判定收成一个函数 + 表驱动测试，
+  杜绝第三次前缀断裂。
+- **错误记录降噪 · 连击冷却**：新增 `capture.cooldownMs`（默认 600000，热更键，钳位 `[0, 3600000]`）。
+  同一 workspace 在窗内命中同 `trigger` 的**连击型事件族**（`tool_failure` / `recovery`）只记首条，
+  后续跳过落库——治的是"同一个坑每轮刻一道同样的疤"（实测 82 条经历 71 条是失败轮）。判定只看
+  `trigger/workspace/ts_ms` 三个结构化字段，不读任何文本（与情绪链路注入红线正交）；`cooldownMs=0`
+  退回每轮必记。落库侧加 `exp_workspace_trigger_ts` 索引支撑冷却窗查询。
+- **错误记录降噪 · 跨 workspace 去重**：`dreamDuplicateGroups` 分组键从 `(session_id, trigger, text)`
+  改为 `(workspace_id, trigger, text)`。真实噪音是跨会话长出来的（同仓反复踩坑、每次换 session_id），
+  旧键下本机实测 0 组重复、新键 2 组（73 行同句全在键差里）。仍保留 workspace 维度（跨项目巧合同句
+  各记各的），判据依旧等值保守（宁漏不误合并）。存量清理走 `supersede` 通道（可回滚），无物理删。
+
 ## 0.9.0 (2026-11-14)
 
 **检索可搜索化（schema v19）· 召回链质量 · 淡出台阶 0-7-30 · 运维闸门 · 实体卫生（schema v20）**

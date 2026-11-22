@@ -70,11 +70,12 @@ describe('sea-graph', () => {
     if (!result.ok) expect(result.error.code).toBe('bad-request');
   });
 
-  it('本体层开时交付行进图（v0.6）：dlv- 前缀才画，步骤遥测行不进星图', async () => {
+  it('本体层开时交付行进图（v0.6 / v0.9.1）：两轨交付前缀都画，步骤遥测行不进星图', async () => {
     const { deps } = makeDeps();
     (deps as { txn?: unknown }).txn = {
       listRecent: () => [
         { id: 'dlv-s1/2', tsMs: 2_500, sessionId: 's1', turnSeq: 2, cardLine: '我交付了 X', summary: '摘要' },
+        { id: 'l1-dlv:rec9', tsMs: 2_700, sessionId: 'l1', turnSeq: 0, cardLine: 'L1 重建交付：整理 prime 记忆', summary: null },
         { id: 'txn-s1/3', tsMs: 2_600, sessionId: 's1', turnSeq: 3, cardLine: '步骤行不该出现', summary: null },
       ],
     };
@@ -83,6 +84,7 @@ describe('sea-graph', () => {
     if (!result.ok) return;
     const graph = result.value as { points: Array<{ id: string; kind?: string }> };
     expect(graph.points.some((p) => p.id === 'dlv-s1/2' && p.kind === 'delivery')).toBe(true);
+    expect(graph.points.some((p) => p.id === 'l1-dlv:rec9' && p.kind === 'delivery'), '上游 L1 重建交付必须入图').toBe(true);
     expect(graph.points.some((p) => p.id === 'txn-s1/3'), '非交付行不入图').toBe(false);
   });
 });

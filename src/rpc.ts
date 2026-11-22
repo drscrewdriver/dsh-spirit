@@ -32,6 +32,7 @@ import type { EdgeStore } from './store/edges.js';
 import { composePersonaText } from './persona/render.js';
 import { parsePersonaMarkdown, renderPersonaMarkdown } from './persona/markdown.js';
 import { SEA_DELIVERY_MAX, SEA_WINDOW_LIMIT, buildSeaScene } from './sea/scene.js';
+import { isDeliveryId } from './ontology/delivery-id.js';
 import { exportSessionEntries } from './store/journal-retention.js';
 import type { ExperienceStore } from './store/experience.js';
 import type { TxnStore, TxnEntry } from './store/transaction.js';
@@ -1217,11 +1218,12 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         },
         focusIds,
         // 本体交付点（v0.6）：本体层开且事务轨装配才取；翻阅面（本周/本体）有的记录，星图上也该有。
-        // 只取 dlv- 前缀行（交付），不拉 tier3 步骤遥测；backfill 行照画——排除只针对注入，不针对展示。
+        // 交付判定走单源 `isDeliveryId`（v0.9.1）：会话抽取轨 `dlv-` 与上游 L1 重建轨 `l1-dlv:` 都画；
+        // 不拉步骤遥测行（txn-）。backfill/l1 行照画——排除只针对注入，不针对展示。
         deliveries: cfg.ontology.enabled && deps.txn !== undefined
           ? deps.txn
               .listRecent(SEA_DELIVERY_MAX, { ...(scope === 'session' ? { sessionId } : {}) })
-              .filter((row) => row.id.startsWith('dlv-'))
+              .filter((row) => isDeliveryId(row.id))
               .map((row) => ({
                 id: row.id, tsMs: row.tsMs, sessionId: row.sessionId, turnSeq: row.turnSeq,
                 cardLine: row.cardLine, summary: row.summary ?? null,

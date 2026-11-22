@@ -1452,6 +1452,16 @@ export interface SpiritConfig {
     maxQuoteChars: number;
     /** `long_gap` 判定阈值。 */
     gapThresholdMs: number;
+    /**
+     * 连击型事件族（tool_failure / recovery）的同工作区记录冷却窗（v0.9.1）。
+     *
+     * 症状：同一个坑反复踩时每轮都记一句同样的话——实测 82 条经历里 71 条是失败轮，
+     * 同句等值重复 40+31 条，星图被自己的试错刷屏。窗内同 workspace 同 trigger 只记首条，
+     * 后续轮跳过落库（人格仍在"记着这一下"，只是不必重复刻同一道疤）。
+     * 0 ⇒ 关闭冷却（退回每轮必记）。判定只看 trigger/workspace/ts_ms 三个结构化字段，
+     * 不读任何文本——情绪与记录链路的注入红线（experience/events.ts）不因本键松动。
+     */
+    cooldownMs: number;
   };
   drsc: {
     /** 历史路总开关；未装 ⇒ 整段省略，不影响近因路。 */
@@ -1637,7 +1647,7 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
   bias: { enabled: false, halfLifeMs: 5_400_000 },
   tier: { stepCap: 1, staleAfterMs: 600_000 },
   journal: { retentionDays: SPIRIT_DEFAULTS_RETENTION_DAYS, dryRun: true },
-  capture: { userSnippet: false, maxQuoteChars: 160, gapThresholdMs: 180_000 },
+  capture: { userSnippet: false, maxQuoteChars: 160, gapThresholdMs: 180_000, cooldownMs: 600_000 },
   drsc: { enabled: true, baseUrl: '', probeCacheTtlMs: 15_000, timeoutMs: 5_000 },
   // 7 天：缺省下“上周的事”约半亮，“上月的事”接近沉底，与“星海看长时段”的用途对得上。
   sea: { agingHalfLifeMs: 604_800_000 },
@@ -1723,6 +1733,7 @@ export const SPIRIT_RANGES: Record<string, readonly [number, number]> = {
   'journal.retentionDays': [0, 3_650],
   'capture.maxQuoteChars': [0, 400],
   'capture.gapThresholdMs': [10_000, 3_600_000],
+  'capture.cooldownMs': [0, 3_600_000],
   'drsc.probeCacheTtlMs': [1_000, 600_000],
   'drsc.timeoutMs': [200, 20_000],
   'ledger.maxAgeMs': [0, 2_592_000_000],
@@ -1888,7 +1899,7 @@ export const SPIRIT_OWNER_FILE_VERSION = 1;
 /** `session-modes.json` 文件形状版本。 */
 export const SPIRIT_MODES_FILE_VERSION = 1;
 /** 插件版本（与 package.json / dsh.plugin.json 同串，由门禁核对）。 */
-export const SPIRIT_VERSION = '0.9.0';
+export const SPIRIT_VERSION = '0.9.1';
 
 
 

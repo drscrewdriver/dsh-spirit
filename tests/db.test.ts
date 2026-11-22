@@ -26,7 +26,7 @@ function tablesOf(db: DatabaseSync): string[] {
 }
 
 describe('openSpiritDb', () => {
-  it('建出 experience / experience_cues / mood_state / meta 与六个索引，并写入版本号', () => {
+  it('建出 experience / experience_cues / mood_state / meta 与七个索引，并写入版本号', () => {
     const opened = openSpiritDb(dir);
     if (!opened.ok) throw new Error('应打开成功');
     const names = tablesOf(opened.db);
@@ -35,7 +35,8 @@ describe('openSpiritDb', () => {
     }
     expect(readStoredVersion(opened.db)).toBe(SPIRIT_DB_SCHEMA_VERSION);
     // v5：翻阅 tab 补了 exp_ts（全库分页）与 exp_trigger_ts（类型筛选）
-    expect(names.filter((n) => n.startsWith('exp_'))).toHaveLength(6);
+    // v0.9.1：冷却窗补 exp_workspace_trigger_ts（workspace+trigger+ts 的 MAX 查询形状）⇒ 六个变七个
+    expect(names.filter((n) => n.startsWith('exp_'))).toHaveLength(7);
     // 藏起列在新库直接带出（旧库靠 4→5 链步补齐，见下方迁移例）
     const cols = (opened.db.prepare(`PRAGMA table_info(experience)`).all() as Array<{ name: string }>).map((r) => r.name);
     expect(cols).toContain('hidden_at');

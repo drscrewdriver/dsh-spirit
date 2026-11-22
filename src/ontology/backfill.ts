@@ -15,6 +15,7 @@ import type { SpiritConfig, SpiritBackfillStatus, SpiritBackfillRunResult } from
 import type { MinimalLogger } from '../persona/store.js';
 import type { DrscSessionRow } from '../drsc/client.js';
 import { dropIfSecret } from './scrub.js';
+import { deliveryIdLikeClause } from './delivery-id.js';
 import { resolveWorkspaceId } from './workspace.js';
 import type { OntologySignals } from './watcher.js';
 import type { OntologyExtractor } from './extractor.js';
@@ -121,13 +122,18 @@ function writeDone(db: DatabaseSync, done: ReadonlySet<string>): void {
 }
 
 /**
- * 水位自愈：done 却库里查无该会话任何 dlv 行 ⇒ 旧版"零产出也当 done"写下的毒水位，摘掉重进本次重建。
+ * 水位自愈：done 却库里查无该会话任何交付行 ⇒ 旧版"零产出也当 done"写下的毒水位，摘掉重进本次重建。
  * 真没正文可记的会话会每次重建白跑一次 sessionAll（不花模型额度）——比历史永久丢失好。
  * 返回被摘掉的数（调用方落日志）。
+ *
+ * 交付谓词走单源 `deliveryIdLikeClause`（v0.9.1）：`dlv-`（本轨抽取）与 `l1-dlv:`（上游 L1 重建）
+ * 都算"有产出"，否则 L1 重灌会把自愈口径带偏。L1 行的 session_id 恒为 `l1`、不在 DRSC done 集内，
+ * 因此只会扩大 produced 集合的覆盖面、不会替某个真实会话伪造背书。
  */
 function prunePoisonedDone(db: DatabaseSync, done: Set<string>): number {
   try {
-    const rows = db.prepare(`SELECT DISTINCT session_id FROM txn_entry WHERE id LIKE 'dlv-%'`).all() as Array<{ session_id: unknown }>;
+    const { clause, params } = deliveryIdLikeClause();
+    const rows = db.prepare(`SELECT DISTINCT session_id FROM txn_entry WHERE ${clause}`).all(...params) as Array<{ session_id: unknown }>;
     const produced = new Set(rows.map((r) => String(r['session_id'])));
     let pruned = 0;
     for (const id of [...done]) {

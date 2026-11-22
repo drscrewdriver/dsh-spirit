@@ -98,3 +98,15 @@ export function wantsDetail(trigger: TriggerKind, persona: PersonaCard): boolean
 
 /** 供测试与面板核对事件族完备性（每个 trigger 都必须有候选表，漏一个就跑不出 notice）。 */
 export const COVERED_TRIGGERS: readonly TriggerKind[] = Object.keys(TRIGGER_NOTICE_CANDIDATES) as TriggerKind[];
+
+/**
+ * 连击型事件族（v0.9.1）：会在一小段时间里反复命中、且每次都是同一句话的 trigger。
+ *
+ * 只有这两个族吃 `capture.cooldownMs` 冷却窗（落库侧跳过同 workspace 窗内重复）：
+ * - `tool_failure`：同一个坑反复试——实测 82 条里 71 条是它，同句等值重复 40+31 条；
+ * - `recovery`：失败后的试探恢复常与失败连击成对出现，同理由冷却兜住。
+ * `user_interruption` / `task_close` / `neutral` / `long_gap` 低频且各带独立信息量，加窗只会漏真事，不纳入。
+ * 单源放这里（trigger 词汇表的本命模块），spirit.ts 落库路径与测试都从这里取，别处不复制名单。
+ */
+export const COOLDOWN_TRIGGERS: readonly TriggerKind[] = [TRIGGER_TOOL_FAILURE, TRIGGER_RECOVERY];
+

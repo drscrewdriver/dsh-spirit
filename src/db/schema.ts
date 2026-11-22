@@ -63,6 +63,9 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS exp_ts ON experience (ts_ms)`,
   // 筛选器暴露的维度配齐索引才上线（Agent B 裁决：暴露即补索引，不做无索引版本）
   `CREATE INDEX IF NOT EXISTS exp_trigger_ts ON experience (trigger, ts_ms)`,
+  // 冷却窗（v0.9.1）：MAX(ts_ms) by workspace_id + trigger + ts_ms 界——前导列是 workspace_id，
+  // exp_trigger_ts（trigger 前导）覆盖不到这个形状；同「暴露即补索引」纪律上线。
+  `CREATE INDEX IF NOT EXISTS exp_workspace_trigger_ts ON experience (workspace_id, trigger, ts_ms)`,
   `CREATE TABLE IF NOT EXISTS experience_cues (
      entry_id TEXT NOT NULL,
      cue TEXT NOT NULL

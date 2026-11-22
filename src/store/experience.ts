@@ -663,6 +663,29 @@ export class ExperienceStore {
     }
   }
 
+  /**
+   * 连击型事件族的冷却窗查询（v0.9.1）：某 workspace 在 `[sinceMs, +∞)` 内最近一次该 trigger 的落库时刻。
+   * 命中 ⇒ 调用方跳过本轮记录（同一道疤不必重复刻）。只看 trigger/workspace/ts_ms 三个结构化字段，
+   * 不读任何文本——与情绪链路的注入红线（experience/events.ts）正交。
+   * 幽灵（已 superseded）与藏起来的行不算数：它们不再代表"当前记着的状态"。db=null ⇒ undefined（降级不冷却）。
+   */
+  lastTsByTrigger(workspaceId: string, trigger: string, sinceMs: number): number | undefined {
+    const db = this.deps.db;
+    if (db === null) return undefined;
+    try {
+      const row = db
+        .prepare(
+          `SELECT MAX(ts_ms) AS ts FROM experience
+           WHERE workspace_id = ? AND trigger = ? AND ts_ms >= ? AND superseded_by IS NULL AND hidden_at IS NULL`,
+        )
+        .get(workspaceId, trigger, sinceMs) as Record<string, SQLOutputValue> | undefined;
+      const ts = row?.['ts'];
+      return typeof ts === 'number' && Number.isFinite(ts) ? ts : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** 全库未取代条目总数（星海顶部「已加载 X / 总量 Y」用）。 */
   countAll(): number {
     if (this.deps.db === null) return this.mirror.filter((entry) => entry.supersededBy === undefined && entry.hiddenAt === undefined).length;
@@ -805,7 +828,12 @@ export class ExperienceStore {
   }
 
   /**
-   * 做梦的查重扫描（v5）：同会话同 trigger 同正文的等值重复组（未藏未取代）。
+   * 做梦的查重扫描（v0.9.1）：**同 workspace** 同 trigger 同正文的等值重复组（未藏未取代）。
+   *
+   * 分组键去掉了 session 维度（旧口径 `(session_id, trigger, text)`）：真实噪音恰恰是跨会话长出来的
+   * ——同一个坑在同一个仓里反复踩，每次换个 session_id，等值句永远分不到同组（本机实测：旧键 0 组、
+   * 新键 2 组，同句重复 73 行全在键差里）。workspace 是主题边界，跨 workspace 不合并（不同项目的
+   * 巧合同句各记各的）。保留 (workspace_id, trigger, text) 而非纯 text，同此理由。
    * 每组按时间倒序（首条=保留者）；组数上界 50、单次扫描窗 LOCAL_SCAN_LIMIT——
    * 判据故意保守（等值而非近重复）：宁漏不误合并，语义判重留后。db=null ⇒ 空（降级不做梦）。
    */
@@ -814,23 +842,23 @@ export class ExperienceStore {
     if (db === null) return [];
     try {
       // 分组键行不是完整条目，不能走 `this.all()`（它的 REQUIRED_COLUMNS 闸会把缺列行全丢）；
-      // 直查 prepare 取 (session_id, trigger, text) 三元组，取行在下面逐组做。
+      // 直查 prepare 取 (workspace_id, trigger, text) 三元组，取行在下面逐组做。
       const keys = db
         .prepare(
-          `SELECT session_id, trigger, text FROM experience
+          `SELECT workspace_id, trigger, text FROM experience
            WHERE superseded_by IS NULL AND hidden_at IS NULL
-           GROUP BY session_id, trigger, text HAVING COUNT(*) > 1
+           GROUP BY workspace_id, trigger, text HAVING COUNT(*) > 1
            ORDER BY MAX(ts_ms) DESC LIMIT 50`,
         )
-        .all() as Array<{ session_id?: SQLOutputValue; trigger?: SQLOutputValue; text?: SQLOutputValue }>;
+        .all() as Array<{ workspace_id?: SQLOutputValue; trigger?: SQLOutputValue; text?: SQLOutputValue }>;
       const groups: ExperienceEntry[][] = [];
       for (const key of keys) {
-        if (typeof key.session_id !== 'string' || typeof key.trigger !== 'string' || typeof key.text !== 'string') continue;
+        if (typeof key.workspace_id !== 'string' || typeof key.trigger !== 'string' || typeof key.text !== 'string') continue;
         const rows = this.all(
           `SELECT * FROM experience
-           WHERE session_id = ? AND trigger = ? AND text = ? AND superseded_by IS NULL AND hidden_at IS NULL
+           WHERE workspace_id = ? AND trigger = ? AND text = ? AND superseded_by IS NULL AND hidden_at IS NULL
            ORDER BY ts_ms DESC, id DESC`,
-          [key.session_id, key.trigger, key.text],
+          [key.workspace_id, key.trigger, key.text],
         );
         if (rows.length > 1) groups.push(rows.map(toEntry));
       }
