@@ -1,7 +1,7 @@
 {
   "name": "dsh-spirit",
-  "version": "0.9.2",
-  "description": "DSH 第一人称体验与本体记忆插件：把流程事件编译成角色的体验点滴，并从交付/实体/任务线维度建立可回查的工作记忆（SQLite），在模型步骤前注入「此刻状态 + 刚发生的 + 被勾起的回忆 + 正在推进的事」。",
+  "version": "0.10.0",
+  "description": "DSH 生平编年插件：把「事（交付）/ 感（体验）/ 线（里程碑）」编到同一条时间轴上，模型步骤前注入「此刻 + 刚发生 + 被勾起」，并提供星海拓扑与编年回顾。不是事实记忆库，是这条鱼的生平。",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -59,8 +59,10 @@
     "dsh",
     "dsh-plugin",
     "persona",
-    "emotion",
-    "experience"
+    "experience",
+    "chronicle",
+    "timeline",
+    "narrative"
   ],
   "engines": {
     "node": ">=22.16.0",
@@ -131,7 +133,3 @@
     "vitest": "^4.1.11"
   }
 }
-
-
-
-

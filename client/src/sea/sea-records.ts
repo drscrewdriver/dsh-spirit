@@ -18,6 +18,7 @@ import { copyOf } from '../copy.js';
 import type { RpcFn } from '../rpc.js';
 import { useHtmlLang } from '../use-html-lang.js';
 import { SeaTopics } from './sea-topics.js';
+import { SeaChronicle } from './sea-chronicle.js';
 import { echoRefTarget, shortEcho } from './echo-view.js';
 import { EchoRecallHeader, EchoRefsList, EchoToneBar } from './echo-refs-list.js';
 import { NOTICE_LABEL, TRIGGER_LABEL, TRIGGER_ORDER } from './sea-labels.js';
@@ -151,7 +152,9 @@ export function SeaRecords(props: SeaRecordsProps) {
   const [hiddenView, setHiddenView] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // 子视图（v0.3.5）：条目流 ⇄ 线索头（主题分区 + 碰撞裁决）；v0.4 加本周事务——同一 tab 三面，不加第五 tab
-  const [view, setView] = useState<'entries' | 'topics' | 'week' | 'onto' | 'echo'>('entries');
+  // v0.10 定位重钉：默认面从「条目流」改成「编年」——条目流按设计只认摩擦，
+  // 拿它当默认等于让主人一进来先看一串"我又出错了"。编年以「事」为主体，才是记忆该有的样子。
+  const [view, setView] = useState<'chronicle' | 'entries' | 'topics' | 'week' | 'onto' | 'echo'>('chronicle');
   // 本周事务（timeline-query）：切到该面时拉一次，不轮询
   const [weekRows, setWeekRows] = useState<SpiritTxnRow[]>([]);
   const [weekBusy, setWeekBusy] = useState(false);
@@ -570,8 +573,9 @@ export function SeaRecords(props: SeaRecordsProps) {
 
   const editable = (row: SpiritJournalRow): boolean => row.supersededBy === null && row.hiddenAt === null;
 
-  /** 五面切换行（条目流 / 线索头 / 本周 / 本体 / 回响）：当前面高亮。 */
-  const switchTabs = (active: 'entries' | 'topics' | 'week' | 'onto' | 'echo'): ReturnType<typeof createElement>[] => [
+  /** 六面切换行（编年 / 条目流 / 线索头 / 本周 / 本体 / 回响）：当前面高亮。 */
+  const switchTabs = (active: 'chronicle' | 'entries' | 'topics' | 'week' | 'onto' | 'echo'): ReturnType<typeof createElement>[] => [
+    createElement('button', { key: 'c', type: 'button', style: active === 'chronicle' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('chronicle') }, copy['chr.tab']),
     createElement('button', { key: 'e', type: 'button', style: active === 'entries' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('entries') }, copy['panel.recent']),
     createElement('button', { key: 't', type: 'button', style: active === 'topics' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('topics') }, copy['topic.view']),
     createElement('button', { key: 'w', type: 'button', style: active === 'week' ? BUTTON_ON_STYLE : BUTTON_STYLE, onClick: () => setView('week') }, copy['rec.weekView']),
@@ -923,6 +927,19 @@ export function SeaRecords(props: SeaRecordsProps) {
         ...switchTabs('topics'),
       ),
       createElement(SeaTopics, { rpc }),
+    );
+  }
+
+  if (view === 'chronicle') {
+    return createElement(
+      'div',
+      { style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, colorScheme: 'dark' } },
+      createElement('header', { style: HEAD_STYLE }, ...switchTabs('chronicle')),
+      createElement(SeaChronicle, {
+        ...(rpc === undefined ? {} : { rpc }),
+        ...(refreshToken === undefined ? {} : { refreshToken }),
+        ...(props.onLocateEcho === undefined ? {} : { onLocateEcho: props.onLocateEcho }),
+      }),
     );
   }
 

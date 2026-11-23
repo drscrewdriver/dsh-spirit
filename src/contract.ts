@@ -133,6 +133,9 @@ export const SPIRIT_OPS = [
   'task-detail',
   'ontology-backfill-run',
   'ontology-backfill-status',
+  // v0.10 生涯编年（定位重钉）：把「事（交付）/ 感（体验）/ 线（流程档）/ 记着」编到同一条时间轴上。
+  // 与 entries-list 的区别是语义而不是分页：那个面是"我记了哪些句子"，这个面是"我是怎么走到这儿的"。
+  'chronicle-list',
 ] as const;
 export type SpiritOp = (typeof SPIRIT_OPS)[number];
 
@@ -288,6 +291,7 @@ export interface SpiritRequestMap {
   'task-detail': SpiritTaskDetailRequest;
   'ontology-backfill-run': SpiritBackfillRunRequest;
   'ontology-backfill-status': Record<string, never>;
+  'chronicle-list': SpiritChronicleRequest;
 }
 
 export interface SpiritResponseMap {
@@ -357,6 +361,7 @@ export interface SpiritResponseMap {
   'task-detail': SpiritTaskDetailResult;
   'ontology-backfill-run': SpiritBackfillRunResult;
   'ontology-backfill-status': SpiritBackfillStatus;
+  'chronicle-list': SpiritChronicleResult;
 }
 
 /** 端点字面量类型（client 与 host 白名单共用）。 */
@@ -1898,8 +1903,65 @@ export const SPIRIT_PERSONA_FILE_VERSION = 1;
 export const SPIRIT_OWNER_FILE_VERSION = 1;
 /** `session-modes.json` 文件形状版本。 */
 export const SPIRIT_MODES_FILE_VERSION = 1;
+// ─────────────────────────────────────────────────────────── 生涯编年（v0.10）
+
+/**
+ * 编年请求。
+ *
+ * 与 `entries-list` 的差别是**语义**而不是分页：那个面答"我记了哪些句子"，
+ * 这个面答"我是怎么走到这儿的"。所以它必须把「事」放在轴上，而不是只有「感」。
+ */
+export interface SpiritChronicleRequest {
+  /** 回看天数，缺省 30，钳 [1, 365]。 */
+  days?: number;
+  /** 只看某个工作区（会话轨按 workspace 过滤；交付轨同口径）。 */
+  workspaceId?: string;
+  /** 只看某个会话（优先于 workspaceId）。 */
+  sessionId?: string;
+  /** 每天最多几条，缺省 40，钳 [1, 200]。 */
+  perDay?: number;
+}
+
+/** 轴上的一行是什么。`work`=事，`feel`=感，`note`=我记着的，`milestone`=那段的总结。 */
+export type SpiritChronicleKind = 'work' | 'feel' | 'note' | 'milestone';
+
+/**
+ * 编年条目。
+ *
+ * `repeat` 只在**真的等值重复**时 > 1（同日同句）：机械聚合拿不到"第三次"，
+ * 这里也不许编——计数来自库里的行数，不是推测。
+ */
+export interface SpiritChronicleItem {
+  kind: SpiritChronicleKind;
+  id: string;
+  tsMs: number;
+  text: string;
+  /** 补充正文（交付的 summary / 里程碑档全文的一行）。空 ⇒ 不下发。 */
+  detail?: string;
+  echoId?: string;
+  sessionId?: string;
+  repeat: number;
+}
+
+/** 一天。`day` 是本机时区的 YYYY-MM-DD（跨时区不假装统一）。 */
+export interface SpiritChronicleDay {
+  day: string;
+  items: SpiritChronicleItem[];
+  counts: Record<SpiritChronicleKind, number>;
+}
+
+export interface SpiritChronicleResult {
+  days: SpiritChronicleDay[];
+  /** 窗口内条目总数（含 repeat 的重复行）。 */
+  total: number;
+  from: number;
+  to: number;
+  /** 窗口里一条都没有 ⇒ true（面板说"这段还没留下痕迹"，不编造）。 */
+  empty: boolean;
+}
+
 /** 插件版本（与 package.json / dsh.plugin.json 同串，由门禁核对）。 */
-export const SPIRIT_VERSION = '0.9.2';
+export const SPIRIT_VERSION = '0.10.0';
 
 
 

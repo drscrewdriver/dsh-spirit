@@ -17,7 +17,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, SPIRIT_RANGES, type SpiritConfig, type SpiritExportResult, type SpiritFeedbackRequest, type SpiritJournalPage, type SpiritJournalRow, type SpiritLiveSettings, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats, type SpiritSettingsView, type SpiritTimelineResult, type SpiritResourceResult, type SpiritTxnRow, type SpiritDistillRouteView, type SpiritDistillModelListResult, type SpiritDistillModelSetResult, type SpiritEvaluationRow, type SpiritEvaluationListResult, type SpiritEntityGraphResult, type SpiritEntityMergeSuggestResult, type SpiritEntityAliasAddResult, type SpiritEntityNode, type SpiritEntityLookupResult, type SpiritTaskListResult, type SpiritTaskRow, type SpiritTaskDetailResult, type SpiritBackfillRunResult, type SpiritBackfillStatus, type SpiritInjectEchoResult, type SpiritEchoDetailResult, type SpiritEchoEntry, type SpiritEchoSearchResult, type SpiritEchoRefsResult, type SpiritEchoLocateResult, type SpiritSearchHit, type SpiritSearchAllResult, type SpiritRecordDetailRequest, type SpiritRecordDetailResult, type SpiritEchoSnapshot, type SpiritMemoryRow, type SpiritMemoryListResult } from './contract.js';
+import { SPIRIT_OPS, SPIRIT_RPC_PREFIX, SPIRIT_RPC_ROUTE, SPIRIT_RANGES, type SpiritConfig, type SpiritExportResult, type SpiritFeedbackRequest, type SpiritJournalPage, type SpiritJournalRow, type SpiritLiveSettings, type SpiritPersonaView, type SpiritSessionModeResult, type SpiritSessionStats, type SpiritSettingsView, type SpiritTimelineResult, type SpiritResourceResult, type SpiritTxnRow, type SpiritDistillRouteView, type SpiritDistillModelListResult, type SpiritDistillModelSetResult, type SpiritEvaluationRow, type SpiritEvaluationListResult, type SpiritEntityGraphResult, type SpiritEntityMergeSuggestResult, type SpiritEntityAliasAddResult, type SpiritEntityNode, type SpiritEntityLookupResult, type SpiritTaskListResult, type SpiritTaskRow, type SpiritTaskDetailResult, type SpiritBackfillRunResult, type SpiritBackfillStatus, type SpiritInjectEchoResult, type SpiritEchoDetailResult, type SpiritEchoEntry, type SpiritEchoSearchResult, type SpiritEchoRefsResult, type SpiritEchoLocateResult, type SpiritSearchHit, type SpiritSearchAllResult, type SpiritRecordDetailRequest, type SpiritRecordDetailResult, type SpiritEchoSnapshot, type SpiritMemoryRow, type SpiritMemoryListResult, type SpiritChronicleResult } from './contract.js';
 import type { Spirit } from './spirit.js';
 import type { SpiritStats } from './stats.js';
 import type { SessionModeStore } from './store/session-modes.js';
@@ -32,6 +32,7 @@ import type { EdgeStore } from './store/edges.js';
 import { composePersonaText } from './persona/render.js';
 import { parsePersonaMarkdown, renderPersonaMarkdown } from './persona/markdown.js';
 import { SEA_DELIVERY_MAX, SEA_WINDOW_LIMIT, buildSeaScene } from './sea/scene.js';
+import { CHRONICLE_DAYS_MAX, CHRONICLE_PER_DAY_DEFAULT, buildChronicle } from './chronicle/build.js';
 import { isDeliveryId } from './ontology/delivery-id.js';
 import { exportSessionEntries } from './store/journal-retention.js';
 import type { ExperienceStore } from './store/experience.js';
@@ -1062,6 +1063,83 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
     case 'ontology-backfill-status': {
       if (deps.backfill === undefined) return err('unavailable', '历史回填未装配');
       return ok(deps.backfill.status());
+    }
+    case 'chronicle-list': {
+      // 只读投影（v0.10）：编年不提供任何写入口——改正体走 entries-update / memory-write，
+      // 两条写路各有自己的纪律（取代链、来源可信），不在这里开第三个口子。
+      // 也不读配置：编年该不该开属于"面板怎么翻"，不是部署面开关（少一个开关少一处静默失效）。
+      const days = Math.max(1, Math.min(CHRONICLE_DAYS_MAX, int(payload['days'], 30)));
+      const perDay = Math.max(1, Math.min(200, int(payload['perDay'], CHRONICLE_PER_DAY_DEFAULT)));
+      const sessionId = str(payload['sessionId']);
+      const workspaceId = str(payload['workspaceId']);
+      const to = Date.now();
+      const from = to - days * 86_400_000;
+
+      const inWindow = (ts: number): boolean => ts >= from && ts <= to;
+
+      // 感：体验条目（含幽灵行？不含——编年展示"作数的经历"，幽灵是更正痕迹，留给星海）
+      const feels = deps.store
+        .listRecent(SEA_WINDOW_LIMIT, sessionId === '' ? undefined : { sessionId })
+        .filter((entry) => inWindow(entry.tsMs))
+        .map((entry) => ({
+          id: entry.id,
+          tsMs: entry.tsMs,
+          trigger: entry.trigger,
+          notice: entry.notice,
+          text: entry.text,
+          gist: entry.gist ?? null,
+          sessionId: entry.sessionId,
+          ...(deps.echoIdOf?.('experience', entry.id) === undefined ? {} : { echoId: deps.echoIdOf?.('experience', entry.id) }),
+        }));
+
+      // 事：交付行（本体层/事务轨关着就空——那只是"事"变稀，不报错）
+      const works = (deps.txn?.listRecent(SEA_DELIVERY_MAX, sessionId === '' ? {} : { sessionId }) ?? [])
+        .filter((row) => isDeliveryId(row.id) && inWindow(row.tsMs))
+        .filter((row) => workspaceId === '' || row.workspaceId === workspaceId)
+        .map((row) => ({
+          id: row.id,
+          tsMs: row.tsMs,
+          cardLine: row.cardLine,
+          summary: row.summary ?? null,
+          sessionId: row.sessionId,
+          ...(deps.echoIdOf?.('delivery', row.id) === undefined ? {} : { echoId: deps.echoIdOf?.('delivery', row.id) }),
+        }));
+
+      // 记着：模型自己写的两本账（日记与对话细节不进编年——它们不属"经历轴"，属"随手记"）
+      const notes = (() => {
+        const memory = deps.memory;
+        if (memory === undefined) return [];
+        const rows = [
+          ...memory.recent({ scope: 'life', ...(workspaceId === '' ? {} : { workspaceId }), limit: 200 }),
+          ...memory.recent({ scope: 'work', ...(workspaceId === '' ? {} : { workspaceId }), limit: 200 }),
+        ];
+        return rows
+          .filter((row) => inWindow(row.updatedAt))
+          .map((row) => ({
+            id: row.id,
+            tsMs: row.updatedAt,
+            text: row.text,
+            ...(row.echoId === undefined ? {} : { echoId: row.echoId }),
+          }));
+      })();
+
+      // 线：生涯流程档只取「一段日子」的档（week/month）。
+      //
+      // 为什么不取 `milestone` 档：那一档的 periodKey 是**上游单条 record_id**，不是时间段——
+      // 真机 30 天里 67 行，全进轴会把编年淹成"每条 L1 记录一行"，反而看不出哪一段是什么样。
+      // 也不取 `session` 档：会话档与"事"同粒度，进轴等于同一件事计两遍。
+      const milestones = (deps.distillDigest?.() ?? [])
+        .filter((row) => row.tier === 'week' || row.tier === 'month')
+        .map((row) => ({
+          periodKey: row.periodKey,
+          tsMs: row.generatedAt,
+          summary: row.summary,
+        }))
+        .filter((row) => inWindow(row.tsMs));
+
+      return ok(
+        buildChronicle({ feels, works, notes, milestones, from, to, perDay }) satisfies SpiritChronicleResult,
+      );
     }
     case 'session-mode-get': {
       // 只读：不碰写入面（写端点"两个字段都省"语义是清除覆盖，混用会抹掉用户设置）

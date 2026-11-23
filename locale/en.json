@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "First-person experience journal",
-    "description": "Compiles process events into the character's lived moments, derives a mood tier from them, and injects the current state before each model step."
+    "title": "Lifespan chronicle (not a memory store)",
+    "description": "Weaves deliveries, experiences and stretch summaries into one timeline, with a star-sea map and a chronicle view."
   }
 }
