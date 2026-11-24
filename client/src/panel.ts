@@ -158,6 +158,8 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
    * 保存后重拉一次 settings-get 回显真值（update 可能被宿主拒 → 面板不能自报已生效）。
    */
   const saveSettings = (patch: {
+    enabled?: boolean;
+    bootMode?: 'on' | 'off' | 'last';
     fadeEnabled?: boolean;
     fadeHalfLifeMs?: number;
     fadeHotDays?: number;
@@ -294,6 +296,43 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
               ? null
               : createElement('span', { style: mutedStyle }, copy['panel.settingsCold']),
           ),
+      ),
+    // 记忆总闸 + 三态启动挡位（v0.11）：本会话手动开关永远有效，挡位只管下次启动初值。
+    settings === null
+      ? null
+      : createElement(
+        'div',
+        { style: { display: 'grid', gap: 4, marginTop: 10 } },
+        createElement('h4', { style: { ...hStyle, margin: 0 } }, copy['panel.memoryMaster']),
+        createElement(
+          'label',
+          { style: { display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 } },
+          createElement('input', {
+            type: 'checkbox',
+            checked: settings.enabled,
+            onChange: (e: { target: { checked: boolean } }) => saveSettings({ enabled: e.target.checked }),
+          }),
+          copy['panel.memoryOn'],
+        ),
+        createElement(
+          'label',
+          { style: { display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12 } },
+          createElement('span', null, copy['panel.bootMode']),
+          createElement(
+            'select',
+            {
+              value: settings.bootMode,
+              onChange: (e: { target: { value: string } }) => {
+                const v = e.target.value;
+                if (v === 'on' || v === 'off' || v === 'last') saveSettings({ bootMode: v });
+              },
+            },
+            createElement('option', { value: 'last' }, copy['panel.bootLast']),
+            createElement('option', { value: 'on' }, copy['panel.bootOn']),
+            createElement('option', { value: 'off' }, copy['panel.bootOff']),
+          ),
+        ),
+        createElement('span', { style: mutedStyle }, copy['panel.bootHint']),
       ),
     // 检视段（条目流+这条重要）已迁星海「翻阅」tab：这里不再养第二份列表。
     // 睡眠块（v0.3.4 设置面可见性）：自动做梦开关（live 热更）+ 上次梦境读数 + 回响导航行。

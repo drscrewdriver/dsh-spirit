@@ -2,6 +2,24 @@
 
 本项目的所有值得记录的变更都写在这里。版本号遵循语义化版本。
 
+## 0.12.0 (2026-11-24)
+
+**记忆总闸 + 三态启动挡位 —— 与 prime-memory 同构；出厂默认「关闭」。**
+
+面板设置新增「记忆总闸」复选框（本会话即时开关）+「启动挡位」三态下拉：`跟随上一次` / `强制开启` / `强制关闭`（**本版出厂默认**）。挡位只决定**下次启动**初值，不在读侧折叠——本会话手动开关永远有效；启动期由 `applyBootMode` 把 on/off 初值写回 `enabled` 一次，`last` 不动，写面缺席/抛错静默不阻断启动。
+
+> ⚠️ 行为变更：出厂默认由「跟随上一次」改为「强制关闭」。升级后首启记忆为关；拨到「跟随上一次」或「强制开启」一次即恢复并持久。
+
+- `src/contract.ts`：`SpiritLiveSettings.bootMode` + `SpiritSettingsView.enabled/bootMode`；`SPIRIT_DEFAULTS.live.bootMode='off'`；`SPIRIT_VERSION` 0.11.0→0.12.0。
+- `src/config.ts`：schema 增 `bootMode`；`resolveLive` 归一（缺键/非法归 `off`，显式接受合法 `last`）；新增 `applyBootMode` 启动写回；`SCHEMA_FIELD_KEYS` 增 `live.bootMode`。
+- `src/rpc.ts`：`settings-get` 回显 `enabled/bootMode`；`settings-set` 收 `enabled`（布尔）与 `bootMode`（三态白名单）。
+- `src/index.ts`：启动时 `applyBootMode(config.live)`。
+- `client/src/panel.ts`：「记忆总闸」复选框 +「启动挡位」下拉；`client/src/copy.ts` zh/en 文案。
+- `tests/boot-mode.test.ts`：10 条行为闸（归一、启动写回、老线冻结值静默、写面抛错吞掉）。
+- `dsh.plugin.json`：version 同步 0.12.0。
+
+门禁：typecheck 三工程干净；boot-mode 10/10；全量 vitest 967 passed（99 文件）；eslint 0。
+
 ## 0.11.0 (2026-11-24)
 
 **暖记忆（借 fish-memory 的"判断"，从 prime-memory 取料）· 注入面「暖：」段 · 治两个实测缺陷**

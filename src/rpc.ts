@@ -1206,6 +1206,8 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       // 面板读的是**当前生效值**（live 接管后的形状），不是静态缺省
       const live: SpiritLiveSettings = (deps.eff ?? deps.cfg)().live;
       return ok({
+        enabled: live.enabled,
+        bootMode: live.bootMode,
         fadeEnabled: live.fadeEnabled,
         fadeHalfLifeMs: live.fadeHalfLifeMs,
         fadeHotDays: live.fadeHotDays,
@@ -1224,6 +1226,10 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       const ref = deps.liveRaw?.();
       if (ref === undefined || typeof ref.update !== 'function') return err('no-volatile', '宿主 volatile 写通道不可用，改值需重启');
       const patch: Partial<SpiritConfig['live']> = {};
+      if (typeof payload['enabled'] === 'boolean') patch.enabled = payload['enabled'];
+      if (payload['bootMode'] === 'on' || payload['bootMode'] === 'off' || payload['bootMode'] === 'last') {
+        patch.bootMode = payload['bootMode'];
+      }
       if (typeof payload['fadeEnabled'] === 'boolean') patch.fadeEnabled = payload['fadeEnabled'];
       if (typeof payload['feedbackEnabled'] === 'boolean') patch.feedbackEnabled = payload['feedbackEnabled'];
       if (typeof payload['dreamEnabled'] === 'boolean') patch.dreamEnabled = payload['dreamEnabled'];
@@ -1258,6 +1264,8 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
       }
       const live: SpiritLiveSettings = (deps.eff ?? deps.cfg)().live;
       return ok({
+        enabled: live.enabled,
+        bootMode: live.bootMode,
         fadeEnabled: live.fadeEnabled,
         fadeHalfLifeMs: live.fadeHalfLifeMs,
         fadeHotDays: live.fadeHotDays,

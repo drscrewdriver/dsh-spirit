@@ -55,6 +55,7 @@ const str = (fallback: string) => Schema.string().default(fallback);
 function liveSettingsSchema(): VolatileRef<SpiritLiveSettings> {
   const d = SPIRIT_DEFAULTS.live;
   const node = Schema.object({
+    bootMode: Schema.union(['on', 'off', 'last']).default(d.bootMode),
     enabled: bool(d.enabled),
     personaEnabled: bool(d.personaEnabled),
     cardEnabled: bool(d.cardEnabled),
@@ -263,6 +264,7 @@ export const SCHEMA_FIELD_KEYS: readonly string[] = [
   'txn.collectorTimeoutMs',
   'ontology.enabled',
   'ontology.backfillEnabled',
+  'live.bootMode',
   'live.enabled',
   'live.personaEnabled',
   'live.cardEnabled',
@@ -324,7 +326,12 @@ export function resolveLive(raw: unknown): SpiritLiveSettings {
     typeof value[key] === 'boolean' ? (value[key] as boolean) : fallback;
   const int = (key: keyof SpiritLiveSettings, fallback: number): number =>
     typeof value[key] === 'number' && Number.isFinite(value[key] as number) ? Math.floor(value[key] as number) : fallback;
+  // 启动挡位：缺键/非法值归 'off'（出厂默认关闭）。挡位不在读侧折叠——启动期由
+  // `applyBootMode` 把初值写回 `enabled`，本会话的手动开关永远有效。
+  const bootMode: 'on' | 'off' | 'last' =
+    value.bootMode === 'on' || value.bootMode === 'off' || value.bootMode === 'last' ? value.bootMode : 'off';
   return {
+    bootMode,
     enabled: flag('enabled', d.enabled),
     personaEnabled: flag('personaEnabled', d.personaEnabled),
     cardEnabled: flag('cardEnabled', d.cardEnabled),
@@ -352,8 +359,35 @@ export function resolveLive(raw: unknown): SpiritLiveSettings {
   };
 }
 
-export function resolveDataDir(cfg: SpiritConfig): string {
-  if (cfg.dataDir) return cfg.dataDir;
+/**
+ * 启动期应用三态挡位：`on`/`off` 把初值写回 `enabled`，`last` 原样保留。
+ *
+ * 不在读侧折叠：折叠会让本会话的手动开关永远失效。写回一次后，运行期读写全部
+ * 走持久化的 `enabled`；写面缺席（老宿主/降级句柄）时保持持久值，不阻断启动。
+ */
+export async function applyBootMode(ref: unknown): Promise<void> {
+  const maybe = ref as
+    | { get?: () => SpiritLiveSettings; update?: (patch: Partial<SpiritLiveSettings>) => unknown }
+    | null
+    | undefined;
+  if (!maybe || typeof maybe.get !== 'function') return;
+  let live: SpiritLiveSettings;
+  try {
+    live = resolveLive(maybe.get());
+  } catch {
+    return;
+  }
+  if (live.bootMode !== 'on' && live.bootMode !== 'off') return;
+  const want = live.bootMode === 'on';
+  if (live.enabled === want || typeof maybe.update !== 'function') return;
+  try {
+    await Promise.resolve(maybe.update({ enabled: want }));
+  } catch {
+    /* 写面不可用：保持持久值 */
+  }
+}
+
+export function resolveDataDir(cfg: SpiritConfig): string {  if (cfg.dataDir) return cfg.dataDir;
   return dshHomePath('spirit');
 }
 

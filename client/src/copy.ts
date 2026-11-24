@@ -423,6 +423,13 @@ export const zh = {
   'topic.conflictResolved': '裁决记下了',
   'topic.empty': '还没有线索头——鱼睡过一觉后会给这段时间起名字',
   'causal.legend': '橙实线 = 因果链（鱼长觉里想的）',
+  'panel.memoryMaster': '记忆总闸',
+  'panel.memoryOn': '本会话开启记忆',
+  'panel.bootMode': '启动挡位',
+  'panel.bootLast': '跟随上一次',
+  'panel.bootOn': '强制开启',
+  'panel.bootOff': '强制关闭',
+  'panel.bootHint': '挡位只决定下次启动的初值；数据始终保留。',
 } as const;
 
 export type CopyKey = keyof typeof zh;
@@ -828,6 +835,13 @@ export const en: Record<CopyKey, string> = {
   'topic.conflictResolved': 'verdict recorded',
   'topic.empty': 'no threads yet — the fish will name them after a deep sleep',
   'causal.legend': 'orange solid = causal link (from the fish\'s deep sleep)',
+  'panel.memoryMaster': 'Memory master switch',
+  'panel.memoryOn': 'Enable memory for this session',
+  'panel.bootMode': 'Startup gear',
+  'panel.bootLast': 'Follow last run',
+  'panel.bootOn': 'Force on',
+  'panel.bootOff': 'Force off',
+  'panel.bootHint': 'The gear only sets the next-launch default; data is always kept.',
 };
 
 export const DICTS: Record<'zh' | 'en', Record<CopyKey, string>> = { zh, en };

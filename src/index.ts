@@ -22,7 +22,7 @@ import {
   type SpiritConfig,
   type SpiritLiveSettings,
 } from './contract.js';
-import { effectiveCfg, readLiveRef, resolveDataDir, spiritSchema, type ConfigSchema } from './config.js';
+import { applyBootMode, effectiveCfg, readLiveRef, resolveDataDir, spiritSchema, type ConfigSchema } from './config.js';
 import { probeCapabilities, readTrustedHosts, getService } from './capability.js';
 import { openSpiritDb } from './db/open.js';
 import { decideDegrade } from './db/degrade.js';
@@ -105,6 +105,9 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   const caps = probeCapabilities(ctx);
   const cfg = (): SpiritConfig => config;
   const live = (): SpiritLiveSettings => readLiveRef(config.live);
+  // 启动挡位（三态 on/off/last）：on/off 把初值写回 enabled，last 保持持久值。
+  // 异步写、失败不阻断启动（写面缺席的老宿主保持持久值）。
+  void applyBootMode(config.live);
   /** 已合并 live 兜底的生效视图（任何读开关的地方都只能拿这个，不能拿 `cfg()`）。 */
   const eff = (): SpiritConfig => effectiveCfg(config, live());
 

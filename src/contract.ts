@@ -206,6 +206,10 @@ export interface SpiritSettingsRequest {
 }
 
 export interface SpiritSettingsView {
+  /** 主闸当前生效值（本会话手动开关的真实回显）。 */
+  enabled: boolean;
+  /** 启动挡位：on/off/last（只决定下次启动初值）。 */
+  bootMode: 'on' | 'off' | 'last';
   fadeEnabled: boolean;
   fadeHalfLifeMs: number;
   fadeHotDays: number;
@@ -1569,6 +1573,11 @@ export interface SpiritConfig {
 
 /** 运行时热更面（设置表单的唯一来源）。 */
 export interface SpiritLiveSettings {
+  /**
+   * 启动挡位（三态，设置面可见）：`on` = 每次启动强制开；`off` = 每次启动强制关（出厂默认）；
+   * `last` = 跟随上一次运行时的 `enabled`。只决定**下次启动**初值。
+   */
+  bootMode: 'on' | 'off' | 'last';
   /** 主闸（与 `enabled` 取与）。 */
   enabled: boolean;
   personaEnabled: boolean;
@@ -1690,6 +1699,7 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
     backfillEnabled: true,
   },
   live: {
+    bootMode: 'off',
     enabled: true,
     personaEnabled: true,
     cardEnabled: true,
@@ -1998,7 +2008,7 @@ export interface SpiritChronicleResult {
 }
 
 /** 插件版本（与 package.json / dsh.plugin.json 同串，由门禁核对）。 */
-export const SPIRIT_VERSION = '0.11.0';
+export const SPIRIT_VERSION = '0.12.0';
 
 
 
