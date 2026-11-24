@@ -8,7 +8,7 @@
  * stats ⇄ client。少一腿即红——历史上姊妹包正是靠这一份测试挡住了"用户已存值被静默丢弃"。
  */
 
-import type { Lane, SpiritVerdict, TriggerKind } from './types.js';
+import type { Lane, SpiritVerdict, TriggerKind, WarmthTier } from './types.js';
 
 // ─────────────────────────────────────────────────────────── 命名（避让表）
 
@@ -1608,13 +1608,18 @@ export interface SpiritLiveSettings {
 
 /**
  * 默认值单源。取值理由（都是经验缺省，非校准结论，可在设置页改）：
- * - `card.maxBytes=512`：状态 1 行 + 近因 ≤2 行 + 想起 ≤1 条 + 首轮基调 ≤1 行的实测够用宽度；
- *   每轮一条 ~512B 在 100 轮长会话里是万级 token 的**增量**，不触发前缀重算。
- *   ⚠ 从 384 上调的真实理由（真宿主量出来的）：极端负面档会多带一行「非医疗声明」，
- *   而声明**不允许被预算掉**（那是防误导的硬线）。实测那张卡长到 328B，在 384 顶下
- *   只剩 56B，装不下一行近因（141B）⇒ 越是该说“刚刚发生了什么”的档，近因段越被挤掉。
- *   512 能让“状态 + 声明 + 一行近因 + 一行想起”同时装下（实测 469B）；
- *   这不是“卡应当更大”，是把缺省提到不会让红线互相撞车的宽度。
+ * - `card.maxBytes=640`：状态 1 行 + 近因 ≤2 行 + 想起 ≤1 条 + 暖 1 行 + 首轮基调 ≤1 行的实测够用宽度。
+ *   ⚠ 两次上调都是同一类事故，理由必须一起看：
+ *   **384 → 512**（v0.1）：极端负面档会多带一行「非医疗声明」，而声明**不允许被预算掉**
+ *   （那是防误导的硬线）。实测那张卡长到 328B，在 384 顶下只剩 56B，装不下一行近因（141B）
+ *   ⇒ 越是该说"刚刚发生了什么"的档，近因段越被挤掉。512 让「状态 + 声明 + 一行近因 + 一行想起」
+ *   同时装下（实测 469B）。
+ *   **512 → 640**（v0.11）：加「暖：」段（上游来的一条"关于这个人"，成本口 48 字 ≈150B）后，
+ *   在 512 顶下带两行近因的卡**每次都装不下**——实测渲染结果是 `used.warm` 永远 undefined，
+ *   功能装配完毕却从不生效，且不报错。640 让「状态 + 声明 + 两行近因 + 一行暖」装下（实测 553B）。
+ *   ⚠ 暖段仍是**最先让位**的那一段（填装顺序最后），所以预算紧时它丢、状态段与声明永不丢；
+ *   这条不因为顶变大而改变。
+ *   成本口径：每轮一条 ~640B 在 100 轮长会话里是万级 token 的**增量**，不触发前缀重算。
  * - `recall.timeoutMs=800`：loopback 上本地库与 DRSC 正常 <10ms，给冷启动留天花板；
  *   超过它就丢检索段——对话延迟比"少一条回忆"贵得多。
  * - `recall.halfLifeMs=5_400_000`（90 分钟）：情绪类状态的量级取"小时"，
@@ -1630,7 +1635,7 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
   enabled: true,
   dataDir: '',
   persona: { enabled: true, budgetBytes: 700 },
-  card: { maxBytes: 512, recentK: 2, crossSessionM: 4 },
+  card: { maxBytes: 640, recentK: 2, crossSessionM: 4 },
   recall: {
     timeoutMs: 800,
     maxResults: SPIRIT_DEFAULTS_RECALL_MAX,
@@ -1920,10 +1925,33 @@ export interface SpiritChronicleRequest {
   sessionId?: string;
   /** 每天最多几条，缺省 40，钳 [1, 200]。 */
   perDay?: number;
+  /**
+   * `learned` 每天最多几条，缺省 5，钳 [0, 50]。
+   *
+   * 0 = 关掉「得知」这一路（只看事/感/记着）。留这个参数不是为了好看：
+   * 真机 learned 单日峰值 131 条，面板必须能在不重启的情况下把噪音调掉。
+   */
+  learnedPerDay?: number;
 }
 
-/** 轴上的一行是什么。`work`=事，`feel`=感，`note`=我记着的，`milestone`=那段的总结。 */
-export type SpiritChronicleKind = 'work' | 'feel' | 'note' | 'milestone';
+/**
+ * 轴上的一行是什么。
+ *
+ * - `work`：事（我做成过什么）
+ * - `feel`：感（那一下我的反应）
+ * - `note`：我记着的（自己写的两本账）
+ * - `milestone`：那一段（时期总结）
+ * - `learned`：得知（从上游取来的"关于世界"的经历——事实所有权仍在上游，见 docs/positioning.md）
+ * - `bond`：关于这个人（同样来自上游，但是 chat 家族那批"关于她"的记忆）
+ */
+export type SpiritChronicleKind = 'work' | 'feel' | 'note' | 'milestone' | 'learned' | 'bond';
+
+/**
+ * 温度档（v0.10，借 fish-memory 的形）：只说档位词，不报数值。
+ *
+ * 为什么档位而不给 0.73：与"情绪对外只有档位词"同一条纪律——没有校准规则时的小数是伪精确。
+ */
+export type SpiritChronicleWarmth = WarmthTier;
 
 /**
  * 编年条目。
@@ -1936,11 +1964,20 @@ export interface SpiritChronicleItem {
   id: string;
   tsMs: number;
   text: string;
-  /** 补充正文（交付的 summary / 里程碑档全文的一行）。空 ⇒ 不下发。 */
+  /** 补充正文（交付的 summary / 时期档其余行）。空 ⇒ 不下发。 */
   detail?: string;
   echoId?: string;
   sessionId?: string;
   repeat: number;
+  /**
+   * 温度档（仅 `learned` / `bond` 有；其余类别没有"淡出"语义，缺省即不下发）。
+   * 档位来自上游 priority + 自己的引用计数，纯查表。
+   */
+  warmth?: SpiritChronicleWarmth;
+  /** 上游已判失效 ⇒ 这是"曾经的看法"（显示成过去时，不删）。 */
+  expired?: boolean;
+  /** 被想起过几次（> 0 才下发；0 是常态，不占字节）。 */
+  recalled?: number;
 }
 
 /** 一天。`day` 是本机时区的 YYYY-MM-DD（跨时区不假装统一）。 */
@@ -1961,7 +1998,7 @@ export interface SpiritChronicleResult {
 }
 
 /** 插件版本（与 package.json / dsh.plugin.json 同串，由门禁核对）。 */
-export const SPIRIT_VERSION = '0.10.0';
+export const SPIRIT_VERSION = '0.11.0';
 
 
 

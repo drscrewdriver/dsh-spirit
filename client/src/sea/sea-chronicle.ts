@@ -13,7 +13,7 @@
  */
 import { createElement, useCallback, useEffect, useState, type CSSProperties } from 'react';
 
-import type { SpiritChronicleKind, SpiritChronicleResult } from '../../../src/contract.js';
+import type { SpiritChronicleKind, SpiritChronicleResult, SpiritChronicleWarmth } from '../../../src/contract.js';
 import { copyOf } from '../copy.js';
 import type { RpcFn } from '../rpc.js';
 import { useHtmlLang } from '../use-html-lang.js';
@@ -27,6 +27,15 @@ const ITEM_STYLE: CSSProperties = { display: 'flex', gap: 8, alignItems: 'baseli
 const BADGE_STYLE: CSSProperties = { fontSize: 11, padding: '0 6px', borderRadius: 6, background: 'rgba(120,160,255,.12)', color: '#8fa8d8', flex: '0 0 auto' };
 const WORK_BADGE_STYLE: CSSProperties = { ...BADGE_STYLE, background: 'rgba(120,220,170,.16)', color: '#8fe3bc' };
 const MILESTONE_BADGE_STYLE: CSSProperties = { ...BADGE_STYLE, background: 'rgba(255,208,120,.16)', color: '#ffd687' };
+const BOND_BADGE_STYLE: CSSProperties = { ...BADGE_STYLE, background: 'rgba(255,150,190,.16)', color: '#ffb3cd' };
+const LEARNED_BADGE_STYLE: CSSProperties = { ...BADGE_STYLE, background: 'rgba(150,160,255,.14)', color: '#b0b8ff' };
+/** 温度点：暖=实心，凉=空心，淡=极小。用形状而不是数字表达，与"不给伪精确"同一条纪律。 */
+const WARMTH_DOT: Readonly<Record<SpiritChronicleWarmth, string>> = {
+  hot: '●',
+  warm: '◐',
+  cool: '○',
+  faded: '·',
+};
 const TEXT_STYLE: CSSProperties = { fontSize: 13, lineHeight: 1.6, color: '#e8eeff', whiteSpace: 'pre-wrap' };
 const FEEL_TEXT_STYLE: CSSProperties = { ...TEXT_STYLE, fontSize: 12, color: '#9aa7bf' };
 const DETAIL_STYLE: CSSProperties = { ...MUTED_STYLE, marginTop: 2, whiteSpace: 'pre-wrap' };
@@ -38,11 +47,29 @@ const WINDOWS: ReadonlyArray<{ days: number; key: 'chr.win7' | 'chr.win30' | 'ch
   { days: 90, key: 'chr.win90' },
 ];
 
-const KIND_LABEL: Record<SpiritChronicleKind, 'chr.kind.work' | 'chr.kind.feel' | 'chr.kind.note' | 'chr.kind.milestone'> = {
+const KIND_LABEL: Record<SpiritChronicleKind, 'chr.kind.work' | 'chr.kind.feel' | 'chr.kind.note' | 'chr.kind.milestone' | 'chr.kind.learned' | 'chr.kind.bond'> = {
   work: 'chr.kind.work',
   feel: 'chr.kind.feel',
   note: 'chr.kind.note',
   milestone: 'chr.kind.milestone',
+  learned: 'chr.kind.learned',
+  bond: 'chr.kind.bond',
+};
+
+/** 温度档 → 文案键（服务端只说档位词，面板才负责翻译）。 */
+const WARMTH_LABEL: Record<SpiritChronicleWarmth, 'chr.warm.hot' | 'chr.warm.warm' | 'chr.warm.cool' | 'chr.warm.faded'> = {
+  hot: 'chr.warm.hot',
+  warm: 'chr.warm.warm',
+  cool: 'chr.warm.cool',
+  faded: 'chr.warm.faded',
+};
+
+/** 温度色：暖的一端偏黄，凉的一端偏灰（不靠数字，靠颜色一眼能分）。 */
+const WARMTH_COLOR: Readonly<Record<SpiritChronicleWarmth, string>> = {
+  hot: '#ffd687',
+  warm: '#d8c88a',
+  cool: '#8f97a8',
+  faded: '#616a7d',
 };
 
 /**
@@ -124,7 +151,13 @@ export function SeaChronicle(props: SeaChronicleProps) {
       ? WORK_BADGE_STYLE
       : item.kind === 'milestone'
         ? MILESTONE_BADGE_STYLE
-        : BADGE_STYLE;
+        : item.kind === 'bond'
+          ? BOND_BADGE_STYLE
+          : item.kind === 'learned'
+            ? LEARNED_BADGE_STYLE
+            : BADGE_STYLE;
+    // 温度只对"得知 / 关于这个人"有意义：其余类别没有淡出语义，显示温度反而是伪信息
+    const warmth = item.warmth;
     return createElement(
       'div',
       { key: `${item.kind}:${item.id}`, style: ITEM_STYLE },
@@ -140,6 +173,15 @@ export function SeaChronicle(props: SeaChronicleProps) {
         ),
         item.detail !== undefined && item.detail !== ''
           ? createElement('div', { style: DETAIL_STYLE }, item.detail)
+          : null,
+        warmth !== undefined
+          ? createElement(
+            'div',
+            { style: { ...MUTED_STYLE, marginTop: 2, color: WARMTH_COLOR[warmth] } },
+            `${WARMTH_DOT[warmth]} ${api[WARMTH_LABEL[warmth]]}`,
+            item.expired === true ? ` · ${api['chr.expired']}` : '',
+            item.recalled !== undefined && item.recalled > 0 ? ` · ${api['chr.recalled']} ${item.recalled}` : '',
+          )
           : null,
       ),
       item.echoId !== undefined && onLocateEcho !== undefined
@@ -159,6 +201,7 @@ export function SeaChronicle(props: SeaChronicleProps) {
   };
 
   const dayBlock = (day: SpiritChronicleResult['days'][number]): ReturnType<typeof createElement> => {
+    // 默认只折叠「感」：得知/关于这个人是这次重定位要补的暖料，不能被默认藏起来
     const visible = showFeel ? day.items : day.items.filter((item) => item.kind !== 'feel');
     const hiddenFeel = day.items.length - visible.length;
     return createElement(
@@ -168,7 +211,11 @@ export function SeaChronicle(props: SeaChronicleProps) {
         'div',
         { style: { display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', marginBottom: 4 } },
         createElement('span', { style: { fontSize: 12, color: '#9fc1ff', fontVariantNumeric: 'tabular-nums' } }, dayLabel(day.day, locale ?? 'zh-CN')),
-        createElement('span', { style: MUTED_STYLE }, `${api['chr.did']} ${day.counts.work} · ${api['chr.felt']} ${day.counts.feel}`),
+        createElement(
+          'span',
+          { style: MUTED_STYLE },
+          `${api['chr.did']} ${day.counts.work} · ${api['chr.learnedShort']} ${day.counts.learned + day.counts.bond} · ${api['chr.felt']} ${day.counts.feel}`,
+        ),
         hiddenFeel > 0
           ? createElement(
             'button',

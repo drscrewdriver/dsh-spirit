@@ -34,6 +34,38 @@ export interface L1RecordRow {
   repoKey?: string;
   /** 上游会话 id（v0.8.25：按会话组织流程档）。 */
   sessionId: string;
+  /**
+   * 重要度原值（v0.10，上游 0-100 的 priority）。
+   *
+   * 这是「温度」的来源之一：上游已经替我们判过哪些事更重要，重算一遍只会得到第二个真源。
+   * 缺列/坏值 ⇒ undefined（不拿 0 冒充"不重要"）。
+   */
+  priority?: number;
+  /** 持久性档（上游单字符：`t` 临时 / `p` … / `s` … / `o` …；空串 = 未标注）。 */
+  persistence?: string;
+  /** 失效时刻（ISO；非空 = 上游已判这条不再成立，编年要标"曾经的看法"而不是删掉）。 */
+  validTo?: string;
+}
+
+/**
+ * 上游「温度」读面（v0.10）：一条 L1 记录在它自己库里的重要度/持久性/失效。
+ *
+ * 为什么单独开一个只读投影而不是塞进 `L1RecordRow` 的既有消费者：
+ * 交付重建（l1-ingest）只关心正文，温度只有编年关心；两者混在一张宽行里，
+ * 会让"重建"这条热路径多读三列、也让温度一旦改口径就波及交付。
+ */
+export interface L1WarmthRow {
+  id: string;
+  type: string;
+  family: string;
+  content: string;
+  tsMs: number;
+  priority: number | undefined;
+  persistence: string;
+  validTo: string;
+  workspaceId: string;
+  /** 真会话 id（与 `L1RecordRow.sessionId` 同口径）。 */
+  sessionId: string;
 }
 
 /** 解析实际库路径（env 覆盖优先）。 */
@@ -170,6 +202,107 @@ export function loadL1Entities(dbPath?: string): L1EntityRow[] {
     try { db.close(); } catch { /* 已关 */ }
   }
   return out;
+}
+
+/**
+ * 读上游「带温度」的 L1 行（v0.10：编年的另一路供给）。
+ *
+ * 与 `searchL1Records` 的分工：那个面按关键词/会话找**内容**（重建、摘要用），
+ * 这个面按时间窗找**经历**，且必须带上 priority / persistence / valid_to 三列——
+ * 否则编年只能给出"一条条冷记录"，也就是这次重定位要治的病。
+ *
+ * 三列都按"缺列/坏值 ⇒ 缺省"处理：上游改版少一列时，编年只是变淡，不报错。
+ *
+ * @param opts.days - 回看天数（默认 30；0 = 全史）
+ * @param opts.limit - 条数上限（默认 400，封顶 2000）
+ * @param opts.family - 只要某个 family（`chat` 用来取"关于这个人"的那批）
+ * @param opts.dbPath - 覆盖库路径（测试/换机）
+ */
+export function searchL1WarmRows(opts: {
+  days?: number;
+  limit?: number;
+  family?: string;
+  dbPath?: string;
+} = {}): L1WarmthRow[] {
+  const dbPath = opts.dbPath ?? primeMemoryDbPath();
+  const db = openReadOnly(dbPath);
+  if (db === undefined) return [];
+  const days = Number.isFinite(opts.days) ? Math.max(0, Math.floor(opts.days as number)) : 30;
+  const cap = Math.max(1, Math.min(2000, Math.floor(Number.isFinite(opts.limit) ? (opts.limit as number) : 400)));
+  const conds: string[] = [];
+  const params: unknown[] = [];
+  const family = (opts.family ?? '').trim();
+  if (family !== '' && hasColumn(db, 'l1_records', 'family')) {
+    conds.push('family = ?');
+    params.push(family);
+  }
+  if (days > 0) {
+    conds.push(`COALESCE(NULLIF(timestamp_start, ''), created_time) >= ?`);
+    params.push(new Date(Date.now() - days * 86_400_000).toISOString());
+  }
+  const where = conds.length > 0 ? ` WHERE ${conds.join(' AND ')}` : '';
+  const col = (name: string): string => (hasColumn(db, 'l1_records', name) ? name : `'' AS ${name}`);
+  const priorityCol = hasColumn(db, 'l1_records', 'priority') ? 'priority' : `NULL AS priority`;
+  try {
+    const rows = db
+      .prepare(
+        `SELECT record_id, type, ${col('family')}, content,
+                ${priorityCol}, ${col('persistence')}, ${col('valid_to')},
+                ${col('workspace_id')}, ${col('session_id')}, ${col('metadata_json')},
+                COALESCE(NULLIF(timestamp_start, ''), created_time) AS stamp
+         FROM l1_records${where}
+         ORDER BY stamp DESC LIMIT ?`,
+      )
+      .all(...([...params, cap] as never[])) as Array<Record<string, unknown>>;
+    return rows
+      .map((raw) => {
+        const iso = String(raw['stamp'] ?? '');
+        const tsMs = iso === '' ? NaN : Date.parse(iso);
+        const prio = Number(raw['priority']);
+        return {
+          id: String(raw['record_id'] ?? ''),
+          type: String(raw['type'] ?? ''),
+          family: String(raw['family'] ?? ''),
+          content: String(raw['content'] ?? ''),
+          tsMs: Number.isFinite(tsMs) ? tsMs : 0,
+          // 0 是上游的合法值但语义上等于"没标注"，一律当缺省——不拿 0 冒充"不重要"
+          priority: Number.isFinite(prio) && prio > 0 ? prio : undefined,
+          persistence: String(raw['persistence'] ?? ''),
+          validTo: String(raw['valid_to'] ?? ''),
+          workspaceId: String(raw['workspace_id'] ?? ''),
+          sessionId: sessionIdOf(raw),
+        } satisfies L1WarmthRow;
+      })
+      .filter((row) => row.id !== '' && row.content !== '' && row.tsMs > 0);
+  } catch {
+    // 表不在/结构变了：如实空（不假装有数据）
+    return [];
+  } finally {
+    try {
+      db.close();
+    } catch {
+      /* 已关 */
+    }
+  }
+}
+
+/**
+ * 上游 L1 的全量类型目录（v0.10：编年按"温度"分档时要先知道有哪些 type）。
+ * 缺表 ⇒ []。只回 name + count，不带任何正文。
+ */
+export function loadL1TypeCounts(dbPath?: string): Array<{ type: string; count: number }> {
+  const db = openReadOnly(dbPath ?? primeMemoryDbPath());
+  if (db === undefined) return [];
+  try {
+    const rows = db.prepare(`SELECT type, COUNT(*) AS n FROM l1_records GROUP BY type ORDER BY n DESC`).all() as Array<Record<string, unknown>>;
+    return rows
+      .map((row) => ({ type: String(row['type'] ?? ''), count: Number(row['n'] ?? 0) }))
+      .filter((row) => row.type !== '' && row.count > 0);
+  } catch {
+    return [];
+  } finally {
+    try { db.close(); } catch { /* 已关 */ }
+  }
 }
 
 /**

@@ -32,7 +32,7 @@ import type { EdgeStore } from './store/edges.js';
 import { composePersonaText } from './persona/render.js';
 import { parsePersonaMarkdown, renderPersonaMarkdown } from './persona/markdown.js';
 import { SEA_DELIVERY_MAX, SEA_WINDOW_LIMIT, buildSeaScene } from './sea/scene.js';
-import { CHRONICLE_DAYS_MAX, CHRONICLE_PER_DAY_DEFAULT, buildChronicle } from './chronicle/build.js';
+import { CHRONICLE_DAYS_MAX, CHRONICLE_LEARNED_PER_DAY, CHRONICLE_PER_DAY_DEFAULT, buildChronicle, type ChronicleLearnedInput } from './chronicle/build.js';
 import { isDeliveryId } from './ontology/delivery-id.js';
 import { exportSessionEntries } from './store/journal-retention.js';
 import type { ExperienceStore } from './store/experience.js';
@@ -123,6 +123,13 @@ export interface RpcDeps {
   recordDetail?: (kind: SpiritRecordDetailRequest['kind'], id: string) => SpiritRecordDetailResult | undefined;
   /** 模型可写记忆（v0.8）：两本账+日记；省略 ⇒ memory-list 报 unavailable。 */
   memory?: ModelMemoryStore;
+  /**
+   * 上游暖条目供给（v0.10）：编年的「得知 / 关于这个人」两路。
+   *
+   * 由装配点决定给不给（它会开上游库的文件 I/O）。省略 ⇒ 编年只剩自家那三路，
+   * 不报错——"上游没装"是正常状态，不是故障。
+   */
+  learnedSource?: (opts: { days: number; limit: number }) => ChronicleLearnedInput[];
   /** 生涯流程档（v0.8.18）：读 spirit 自存的三档预总结；省略 ⇒ 面板该组为空。 */
   distillDigest?: () => DistillDigestRow[];
   /** 实体名反查（v0.8.18）：面板「关联实体」用。 */
@@ -1123,6 +1130,15 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
           }));
       })();
 
+      // 得知 / 关于这个人（v0.10 暖通路）：从上游 L1 取料，借 fish-memory 的"温度"三件套。
+      //
+      // 为什么走依赖注入而不是在这里直接 import l1-source：
+      // 那个模块会开上游库（文件 I/O），面板端点必须能在"上游没装"的机器上跑，
+      // 而且单测要能喂假数据。所以装配点（index）决定给不给这一路，缺席 ⇒ 编年只是变稀。
+      const learned = deps.learnedSource === undefined
+        ? []
+        : deps.learnedSource({ days, limit: 600 });
+
       // 线：生涯流程档只取「一段日子」的档（week/month）。
       //
       // 为什么不取 `milestone` 档：那一档的 periodKey 是**上游单条 record_id**，不是时间段——
@@ -1138,7 +1154,13 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         .filter((row) => inWindow(row.tsMs));
 
       return ok(
-        buildChronicle({ feels, works, notes, milestones, from, to, perDay }) satisfies SpiritChronicleResult,
+        buildChronicle({
+          feels, works, notes, milestones, learned, from, to, perDay,
+          // 日配额允许面板覆盖（0 = 关掉 learned 这一路，只看事/感/记着）
+          ...(typeof payload['learnedPerDay'] === 'number'
+            ? { learnedPerDay: Math.max(0, Math.min(50, int(payload['learnedPerDay'], CHRONICLE_LEARNED_PER_DAY))) }
+            : {}),
+        }) satisfies SpiritChronicleResult,
       );
     }
     case 'session-mode-get': {

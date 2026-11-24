@@ -15,6 +15,7 @@ import {
   chronicleText,
   localDayKey,
   type ChronicleInput,
+  type ChronicleLearnedInput,
 } from '../src/chronicle/build.js';
 import { TRIGGER_NEUTRAL, TRIGGER_TOOL_FAILURE } from '../src/types.js';
 import { NOTICE_SELF_MISTAKE, NOTICE_TASK_PROGRESS } from '../src/types.js';
@@ -131,7 +132,8 @@ describe('编年汇编', () => {
       dayKeyOf: dayOf,
     });
     expect(result.days).toHaveLength(2);
-    expect(result.days[0]?.day > result.days[1]?.day).toBe(true);
+    const [first, second] = result.days;
+    expect(String(first?.day) > String(second?.day)).toBe(true);
   });
 
   it('正文归一：折行、截断、去交付前缀', () => {
@@ -148,5 +150,64 @@ describe('编年汇编', () => {
 
   it('本机日键是 YYYY-MM-DD', () => {
     expect(localDayKey(Date.UTC(2026, 10, 22, 5, 0, 0))).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
+  });
+});
+
+describe('编年：learned 日配额（v0.10 真机逼出来的）', () => {
+  it('learned 每天最多 5 条，按温度取最暖的', () => {
+    // 真机 11-23 那天原本 131 条 learned；不限流编年就是流水账
+    const learned: ChronicleLearnedInput[] = Array.from({ length: 20 }, (_, i) => ({
+      kind: 'learned' as const,
+      id: `l${i}`,
+      tsMs: 1_000_000 + i,
+      text: `第 ${i} 条知识`,
+      // 只有第 7 条最暖，它必须留下；最冷的排后面
+      warmth: i === 7 ? ('hot' as const) : i < 12 ? ('cool' as const) : ('faded' as const),
+    }));
+    const result = buildChronicle({
+      feels: [],
+      works: [],
+      learned,
+      from: 0,
+      to: 2_000_000,
+      dayKeyOf: () => 'same',
+    });
+    const kept = result.days[0]?.items ?? [];
+    const learnedKept = kept.filter((item) => item.kind === 'learned');
+    expect(learnedKept).toHaveLength(5);
+    expect(kept.some((item) => item.id === 'l7')).toBe(true);
+    expect(learnedKept.every((item) => item.warmth !== 'faded')).toBe(true);
+  });
+
+  it('bond 不受配额限制（真机每天 1–6 条，天然不会淹）', () => {
+    const learned: ChronicleLearnedInput[] = Array.from({ length: 10 }, (_, i) => ({
+      kind: 'bond' as const,
+      id: `b${i}`,
+      tsMs: 1_000_000 + i,
+      text: `关于这个人的第 ${i} 条`,
+      warmth: 'warm' as const,
+    }));
+    const result = buildChronicle({
+      feels: [],
+      works: [],
+      learned,
+      from: 0,
+      to: 2_000_000,
+      dayKeyOf: () => 'same',
+    });
+    expect(result.days[0]?.counts.bond).toBe(10);
+  });
+
+  it('learnedPerDay=0 时一条都不出（配额可关到零）', () => {
+    const result = buildChronicle({
+      feels: [],
+      works: [],
+      learned: [{ kind: 'learned', id: 'x', tsMs: 1_000_000, text: '一条', warmth: 'hot' }],
+      from: 0,
+      to: 2_000_000,
+      learnedPerDay: 0,
+      dayKeyOf: () => 'same',
+    });
+    expect(result.days[0]?.counts.learned).toBe(0);
   });
 });

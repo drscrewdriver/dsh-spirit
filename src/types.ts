@@ -126,6 +126,25 @@ export const VOICE_TIERS = [VOICE_PLAIN, VOICE_TERSE, VOICE_WARM, VOICE_LIVELY, 
 export type VoiceTier = (typeof VOICE_TIERS)[number];
 
 /**
+ * 温度档（v0.10，借 fish-memory 的"会淡忘"形）：编年里「得知 / 关于这个人」两路的鲜活度分档。
+ *
+ * 为什么登记在这里而不是 `prime/l1-warmth.ts`：本仓有一条机械门禁——
+ * 除 `types.ts` 外任何文件出现"≥2 个同族取值的字面量集合"就算复制了取值域
+ * （`tests/enums-single-source.test.ts`）。温度档是与 REACTION/VOICE 平级的词汇表，
+ * 它的取值域本来就该跟其它族住在一起；放在消费方会让门禁判红，也会让后来者抄第二份。
+ *
+ * ⚠️ `warm` / `mild` 与 VOICE_WARM / REACTION_MILD 同字不同义：语气是"怎么说话"，
+ * 反应是"这一下多在意"，温度是"这条还记不记得清"。三者在类型上不可互换（TS 会挡），
+ * 读代码时要按上下文分，别按字面串。
+ */
+export const WARMTH_HOT = 'hot' as const;
+export const WARMTH_WARM = 'warm' as const;
+export const WARMTH_COOL = 'cool' as const;
+export const WARMTH_FADED = 'faded' as const;
+export const WARMTH_TIERS = [WARMTH_HOT, WARMTH_WARM, WARMTH_COOL, WARMTH_FADED] as const;
+export type WarmthTier = (typeof WARMTH_TIERS)[number];
+
+/**
  * salience 权重三值：
  * - `0` 不在意 ⇒ **不产生条目**（"不记什么"也是人格）
  * - `1` 在意 ⇒ 记一行

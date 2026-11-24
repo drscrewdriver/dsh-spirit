@@ -99,7 +99,13 @@ export function registerCardPreStep(ctx: Context, deps: PreStepHookDeps): void {
         },
       });
       // 两段式：等 card-observe 在会话日志里看到这一行，指纹才算"已发"
-      deps.spirit.noteInjected(agentId, String(card.id ?? ''), outcome.fingerprint);
+      deps.spirit.noteInjected(
+        agentId,
+        String(card.id ?? ''),
+        outcome.fingerprint,
+        // 暖记忆要等这条卡真进会话日志才记账（卡被覆盖/取消时不该白吃冷却窗）
+        outcome.warmId,
+      );
       // 卡追加在尾部；**不设 startsRequestSeries**（它会强制系统提示重新准入并打断请求系列）
       return { kind: 'enter', messages: [...messages, card] };
     } catch (err) {

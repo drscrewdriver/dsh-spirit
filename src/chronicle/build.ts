@@ -21,6 +21,7 @@ import type {
   SpiritChronicleItem,
   SpiritChronicleKind,
   SpiritChronicleResult,
+  SpiritChronicleWarmth,
 } from '../contract.js';
 import type { NoticeKind, TriggerKind } from '../types.js';
 
@@ -30,6 +31,18 @@ export const CHRONICLE_PER_DAY_DEFAULT = 40;
 export const CHRONICLE_DAYS_MAX = 365;
 /** 单条正文顶：编年是给人扫的，不是全文库。 */
 export const CHRONICLE_TEXT_MAX = 320;
+/**
+ * `learned` 每天的配额（v0.10 实测逼出来的）。
+ *
+ * 真机 30 天窗内 leaned 有 982 条，**单日峰值 131 条**、中位数 23 条；
+ * 而 `bond` 每天只有 1–6 条。若不限流，编年第一屏就是一张流水账——
+ * 比 v0.9 的"伤疤清单"更糟，等于这次重定位白做。
+ *
+ * 5 条的取值依据：一天真正"值得记住的新知识"本来就不多，
+ * 超过 5 条时人扫不进眼里；被挤掉的不是丢失（面板仍可按更长窗口/星海看），
+ * 只是不作为第一屏的默认景深。
+ */
+export const CHRONICLE_LEARNED_PER_DAY = 5;
 
 /** 交付行常见的主语前缀（写入侧 `ontology` 带的标签），编年里由 kind 徽标承担，正文去掉。 */
 const DELIVERY_PREFIX = /^(?:交付物|交付|delivered|delivery)(?:\s*[:：]\s*)/iu;
@@ -65,6 +78,17 @@ export interface ChronicleNoteInput {
   echoId?: string;
 }
 
+/** 上游暖条目输入（= `WarmChronicleItem` 的最小投影，v0.10）。 */
+export interface ChronicleLearnedInput {
+  kind: 'learned' | 'bond';
+  id: string;
+  tsMs: number;
+  text: string;
+  warmth: SpiritChronicleWarmth;
+  expired?: boolean;
+  recalled?: number;
+}
+
 /** 生涯流程档输入（= `DistillDigestRow` 的最小投影；只取 week/month 这类「一段日子」档进轴）。 */
 export interface ChronicleMilestoneInput {
   periodKey: string;
@@ -77,10 +101,14 @@ export interface ChronicleInput {
   works: readonly ChronicleWorkInput[];
   notes?: readonly ChronicleNoteInput[];
   milestones?: readonly ChronicleMilestoneInput[];
+  /** 从上游取来的暖条目（v0.10：编年的「得知 / 关于这个人」两路）。 */
+  learned?: readonly ChronicleLearnedInput[];
   /** 窗口（含两端，ms）。窗口外的行一律丢掉——编年不是全库导出。 */
   from: number;
   to: number;
   perDay?: number;
+  /** `learned` 每天最多几条（缺省 5；`bond` 不受限——量级本就 1–6）。 */
+  learnedPerDay?: number;
   /** 时区无关的日键构造（测试可注入固定实现）；缺省用本机时区。 */
   dayKeyOf?: (tsMs: number) => string;
 }
@@ -107,14 +135,24 @@ export function chronicleText(raw: string): string {
  * 同类之内才按时间倒序（近的在前）。
  */
 const KIND_WEIGHT: Readonly<Record<SpiritChronicleKind, number>> = {
-  work: 3,
-  milestone: 2,
+  work: 5,
+  milestone: 4,
+  bond: 3,
+  learned: 2,
   note: 1,
   feel: 0,
 };
 
+/** 温度档的冷暖序（数字越小越暖），合并同句条目时用。 */
+const WARMTH_RANK: Readonly<Record<SpiritChronicleWarmth, number>> = {
+  hot: 0,
+  warm: 1,
+  cool: 2,
+  faded: 3,
+};
+
 function emptyCounts(): Record<SpiritChronicleKind, number> {
-  return { work: 0, feel: 0, note: 0, milestone: 0 };
+  return { work: 0, feel: 0, note: 0, milestone: 0, learned: 0, bond: 0 };
 }
 
 interface Pending {
@@ -131,6 +169,7 @@ interface Pending {
 export function buildChronicle(input: ChronicleInput): SpiritChronicleResult {
   const dayKeyOf = input.dayKeyOf ?? localDayKey;
   const perDay = Math.max(1, Math.floor(input.perDay ?? CHRONICLE_PER_DAY_DEFAULT));
+  const learnedPerDay = Math.max(0, Math.floor(input.learnedPerDay ?? CHRONICLE_LEARNED_PER_DAY));
   const inWindow = (ts: number): boolean => ts >= input.from && ts <= input.to;
 
   const merged = new Map<string, Pending>();
@@ -151,6 +190,17 @@ export function buildChronicle(input: ChronicleInput): SpiritChronicleResult {
     }
     if (existing.item.detail === undefined && pending.item.detail !== undefined) {
       existing.item.detail = pending.item.detail;
+    }
+    // 温度取更暖的那次：同句出现两次说明它反复出现（尤其上游会把同一条偏好蒸馏多次），
+    // 亮度合并成一次也不该比任一次更冷。
+    if (existing.item.warmth !== undefined && pending.item.warmth !== undefined) {
+      existing.item.warmth = WARMTH_RANK[pending.item.warmth] < WARMTH_RANK[existing.item.warmth]
+        ? pending.item.warmth
+        : existing.item.warmth;
+    }
+    if (existing.item.expired !== true && pending.item.expired === true) existing.item.expired = true;
+    if (pending.item.recalled !== undefined) {
+      existing.item.recalled = Math.max(existing.item.recalled ?? 0, pending.item.recalled);
     }
   };
 
@@ -233,6 +283,25 @@ export function buildChronicle(input: ChronicleInput): SpiritChronicleResult {
     });
   }
 
+  for (const warm of input.learned ?? []) {
+    if (!inWindow(warm.tsMs)) continue;
+    const text = chronicleText(warm.text);
+    if (text === '') continue;
+    push({
+      day: dayKeyOf(warm.tsMs),
+      item: {
+        kind: warm.kind,
+        id: warm.id,
+        tsMs: warm.tsMs,
+        text,
+        repeat: 1,
+        warmth: warm.warmth,
+        ...(warm.expired === true ? { expired: true } : {}),
+        ...(warm.recalled !== undefined && warm.recalled > 0 ? { recalled: warm.recalled } : {}),
+      },
+    });
+  }
+
   const byDay = new Map<string, SpiritChronicleItem[]>();
   for (const pending of merged.values()) {
     const list = byDay.get(pending.day) ?? [];
@@ -244,7 +313,16 @@ export function buildChronicle(input: ChronicleInput): SpiritChronicleResult {
   const days: SpiritChronicleDay[] = [];
   for (const [day, items] of byDay) {
     items.sort((a, b) => (KIND_WEIGHT[b.kind] - KIND_WEIGHT[a.kind]) || (b.tsMs - a.tsMs));
-    const kept = items.slice(0, perDay);
+    // `learned` 配额：按温度取最暖的几条，其余只留在库里（不是删，只是不进这一屏）。
+    // `bond` 不设配额——真机每天 1–6 条，天然不会淹；它才是"关于这个人"的主料。
+    const learnedItems = items.filter((item) => item.kind === 'learned');
+    const keptLearned = learnedItems
+      .slice()
+      .sort((a, b) => (WARMTH_RANK[a.warmth ?? 'faded'] - WARMTH_RANK[b.warmth ?? 'faded']) || (b.tsMs - a.tsMs))
+      .slice(0, learnedPerDay);
+    const learnedKeepIds = new Set(keptLearned.map((item) => item.id));
+    const quotaApplied = items.filter((item) => item.kind !== 'learned' || learnedKeepIds.has(item.id));
+    const kept = quotaApplied.slice(0, perDay);
     const counts = emptyCounts();
     let dayTotal = 0;
     for (const item of kept) {

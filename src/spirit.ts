@@ -57,6 +57,8 @@ export type PreStepOutcome =
   | { kind: 'passthrough'; reason: Gate }
   | { kind: 'recorded'; reason: Gate }
   | { kind: 'injected'; text: string; bytes: number; fingerprint: string; reason: Gate; tendency?: string;
+      /** 本轮卡里带的暖记忆 id（v0.11）：适配器要把它挂到在飞卡上，确认后才记冷却。 */
+      warmId?: string;
       /** 本轮被「想起」的段落（已截断）——回响落档面要它，注入卡之外不另取原文。 */
       recalled?: readonly string[];
       /** 本轮被挡在卡外的条目及原因（P0 纯观测：不进卡、不进指纹）。 */
@@ -105,6 +107,15 @@ export interface SpiritDeps {
   goalLine?(workspaceId: string): string | undefined;
   /** 取上一会话末尾条目（跨会话基调）。 */
   previousEntries(workspaceId: string, sessionId: string, m: number): ExperienceEntry[];
+  /**
+   * 暖记忆读面（v0.11）：每轮最多一条「关于这个人」的上游记忆；省略/空 ⇒ 整段不出现。
+   *
+   * 为什么是"取一条"而不是"给一批"：挑选逻辑（白名单/安全闸/冷却/近义）全在
+   * `prime/warm-pick.ts` 里，那是纯函数且要跨轮状态——塞进这里会让本文件长出一份第二实现。
+   */
+  warmLine?(agentId: string, sessionId: string, workspaceId: string, now: number): { id: string; text: string } | undefined;
+  /** 暖记忆已进卡的记账（只在卡真的带上了才调，否则白吃冷却窗）。 */
+  onWarmCommitted?(agentId: string, warmId: string, now: number): void;
   /** 未竟账读面（刀3）：新会话首轮带出一行；省略/空 ⇒ 整段不出现。 */
   ledgerLine?(workspaceId: string, excludeSessionId: string, now: number): string | undefined;
   /** 条件化查表（刀4）：(workspace, actionKey) → 档位；O(1)，禁扫表。 */
@@ -125,8 +136,13 @@ interface AgentRuntime {
   lastFingerprint?: string;
   /** 已生效卡行在会话日志里的 seq（用来回到表面核它还在不在）。 */
   lastCardSeq?: number;
-  /** 在飞卡：messageId → 待提交指纹。未确认就写 lastFingerprint 会造成"卡没进去、但以为发过了"。 */
-  pending: Map<string, string>;
+  /**
+   * 在飞卡：messageId → 待提交的东西。未确认就写 lastFingerprint 会造成"卡没进去、但以为发过了"。
+   *
+   * v0.11 起值从裸指纹变成对象，因为暖记忆也要走同一条"确认后才记账"的路：
+   * 卡因预算装不下时那条暖记忆根本没进上下文，此刻若记了冷却，它就会白吃 24h。
+   */
+  pending: Map<string, { fingerprint: string; warmId?: string }>;
   /** 本会话是否已走过一轮（决定要不要给跨会话基调）。 */
   firstTurnDone: boolean;
 }
@@ -137,7 +153,7 @@ export class Spirit {
   /** 本轮检索段实际命中数（供诊断面读）。 */
   private readonly lastRecall = new Map<string, number>();
   /** sessionId → agentId：压缩事件只给会话，而运行态按 agent 计。 */
-  private readonly sessionToAgent = new Map<string, string>();
+  private readonly sessionToAgent = new Map();
   /**
    * 本轮的记账上下文（sessionId 为键）：`turn/end` 到达时拿它落一条体验。
    *
@@ -146,7 +162,7 @@ export class Spirit {
    */
   private readonly turnCtx = new Map<string, { workspaceId: string; newUserText: string }>();
   /** 会话→工作区的账本上下文：与 turnCtx 同生命周期，但**不随 release 删**（disposed 结算时靠它）。 */
-  private readonly ledgerCtx = new Map<string, string>();
+  private readonly ledgerCtx = new Map();
   private readonly deps: SpiritDeps;
 
   /**
@@ -221,13 +237,13 @@ export class Spirit {
       // 卡总闸：关了就与旁路同处理（照常记录与派生，不出卡）
       if (!cfg.live.cardEnabled) {
         this.recordOnce(input);
-        this.runtimes.set(input.agentId, { ...(this.runtimes.get(input.agentId) ?? { pending: new Map<string, string>(), firstTurnDone: false }), firstTurnDone: true });
+        this.runtimes.set(input.agentId, { ...(this.runtimes.get(input.agentId) ?? { pending: new Map(), firstTurnDone: false }), firstTurnDone: true });
         return { kind: 'recorded', reason: 'card-off' };
       }
       // ── 门 6：本轮必须有新的用户来源消息（纯工具步不打扰） ──
       if (input.messageCount === 0) return { kind: 'passthrough', reason: 'no-new-user' };
 
-      const runtime: AgentRuntime = this.runtimes.get(input.agentId) ?? { pending: new Map<string, string>(), firstTurnDone: false };
+      const runtime: AgentRuntime = this.runtimes.get(input.agentId) ?? { pending: new Map(), firstTurnDone: false };
       this.sessionToAgent.set(input.sessionId, input.agentId);
       // 事件会漏（压缩不发事件的那条线是真存在的），所以每轮先对一次表面：
       // 已生效的卡行不在模型可见集里 ⇒ 凭据作废，否则 `unchanged` 门会"永久静默"。
@@ -345,6 +361,9 @@ export class Spirit {
       // 条件化（刀4）：只经卡文本通道——不改 decision、不碰系统提示；乘子通道在上方 moodCfg
       const tendencyOverride = biasTendency(readBias(cfg, biasReader, failedActionKeys(cfg, entries), biasBands));
 
+      // 暖记忆（v0.11）：从上游取的「关于这个人」一条。拿不到就整段不出现（不编造、不留空壳）。
+      const warm = this.deps.warmLine?.(input.agentId, input.sessionId, input.workspaceId, input.now);
+
       const card = renderCard({
         mood,
         recent: recentTexts,
@@ -355,6 +374,7 @@ export class Spirit {
         ...(goalLine !== '' ? { goal: goalLine } : {}),
         ...(transactionLine !== '' ? { transaction: transactionLine } : {}),
         ...(tone !== '' ? { tone } : {}),
+        ...(warm !== undefined && warm.text !== '' ? { warm: warm.text } : {}),
         ...(tendencyOverride !== undefined ? { tendencyOverride } : {}),
         maxBytes: cfg.card.maxBytes,
         maxCharsPerEntry: cfg.recall.maxCharsPerEntry,
@@ -371,6 +391,8 @@ export class Spirit {
         text: card.text,
         bytes: card.bytes,
         fingerprint,
+        // 只有卡真带上了暖段才算（used.warm 才是事实；card.warm 参数可能被预算丢掉）
+        ...(card.used.warm === 1 && warm !== undefined ? { warmId: warm.id } : {}),
         reason: 'injected',
         recalled,
         // P0 观测面：近因路 + 历史路的负样本（截 20 条，纯观测）
@@ -386,7 +408,7 @@ export class Spirit {
   /** 卡片总闸关掉时仍要记一轮（与旁路同语义：留数据、断出口）。 */
   private recordOnce(input: PreStepInput): void {
     const signals = this.deps.watcher.takeSignals(input.sessionId, input.now);
-    this.record(signals, input, { pending: new Map<string, string>(), firstTurnDone: true });
+    this.record(signals, input, { pending: new Map(), firstTurnDone: true });
   }
 
   /** 记录所需的最小轮上下文（pre-step 的 input 本身就满足这个形状）。 */
@@ -449,12 +471,17 @@ export class Spirit {
     }
   }
 
-  /** 登记在飞卡（适配器造好消息、拿到真实 id 后调）。 */
-  noteInjected(agentId: string, messageId: string, fingerprint: string): void {
+  /**
+   * 登记在飞卡（适配器造好消息、拿到真实 id 后调）。
+   *
+   * @param warmId 本轮卡里带的暖记忆 id（没带 ⇒ undefined）。它要等到 `confirmInjected`
+   *   才提交冷却——卡没进上下文就记冷却，等于让一条从没被看到的记忆白吃 24h。
+   */
+  noteInjected(agentId: string, messageId: string, fingerprint: string, warmId?: string): void {
     if (messageId === '') return;
     // 没有运行态也要能登记：否则"先注一张卡、还没走过 pre-step"的时序下指纹会丢
-    const runtime = this.runtimes.get(agentId) ?? { pending: new Map<string, string>(), firstTurnDone: true };
-    runtime.pending.set(messageId, fingerprint);
+    const runtime = this.runtimes.get(agentId) ?? { pending: new Map(), firstTurnDone: true };
+    runtime.pending.set(messageId, { fingerprint, ...(warmId === undefined || warmId === '' ? {} : { warmId }) });
     this.runtimes.set(agentId, runtime);
   }
 
@@ -466,11 +493,13 @@ export class Spirit {
    */
   confirmInjected(messageId: string, seq?: number): boolean {
     for (const [agentId, runtime] of this.runtimes.entries()) {
-      const fingerprint = runtime.pending.get(messageId);
-      if (fingerprint === undefined) continue;
+      const pending = runtime.pending.get(messageId);
+      if (pending === undefined) continue;
       runtime.pending.delete(messageId);
-      runtime.lastFingerprint = fingerprint;
+      runtime.lastFingerprint = pending.fingerprint;
       if (typeof seq === 'number' && Number.isFinite(seq)) runtime.lastCardSeq = seq;
+      // 暖记忆记账放在确认之后：这一步才代表"它真的进了上下文"
+      if (pending.warmId !== undefined) this.deps.onWarmCommitted?.(agentId, pending.warmId, Date.now());
       this.deps.onConfirmed?.(agentId);
       return true;
     }
@@ -507,7 +536,7 @@ export class Spirit {
     this.turnCtx.delete(sessionId);
     const signals = this.deps.watcher.takeSignals(sessionId, now);
     const agentId = this.sessionToAgent.get(sessionId);
-    const runtime = this.runtimes.get(agentId ?? '') ?? { pending: new Map<string, string>(), firstTurnDone: true };
+    const runtime = this.runtimes.get(agentId ?? '') ?? { pending: new Map(), firstTurnDone: true };
     try {
       this.record(signals, { sessionId, workspaceId: ctx.workspaceId, now, newUserText: ctx.newUserText }, runtime);
       // 未竟账兑底（刀3）：disposed 不发/丢失的宿主线在这里也能入账（取代链收敛重复）

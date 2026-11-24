@@ -55,6 +55,14 @@ export interface CardInput {
   transaction?: string;
   /** 检索路片段（历史/DRSC）。 */
   recalled: readonly string[];
+  /**
+   * 暖记忆段（v0.11）：从上游取的「关于这个人」的一条，最多 1 条短句。
+   *
+   * 为什么单独一段而不是并进「记着」：记着是模型自己写的（可改可删），
+   * 暖记忆是从上游读来的（只读投影）——混在一行会让"这条归谁"说不清，
+   * 事后也没法把两者分开统计。
+   */
+  warm?: string;
   /** 跨会话基调行（仅首轮给）。 */
   tone?: string;
   /**
@@ -74,7 +82,7 @@ export interface CardResult {
    * 各段实际进卡的条数（面板与门禁核对用）。
    * `feedback`/`thread`/`transaction` 仅在卡真带该段时出现（关轨时省略该键，保持旧四段对账口径不变）。
    */
-  used: { status: 0 | 1; recent: number; recalled: number; tone: 0 | 1; feedback?: 0 | 1; thread?: 0 | 1; memory?: 0 | 1; goal?: 0 | 1; transaction?: 0 | 1 };
+  used: { status: 0 | 1; recent: number; recalled: number; tone: 0 | 1; feedback?: 0 | 1; thread?: 0 | 1; memory?: 0 | 1; goal?: 0 | 1; transaction?: 0 | 1; warm?: 0 | 1 };
   /** 被预算挤掉的段数（>0 说明字节顶偏小，面板应提示）。 */
   dropped: number;
 }
@@ -103,7 +111,7 @@ export function renderCard(input: CardInput): CardResult {
   const assemble = (body: readonly string[]): string => [...head, ...body, ...closeTail].join('\n');
 
   const body: string[] = [];
-  const used: { status: 0 | 1; recent: number; recalled: number; tone: 0 | 1; feedback?: 0 | 1; thread?: 0 | 1; memory?: 0 | 1; goal?: 0 | 1; transaction?: 0 | 1 } = { status: 0, recent: 0, recalled: 0, tone: 0 };
+  const used: { status: 0 | 1; recent: number; recalled: number; tone: 0 | 1; feedback?: 0 | 1; thread?: 0 | 1; memory?: 0 | 1; goal?: 0 | 1; transaction?: 0 | 1; warm?: 0 | 1 } = { status: 0, recent: 0, recalled: 0, tone: 0 };
   let dropped = 0;
 
   /** 逐行实测：装不下就不加（不截半句、不预留估算）。 */
@@ -174,6 +182,15 @@ export function renderCard(input: CardInput): CardResult {
     if (text === '') continue;
     if (pushIfFits(`想起：${escapeFrame(text)}`)) used.recalled += 1;
     else dropped += 1;
+  }
+  // 暖记忆（v0.11）：优先级排在「开场」之前但**低于想起**——它与 fish-memory / agent-soul
+  // 的注入面重叠最多，预算紧时第一个让位（见 contract.ts card 节的预算互撞教训）。
+  if (input.warm !== undefined && input.warm !== '') {
+    const text = clipLine(input.warm, maxCharsPerEntry);
+    if (text !== '') {
+      if (pushIfFits(`暖：${escapeFrame(text)}`)) used.warm = 1;
+      else dropped += 1;
+    }
   }
   if (input.tone !== undefined) {
     const text = clipLine(input.tone, maxCharsPerEntry);

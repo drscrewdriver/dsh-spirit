@@ -63,7 +63,9 @@ import { backfillEchoText } from './echo/text-backfill.js';
 import { backfillEchoRefs } from './echo/refs-backfill.js';
 import { summarizeProcedural } from './prime/distill-summary.js';
 import { buildDigests, readDigests } from './prime/distill-digest.js';
-import { searchL1Records, loadL1Entities } from './prime/l1-source.js';
+import { searchL1Records, loadL1Entities, searchL1WarmRows, type L1WarmthRow } from './prime/l1-source.js';
+import { toWarmItems } from './prime/l1-warmth.js';
+import { WARM_LOOKBACK_CACHE_MS, WARM_LOOKBACK_DAYS, commitWarmInject, createWarmPickState, pickWarmForCard } from './prime/warm-pick.js';
 import { buildEntityAliases, buildEntityLinks, ensureEntityAliases, linkKnowledgeRecords, resolveEntityId } from './prime/entity-align.js';
 import { searchAll } from './search/all.js';
 import { describeSearchIndex, ensureSearchIndex } from './search/index.js';
@@ -136,6 +138,64 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   const echoRecall = new EchoRecallStore({ db: () => db ?? undefined, logger });
   // v0.8.8 回响引用（echo-id ≡ memid）：每条被想起的记忆一行，跨轮合并 times
   const echoRefs = new EchoRefStore({ db: () => db ?? undefined, logger });
+
+  // ── 暖记忆注入（v0.11）的跨轮状态与上游取料缓存 ──
+  //
+  // 为什么要缓存：`agent/pre-step` 每个 agent 每轮都会问一次，而 `searchL1WarmRows`
+  // 要开上游库（文件 I/O + SQL）。同一轮多个 agent（子代理并存）不去重就会开 N 次库。
+  // 缓存窗 60s：上游蒸馏本身是分钟级批量，秒级新鲜度没有意义。
+  const warmState = createWarmPickState();
+  let warmCacheAt = 0;
+  let warmCacheRows: Awaited<ReturnType<typeof loadWarmRows>> = { rows: [], items: [] };
+  /**
+   * 上次挑失败的原因（诊断面：**静默不注入最难排查**）。
+   *
+   * 不落库、不进注入：只在原因组合变化时打一条 warn。这样"这几天怎么没有暖记忆"
+   * 在日志里答得上来，而不是要靠猜（白名单挡了？太冷？全在冷却？）。
+   */
+  let lastWarmRejected: Record<string, number> = {};
+
+  /** 开关：走生效配置的 ontology 闸（暖记忆属"上游知识面"，与本体层同生共死）。 */
+  const warmPickEnabled = (): boolean => eff().enabled && eff().live.cardEnabled;
+
+  /** 只在"原因组合变了"时打一条 warn（每轮都打会把日志冲成龙卷风）。 */
+  const noteWarmRejected = (rejected: Record<string, number>): void => {
+    const signature = Object.keys(rejected).sort().join(',');
+    const previous = Object.keys(lastWarmRejected).sort().join(',');
+    lastWarmRejected = rejected;
+    if (signature === previous || signature === '') return;
+    logger.info(`[spirit] 暖记忆本轮未带（${Object.entries(rejected).map(([k, v]) => `${k}×${v}`).join(' ')}）`);
+  };
+
+  const loadWarmRows = (): { rows: L1WarmthRow[]; items: ReturnType<typeof toWarmItems> } => {
+    // 被想起次数：从自己的 echo_ref 取（不是上游召回账——那是它的账）
+    const recallHits = new Map<string, number>();
+    if (db !== null) {
+      try {
+        for (const row of echoRefs.list({ limit: 200, order: 'recall' }).rows) recallHits.set(row.memId, row.times);
+      } catch {
+        /* 引用表读不到 ⇒ 只是少了"热"这一项，不阻断 */
+      }
+    }
+    const rows = searchL1WarmRows({ days: WARM_LOOKBACK_DAYS, limit: 2000 });
+    const items = toWarmItems(rows, {
+      now: Date.now(),
+      recallHitsOf: (l1Id) => recallHits.get(`l1-dlv:${l1Id}`) ?? recallHits.get(`l1-task:${l1Id}`) ?? 0,
+    });
+    return { rows, items };
+  };
+
+  const warmCache = (now: number): { rows: L1WarmthRow[]; items: ReturnType<typeof toWarmItems> } => {
+    if (now - warmCacheAt < WARM_LOOKBACK_CACHE_MS) return warmCacheRows;
+    warmCacheAt = now;
+    try {
+      warmCacheRows = loadWarmRows();
+    } catch (err) {
+      logger.warn(`[spirit] 暖记忆取料失败，本轮不带：${err instanceof Error ? err.message : String(err)}`);
+      warmCacheRows = { rows: [], items: [] };
+    }
+    return warmCacheRows;
+  };
   // v0.8 模型可写记忆（两本账+日记）与目的层
   const modelMemory = new ModelMemoryStore({ db: () => db, logger });
   const goals = new GoalStore({ db: () => db, logger });
@@ -366,6 +426,25 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
         const rows = goals.openFor(workspaceId, 3);
         return rows.length === 0 ? undefined : rows.map((goal) => goal.title).join('；');
       },
+      // 暖记忆（v0.11）：每轮最多一条「关于这个人」的上游记忆。
+      //
+      // 三条纪律在这里兑现：
+      // 1. 上游没装/表不在 ⇒ undefined，卡里整段不出现（不报错、不留空壳行）；
+      // 2. 只读：searchL1WarmRows 是本仓唯一的上游消费面；
+      // 3. 挑选逻辑全在 prime/warm-pick.ts（白名单/安全闸/冷却/近义），这里只持有跨轮状态。
+      warmLine: (_agentId, _sessionId, _workspaceId, now) => {
+        if (!warmPickEnabled()) return undefined;
+        const cached = warmCache(now);
+        const picked = pickWarmForCard({ rows: cached.rows, items: cached.items, state: warmState, now, ...(warmState.lastAnyAt === undefined ? {} : { lastAnyAt: warmState.lastAnyAt }) });
+        noteWarmRejected(picked.rejected);
+        return picked.item ?? undefined;
+      },
+      onWarmCommitted: (_agentId, warmId, now) => {
+        // 只有卡真进了会话日志才走到这里（confirmInjected），所以冷却不会被白吃
+        const cached = warmCache(now);
+        const hit = cached.items.find((item) => item.id === warmId);
+        commitWarmInject(warmState, { id: warmId, text: hit?.text ?? '' }, now);
+      },
       previousEntries: (workspaceId, sessionId, m) => store.previousSessionEntries(workspaceId, sessionId, m),
       // 刀3：新会话首轮带出一行未竟账（过期/无账/关闸 ⇒ undefined，整行不出现）
       ledgerLine: (workspaceId, excludeSessionId, now) =>
@@ -500,6 +579,38 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
       return { entity, ...(entityId === undefined ? {} : { entityId }), digests, knowledgeRefs };
     },
     runDistillDigest: () => alignAndDigest(),
+    // 编年暖通路（v0.10）：上游 L1 取料 → 温度（priority + 自身引用计数）。
+    //
+    // 三条纪律都在这里兑现：
+    // 1. 上游没装/表不在 ⇒ 空数组，编年只剩自家那三路（不报错、不假装）；
+    // 2. 只读，不写上游、不缓存正文（真源永远在上游）；
+    // 3. 走 l1-source 这个唯一消费面，路径/schema 字样不扩散到第二个文件（门禁 7.3）。
+    learnedSource: ({ days, limit }) => {
+      // 被想起次数：从自己的 echo_ref 取（不是上游的召回账——那是它的账，拿来当"我记得"就是第二真源）
+      const recallHits = new Map<string, number>();
+      if (db !== null) {
+        try {
+          for (const row of echoRefs.list({ limit: 200, order: 'recall' }).rows) {
+            recallHits.set(row.memId, row.times);
+          }
+        } catch {
+          /* 引用表读不到 ⇒ 温度只是少了"热"这一项，不阻断编年 */
+        }
+      }
+      const rows = searchL1WarmRows({ days, limit });
+      return toWarmItems(rows, {
+        now: Date.now(),
+        recallHitsOf: (l1Id) => recallHits.get(`l1-dlv:${l1Id}`) ?? recallHits.get(`l1-task:${l1Id}`) ?? 0,
+      }).map((item) => ({
+        kind: item.kind === 'bond' ? 'bond' as const : 'learned' as const,
+        id: item.id,
+        tsMs: item.tsMs,
+        text: item.text,
+        warmth: item.tier,
+        ...(item.expired ? { expired: true } : {}),
+        ...(item.recallHits > 0 ? { recalled: item.recallHits } : {}),
+      }));
+    },
     goals,
     dataDir,
     cfg,
