@@ -430,6 +430,14 @@ export const zh = {
   'panel.bootOn': '强制开启',
   'panel.bootOff': '强制关闭',
   'panel.bootHint': '挡位只决定下次启动的初值；数据始终保留。',
+  'llm.title': '长觉与重建使用 LLM 能力',
+  'llm.recommend': '长觉、全记忆重建、做梦均为异步 LLM 任务，不阻塞对话；关闭「自动长觉/蒸馏」开关时不会调用任何 LLM。已指定本地/局域网端点（Ollama、LM Studio、自建 llama.cpp、vLLM、SGLang、Strata、Ninfer 等）后绝不跟随宿主；只有「跟随部署/复用宿主」才与对话共用 provider/model——宿主若是高价 API，长觉费用会随之上升，请谨慎。默认不建议跟随：请显式指定本地蒸馏端点。',
+  'llm.route': '当前蒸馏路由：',
+  'llm.routeNone': '尚未确定（宿主未报出生效路由）',
+  'llm.hostWarn': '⚠ 当前跟随宿主默认模型：与对话共用 provider/model，高价 API 下每轮长觉/重建都在增加费用；请钉到本地供应商或部署 pin。',
+  'llm.hint': '「跟随」只是缺省回退，不是推荐配置；默认建议不跟随：在「做梦 → 蒸馏模型」显式选择本地供应商。',
+  'llm.ack': '我已知晓',
+  'llm.confirmHide': '确定隐藏「LLM 使用提示」？确认后两处（做梦/设置）都不再展示；需要时可清空 localStorage 键 dsh.llm-notice.spirit.hidden.v1 或重装恢复。',
 } as const;
 
 export type CopyKey = keyof typeof zh;
@@ -842,6 +850,14 @@ export const en: Record<CopyKey, string> = {
   'panel.bootOn': 'Force on',
   'panel.bootOff': 'Force off',
   'panel.bootHint': 'The gear only sets the next-launch default; data is always kept.',
+  'llm.title': 'Deep sleep and rebuild use LLM capacity',
+  'llm.recommend': 'Deep sleep, full-memory rebuild and naps are asynchronous LLM tasks and never block the conversation; with the auto-deep-sleep/distillation switch off, no LLM is called at all. Once a local/LAN endpoint is chosen (Ollama, LM Studio, self-hosted llama.cpp, vLLM, SGLang, Strata, Ninfer, …) it never follows the host; only Follow deployment / Reuse host shares provider/model with the conversation — on a premium API that raises deep-sleep cost. Following the host is not recommended as a default: pin a local distillation endpoint explicitly.',
+  'llm.route': 'Current distill route: ',
+  'llm.routeNone': 'not resolved yet (the host reported no effective route)',
+  'llm.hostWarn': '⚠ Currently following the host default model: it shares provider/model with the conversation, so every deep-sleep/rebuild adds cost on a premium API. Pin a local provider or a deployment pin.',
+  'llm.hint': '“Follow” is only a fallback, not the recommended setting. Default advice: do not follow — pick a local provider under Dream → Distill model.',
+  'llm.ack': 'Got it',
+  'llm.confirmHide': 'Hide the “LLM usage notice”? Both places (Dream / Settings) will stop showing it; to restore, clear the localStorage key dsh.llm-notice.spirit.hidden.v1 or reinstall.',
 };
 
 export const DICTS: Record<'zh' | 'en', Record<CopyKey, string>> = { zh, en };

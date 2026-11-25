@@ -9,6 +9,7 @@ import { createElement, useCallback, useEffect, useRef, useState, type CSSProper
 
 import type { SpiritDreamReport, SpiritDistillRouteView, SpiritSleepReport, SpiritSleepStatus, SpiritBackfillStatus } from '../../../src/contract.js';
 import { copyOf, type CopyKey } from '../copy.js';
+import { LlmNotice } from '../llm-notice.js';
 import type { RpcFn } from '../rpc.js';
 
 const BLOCK_STYLE: CSSProperties = { padding: '12px 16px', maxWidth: 680, display: 'grid', gap: 10, colorScheme: 'dark' };
@@ -297,6 +298,8 @@ export function SeaDream(props: SeaDreamProps) {
   return createElement(
     'div',
     { style: BLOCK_STYLE },
+    // LLM 费用提示与本地端点建议：做梦 tab 的第一区块（长觉/重建都会调用 LLM）
+    createElement(LlmNotice, { route }),
     createElement('h4', { style: TITLE_STYLE }, copy['dream.title']),
     createElement('p', { style: MUTED_STYLE }, copy['dream.desc']),
     createElement('p', { style: MUTED_STYLE }, copy['dream.auto']),

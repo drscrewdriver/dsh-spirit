@@ -13,9 +13,10 @@
  */
 import { createElement, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 
-import type { SpiritDreamReport, SpiritSessionStats, SpiritSettingsView } from '../../src/contract.js';
+import type { SpiritDreamReport, SpiritSessionStats, SpiritSettingsView, SpiritDistillRouteView } from '../../src/contract.js';
 import type { RpcFn } from './rpc.js';
 import { copyOf } from './copy.js';
+import { LlmNotice } from './llm-notice.js';
 import { sessionIdOf, type SeatProps } from './env.js';
 
 const mutedStyle: CSSProperties = { opacity: 0.65, fontSize: 12 };
@@ -37,6 +38,26 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
   const [settings, setSettings] = useState<SpiritSettingsView | null>(null);
   // 上次梦境读数（v0.3.4 设置面可见性：睡眠块要说话，不只在做梦 tab 里）
   const [dreamReport, setDreamReport] = useState<SpiritDreamReport | null>(null);
+  // 蒸馏路由现状（只读展示给首区块 LLM 费用提示；写入仍在做梦→蒸馏模型）
+  const [distillRoute, setDistillRoute] = useState<SpiritDistillRouteView | null>(null);
+
+  useEffect(() => {
+    if (rpc === undefined) return undefined;
+    let alive = true;
+    const load = (): void => {
+      void rpc('distill-models', {})
+        .then((result) => {
+          if (alive && result.ok) setDistillRoute(result.value);
+        })
+        .catch(() => {});
+    };
+    load();
+    const timer = setInterval(load, 10_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [rpc]);
   const [halfLifeDraft, setHalfLifeDraft] = useState<string>('');
   /** v19 台阶四键的输入草稿（失焦才提交；与回显真值比较，不重复写） */
   const [ladderDraft, setLadderDraft] = useState<{ hot: string; cold: string; warm: string; coldW: string }>({ hot: '', cold: '', warm: '', coldW: '' });
@@ -212,6 +233,8 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
     { style: { padding: '12px 16px' } },
     createElement('h3', { style: hStyle }, copy['panel.title']),
     createElement('p', { style: mutedStyle }, `${copy['panel.hint']} · ${copy['panel.notFact']}`),
+    // LLM 费用提示与本地端点建议：设置面第一个区块（引导/美化排其次）
+    createElement(LlmNotice, { route: distillRoute }),
     error !== null ? createElement('p', { style: { color: 'var(--dsw-danger-color, inherit)' } }, `${copy['panel.loadFailed']}: ${error}`) : null,
     stats === null
       ? createElement('p', { style: mutedStyle }, copy['panel.noData'])
