@@ -63,7 +63,20 @@ export function LlmNotice(props: { route: SpiritDistillRouteView | null }): Retu
     }
   }, []);
 
-  if (hidden) return null;
+  if (hidden) {
+    return createElement(
+      'div',
+      { style: { fontSize: 11, opacity: 0.5, padding: '2px 0' } },
+      createElement('button', {
+        type: 'button',
+        style: { background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', textDecoration: 'underline', fontSize: 11 },
+        onClick: () => {
+          try { localStorage.removeItem(HIDDEN_FLAG); window.dispatchEvent(new Event(SYNC_EVENT)); } catch { /* noop */ }
+          setHidden(false);
+        },
+      }, copy['llm.restore'] ?? '恢复 LLM 费用提示'),
+    );
+  }
 
   const effective = props.route?.effective ?? null;
   const routeLine = effective === null

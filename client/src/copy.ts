@@ -437,7 +437,8 @@ export const zh = {
   'llm.hostWarn': '⚠ 当前跟随宿主默认模型：与对话共用 provider/model，高价 API 下每轮长觉/重建都在增加费用；请钉到本地供应商或部署 pin。',
   'llm.hint': '「跟随」只是缺省回退，不是推荐配置；默认建议不跟随：在「做梦 → 蒸馏模型」显式选择本地供应商。',
   'llm.ack': '我已知晓',
-  'llm.confirmHide': '确定隐藏「LLM 使用提示」？确认后两处（做梦/设置）都不再展示；需要时可清空 localStorage 键 dsh.llm-notice.spirit.hidden.v1 或重装恢复。',
+  'llm.confirmHide': '确定隐藏「LLM 使用提示」？确认后两处（做梦/设置）都不再展示；需要时可点击下方“恢复”链接找回。',
+  'llm.restore': '恢复 LLM 费用提示',
 } as const;
 
 export type CopyKey = keyof typeof zh;
@@ -857,7 +858,8 @@ export const en: Record<CopyKey, string> = {
   'llm.hostWarn': '⚠ Currently following the host default model: it shares provider/model with the conversation, so every deep-sleep/rebuild adds cost on a premium API. Pin a local provider or a deployment pin.',
   'llm.hint': '“Follow” is only a fallback, not the recommended setting. Default advice: do not follow — pick a local provider under Dream → Distill model.',
   'llm.ack': 'Got it',
-  'llm.confirmHide': 'Hide the “LLM usage notice”? Both places (Dream / Settings) will stop showing it; to restore, clear the localStorage key dsh.llm-notice.spirit.hidden.v1 or reinstall.',
+  'llm.confirmHide': 'Hide the “LLM usage notice”? Both places (Dream / Settings) will stop showing it; use the “Restore” link below to bring it back.',
+  'llm.restore': 'Restore LLM cost notice',
 };
 
 export const DICTS: Record<'zh' | 'en', Record<CopyKey, string>> = { zh, en };
