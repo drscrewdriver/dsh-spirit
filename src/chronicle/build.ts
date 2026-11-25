@@ -313,6 +313,19 @@ export function buildChronicle(input: ChronicleInput): SpiritChronicleResult {
   const days: SpiritChronicleDay[] = [];
   for (const [day, items] of byDay) {
     items.sort((a, b) => (KIND_WEIGHT[b.kind] - KIND_WEIGHT[a.kind]) || (b.tsMs - a.tsMs));
+    // bond 去重：上游蒸馏常跨会话产出几乎相同的「关于这个人」条目，只保留最新一条。
+    // 判据：归一化前缀（去空格/标点，取前 40 字）相同即视为重复。
+    const bondSeen = new Set<string>();
+    const dedupedBond: typeof items = [];
+    for (const item of items) {
+      if (item.kind !== 'bond') { dedupedBond.push(item); continue; }
+      const key = item.text.replace(/[\s\p{P}]/gu, '').slice(0, 40);
+      if (bondSeen.has(key)) continue;
+      bondSeen.add(key);
+      dedupedBond.push(item);
+    }
+    items.length = 0;
+    items.push(...dedupedBond);
     // `learned` 配额：按温度取最暖的几条，其余只留在库里（不是删，只是不进这一屏）。
     // `bond` 不设配额——真机每天 1–6 条，天然不会淹；它才是"关于这个人"的主料。
     const learnedItems = items.filter((item) => item.kind === 'learned');

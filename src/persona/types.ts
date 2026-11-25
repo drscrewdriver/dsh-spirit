@@ -41,11 +41,20 @@ export const DEFAULT_PERSONA: PersonaCard = {
 
 function stringList(value: unknown, limit: number): string[] {
   if (!Array.isArray(value)) return [];
-  return value
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim().slice(0, PERSONA_LIMITS.itemChars))
-    .filter((item) => item !== '')
-    .slice(0, limit);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const trimmed = item.trim().slice(0, PERSONA_LIMITS.itemChars);
+    if (trimmed === '') continue;
+    // 精确去重（大小写敏感，因为中文无大小写；英文条目归小写比较）
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 /** 短词列表（昵称/自称共用）：比条目短得多（超 24 字就是写成了句子），去重保序、有顶。 */
