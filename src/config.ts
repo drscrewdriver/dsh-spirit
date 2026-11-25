@@ -326,10 +326,9 @@ export function resolveLive(raw: unknown): SpiritLiveSettings {
     typeof value[key] === 'boolean' ? (value[key] as boolean) : fallback;
   const int = (key: keyof SpiritLiveSettings, fallback: number): number =>
     typeof value[key] === 'number' && Number.isFinite(value[key] as number) ? Math.floor(value[key] as number) : fallback;
-  // 启动挡位：缺键/非法值归 'off'（出厂默认关闭）。挡位不在读侧折叠——启动期由
-  // `applyBootMode` 把初值写回 `enabled`，本会话的手动开关永远有效。
+  // 启动挡位：缺键/非法值归 'last'(出厂默认跟随上次，新安装无历史即开)。
   const bootMode: 'on' | 'off' | 'last' =
-    value.bootMode === 'on' || value.bootMode === 'off' || value.bootMode === 'last' ? value.bootMode : 'off';
+    value.bootMode === 'on' || value.bootMode === 'off' || value.bootMode === 'last' ? value.bootMode : 'last';
   return {
     bootMode,
     enabled: flag('enabled', d.enabled),
@@ -360,12 +359,19 @@ export function resolveLive(raw: unknown): SpiritLiveSettings {
 }
 
 /**
- * 启动期应用三态挡位：`on`/`off` 把初值写回 `enabled`，`last` 原样保留。
+ * 启动期应用三态挡位：控制**新会话默认档位**而非系统级 enabled。
  *
- * 不在读侧折叠：折叠会让本会话的手动开关永远失效。写回一次后，运行期读写全部
- * 走持久化的 `enabled`；写面缺席（老宿主/降级句柄）时保持持久值，不阻断启动。
+ * 设计意图（与 prime-memory 同构，用户澄清 2026-11-26）：
+ * - enabled = 系统级功能可用性，由 pill 控制；
+ * - bootMode = 新会话默认 off 状态，由滑块控制。
+ *   • 'off' → 新会话默认 off=true（spirit 对该会话隐身，但系统功能仍可用）
+ *   • 'on' → 新会话默认 off=false（spirit 自动参与）
+ *   • 'last' → 不改（沿用上次设置的默认档）
  */
-export async function applyBootMode(ref: unknown): Promise<void> {
+export async function applyBootMode(
+  ref: unknown,
+  modes?: { setDefaultOff(off: boolean | undefined): void },
+): Promise<void> {
   const maybe = ref as
     | { get?: () => SpiritLiveSettings; update?: (patch: Partial<SpiritLiveSettings>) => unknown }
     | null
@@ -377,14 +383,23 @@ export async function applyBootMode(ref: unknown): Promise<void> {
   } catch {
     return;
   }
-  if (live.bootMode !== 'on' && live.bootMode !== 'off') return;
-  const want = live.bootMode === 'on';
-  if (live.enabled === want || typeof maybe.update !== 'function') return;
-  try {
-    await Promise.resolve(maybe.update({ enabled: want }));
-  } catch {
-    /* 写面不可用：保持持久值 */
+  if (!modes) {
+    // 老降级路径：无 modes 时仍写 enabled（保持向后兼容）
+    if (live.bootMode !== 'on' && live.bootMode !== 'off') return;
+    const want = live.bootMode === 'on';
+    if (live.enabled === want || typeof maybe.update !== 'function') return;
+    try {
+      await Promise.resolve(maybe.update({ enabled: want }));
+    } catch { /* 写面不可用 */ }
+    return;
   }
+  // 新语义：滑块写会话默认档，不碰 enabled
+  if (live.bootMode === 'off') {
+    modes.setDefaultOff(true);
+  } else if (live.bootMode === 'on') {
+    modes.setDefaultOff(false);
+  }
+  // 'last' 不改
 }
 
 export function resolveDataDir(cfg: SpiritConfig): string {  if (cfg.dataDir) return cfg.dataDir;

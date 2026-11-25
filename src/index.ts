@@ -105,9 +105,8 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   const caps = probeCapabilities(ctx);
   const cfg = (): SpiritConfig => config;
   const live = (): SpiritLiveSettings => readLiveRef(config.live);
-  // 启动挡位（三态 on/off/last）：on/off 把初值写回 enabled，last 保持持久值。
-  // 异步写、失败不阻断启动（写面缺席的老宿主保持持久值）。
-  void applyBootMode(config.live);
+  // 启动挡位（三态 on/off/last）：控制新会话默认档位（而非系统级 enabled）。
+  // 异步、失败不阻断启动。需要 modes 就绪后才调用（见下方）。
   /** 已合并 live 兜底的生效视图（任何读开关的地方都只能拿这个，不能拿 `cfg()`）。 */
   const eff = (): SpiritConfig => effectiveCfg(config, live());
 
@@ -203,6 +202,8 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   const modelMemory = new ModelMemoryStore({ db: () => db, logger });
   const goals = new GoalStore({ db: () => db, logger });
   const modes = new SessionModeStore({ dataDir, logger });
+  // 启动挡位：滑块控制新会话默认 off 状态（而非系统级 enabled）。
+  void applyBootMode(config.live, modes);
   const store = new ExperienceStore({ db, logger });
   // v0.2 两张新面：未竟账（append-only 真源）与条件化（派生缓存，定性见 store/bias.ts）
   const ledger = new LedgerStore({ db, logger });

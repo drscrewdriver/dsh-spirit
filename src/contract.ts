@@ -1699,7 +1699,7 @@ export const SPIRIT_DEFAULTS: SpiritConfig = {
     backfillEnabled: true,
   },
   live: {
-    bootMode: 'off',
+    bootMode: 'last',
     enabled: true,
     personaEnabled: true,
     cardEnabled: true,

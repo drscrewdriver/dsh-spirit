@@ -28,6 +28,8 @@ type ModesMap = Record<string, SessionModeEntry>;
 export class SessionModeStore {
   private modes: ModesMap = {};
   private loaded = false;
+  /** 新会话默认 off 状态（由 applyBootMode 设置）。undefined = 不改（跟随全局）。 */
+  private _defaultOff: boolean | undefined;
 
   constructor(private readonly deps: { dataDir: string; logger: { warn(message: string): void } }) {}
 
@@ -61,7 +63,11 @@ export class SessionModeStore {
   }
 
   isOff(sessionId: string): boolean {
-    return this.get(sessionId).off === true;
+    const entry = this.get(sessionId);
+    // 显式会话覆盖优先；无条目时用启动默认；都没有则跟随全局
+    if (entry.off !== undefined) return entry.off;
+    if (this._defaultOff !== undefined) return this._defaultOff;
+    return false;
   }
 
   /** 旁路只对**注入**生效；采集与派生不看这个标记。 */
@@ -94,6 +100,9 @@ export class SessionModeStore {
     if (written !== true) this.deps.logger.warn('[spirit] session-modes 落盘失败，本次只保留内存态（重启后会话档位回到跟随全局）');
     return written === true;
   }
+
+  /** 由 applyBootMode 调用：设置新会话默认 off 状态。 */
+  setDefaultOff(off: boolean | undefined): void { this._defaultOff = off; }
 
   /** 条目数（面板与清理用）。 */
   size(): number {
