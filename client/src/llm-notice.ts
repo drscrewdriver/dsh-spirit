@@ -82,7 +82,7 @@ export function LlmNotice(props: { route: SpiritDistillRouteView | null }): Retu
         style: BTN,
         onClick: () => {
           // 两步：先确认（弹窗），确定后才写专门 flag 隐藏
-          let ok = false;
+          let ok: boolean;
           try { ok = typeof window !== 'undefined' && window.confirm(copy['llm.confirmHide']); } catch { ok = false; }
           if (!ok) return;
           try {
