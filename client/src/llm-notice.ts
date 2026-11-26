@@ -74,7 +74,7 @@ export function LlmNotice(props: { route: SpiritDistillRouteView | null }): Retu
           try { localStorage.removeItem(HIDDEN_FLAG); window.dispatchEvent(new Event(SYNC_EVENT)); } catch { /* noop */ }
           setHidden(false);
         },
-      }, copy['llm.restore'] ?? '恢复 LLM 费用提示'),
+      }, copy['llm.restore']),
     );
   }
 
