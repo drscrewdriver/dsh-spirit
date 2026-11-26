@@ -11,17 +11,20 @@
  *    用户会拿它当审计记录看。
  * 3. **轮询只读轻量投影**：有活动 2s、静默 5s、卸载即停；检视段迁走后这里不再逐轮拉条目。
  */
-import { createElement, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { createElement, useCallback, useEffect, useRef, useState } from 'react';
 
 import type { SpiritDreamReport, SpiritSessionStats, SpiritSettingsView, SpiritDistillRouteView } from '../../src/contract.js';
 import type { RpcFn } from './rpc.js';
 import { copyOf } from './copy.js';
 import { LlmNotice } from './llm-notice.js';
 import { sessionIdOf, type SeatProps } from './env.js';
+import { ensureThemeStyle } from './theme.js';
+import { getSkin, setSkin, type Skin } from './skin.js';
 
-const mutedStyle: CSSProperties = { opacity: 0.65, fontSize: 12 };
-const hStyle: CSSProperties = { margin: '0 0 4px', fontSize: 14, fontWeight: 600 };
-const HINT_BOX_STYLE: CSSProperties = { margin: '6px 0', padding: '8px 10px', borderRadius: 8, border: '1px solid rgba(210,160,30,.45)', display: 'grid', gap: 6 };
+// 样式走 theme.ts 的令牌类（.dsh-spirit-*）；这里不再留裸 inline 样式。
+const SKIN_OPTS: ReadonlyArray<[Skin, 'panel.skinAuto' | 'panel.skinLight' | 'panel.skinDark']> = [
+  ['auto', 'panel.skinAuto'], ['light', 'panel.skinLight'], ['dark', 'panel.skinDark'],
+];
 
 const DRSC_VERDICT_KEYS = { ok: 'panel.drscOk', skipped: 'panel.drscSkipped', warn: 'panel.drscWarn', fail: 'panel.drscFail' } as const;
 
@@ -62,6 +65,9 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
   /** v19 台阶四键的输入草稿（失焦才提交；与回显真值比较，不重复写） */
   const [ladderDraft, setLadderDraft] = useState<{ hot: string; cold: string; warm: string; coldW: string }>({ hot: '', cold: '', warm: '', coldW: '' });
   const [error, setError] = useState<string | null>(null);
+  const [skin, setSkinState] = useState<Skin>(() => getSkin());
+  // 每次渲染按当前皮肤刷新令牌属性（ensureThemeStyle 可重入，不重写样式表）
+  ensureThemeStyle(skin);
   const [guideCopied, setGuideCopied] = useState(false);
   const guideRef = useRef<HTMLTextAreaElement | null>(null);
   const seqRef = useRef(0);
@@ -213,12 +219,13 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
     min: number,
   ) => createElement(
     'label',
-    { style: { display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 } },
+    { className: 'dsh-spirit-label' },
     label,
     createElement('input', {
       type: 'number',
       min,
       value: ladderDraft[draftKey],
+      className: 'dsh-spirit-input',
       style: { width: 64 },
       onChange: (e: { target: { value: string } }) => setLadderDraft((prev) => ({ ...prev, [draftKey]: e.target.value })),
       onBlur: () => {
@@ -227,17 +234,33 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
       },
     }),
   );
+  /** 皮肤三态选择器（偏好存 localStorage，不进 config/volatile）。 */
+  const skinPicker = createElement(
+    'span',
+    { className: 'dsh-spirit-skin-picker' },
+    ...SKIN_OPTS.map(([value, labelKey]) => createElement('button', {
+      type: 'button',
+      key: value,
+      className: `dsh-spirit-skin-opt${skin === value ? ' dsh-spirit-skin-opt-on' : ''}`,
+      onClick: () => { setSkin(value); setSkinState(value); },
+    }, copy[labelKey])),
+  );
 
   return createElement(
     'section',
-    { style: { padding: '12px 16px' } },
-    createElement('h3', { style: hStyle }, copy['panel.title']),
-    createElement('p', { style: mutedStyle }, `${copy['panel.hint']} · ${copy['panel.notFact']}`),
+    { className: 'dsh-spirit-root' },
+    createElement(
+      'div',
+      { className: 'dsh-spirit-row' },
+      createElement('h3', { className: 'dsh-spirit-h' }, copy['panel.title']),
+      skinPicker,
+    ),
+    createElement('p', { className: 'dsh-spirit-muted' }, `${copy['panel.hint']} · ${copy['panel.notFact']}`),
     // LLM 费用提示与本地端点建议：设置面第一个区块（引导/美化排其次）
     createElement(LlmNotice, { route: distillRoute }),
-    error !== null ? createElement('p', { style: { color: 'var(--dsw-danger-color, inherit)' } }, `${copy['panel.loadFailed']}: ${error}`) : null,
+    error !== null ? createElement('p', { className: 'dsh-spirit-error' }, `${copy['panel.loadFailed']}: ${error}`) : null,
     stats === null
-      ? createElement('p', { style: mutedStyle }, copy['panel.noData'])
+      ? createElement('p', { className: 'dsh-spirit-muted' }, copy['panel.noData'])
       : createElement(
         'div',
         null,
@@ -245,19 +268,19 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
           'p',
           null,
           `${copy['panel.mood']}：${stats.moodLabel || '—'}`,
-          createElement('span', { style: mutedStyle }, ` · ${copy['panel.entries']} ${stats.entryCount} · ${copy['panel.injected']} ${stats.injectedTurns} · ${copy['panel.bypassed']} ${stats.bypassedTurns}`),
+          createElement('span', { className: 'dsh-spirit-muted' }, ` · ${copy['panel.entries']} ${stats.entryCount} · ${copy['panel.injected']} ${stats.injectedTurns} · ${copy['panel.bypassed']} ${stats.bypassedTurns}`),
         ),
-        stats.degraded ? createElement('p', { style: mutedStyle }, copy['panel.degraded']) : null,
+        stats.degraded ? createElement('p', { className: 'dsh-spirit-muted' }, copy['panel.degraded']) : null,
         // 注入数与确认数分开显示：两者不相等就说明卡没真落进上下文，看着“生效”其实没生效
         createElement(
           'p',
-          { style: mutedStyle },
+          { className: 'dsh-spirit-muted' },
           `${copy['panel.injected']} ${stats.injectedTurns} → ${stats.confirmedTurns} · ${stats.lastRecallHits} · ${copy['panel.confirmedHint']}`,
         ),
         // 段数专治「连上了但库里没内容」：只说"可用"会把静默为空读成功能正常
         createElement(
           'p',
-          { style: mutedStyle },
+          { className: 'dsh-spirit-muted' },
           `${copy['panel.drsc']}：${copy[DRSC_VERDICT_KEYS[stats.drscVerdict]]}${stats.drscSegments === undefined ? '' : ` · ${copy['panel.drscSegments']} ${stats.drscSegments}`}`,
         ),
         // DRSC 缺席提示块（v0.3.3）：只有 warn 才出（skipped 中性无据不进故障提示，
@@ -265,44 +288,44 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
         stats.drscVerdict === 'warn'
           ? createElement(
             'div',
-            { style: HINT_BOX_STYLE },
-            createElement('p', { style: { margin: 0, fontSize: 13, fontWeight: 600 } }, copy['drscHint.title']),
-            createElement('p', { style: mutedStyle }, copy['drscHint.impact']),
+            { className: 'dsh-spirit-hint-box' },
+            createElement('p', { className: 'dsh-spirit-h4' }, copy['drscHint.title']),
+            createElement('p', { className: 'dsh-spirit-muted' }, copy['drscHint.impact']),
             createElement('textarea', {
               ref: guideRef,
               readOnly: true,
               value: copy['drscHint.guide'],
               rows: 3,
-              style: { width: '100%', boxSizing: 'border-box' as const, fontSize: 12 },
+              className: 'dsh-spirit-input', style: { width: '100%', boxSizing: 'border-box' as const },
             }),
             createElement(
               'div',
-              { style: { display: 'flex', gap: 8, alignItems: 'center' } },
-              createElement('button', { type: 'button', style: mutedStyle, onClick: copyGuide }, copy['drscHint.copy']),
-              guideCopied ? createElement('span', { style: mutedStyle }, copy['drscHint.copied']) : null,
+              { className: 'dsh-spirit-row' },
+              createElement('button', { type: 'button', className: 'dsh-spirit-btn', onClick: copyGuide }, copy['drscHint.copy']),
+              guideCopied ? createElement('span', { className: 'dsh-spirit-muted' }, copy['drscHint.copied']) : null,
             ),
           )
           : null,
         // 淡出指标行（调参 SOP 的读数腿）：只在淡出真跑过时出现，关闸时不占行不编零
         fade !== undefined && fade.pool > 0
-          ? createElement('p', { style: mutedStyle }, `${copy['panel.fade']}：${fade.full}/${fade.gist}/${fade.held}${fade.marked > 0 ? ` · ★${fade.marked}` : ''} · ${copy['panel.churn']} ${fade.churn}`)
+          ? createElement('p', { className: 'dsh-spirit-muted' }, `${copy['panel.fade']}：${fade.full}/${fade.gist}/${fade.held}${fade.marked > 0 ? ` · ★${fade.marked}` : ''} · ${copy['panel.churn']} ${fade.churn}`)
           : null,
         // 面板可调腿（六腿的写腿）：仅当 volatile 通道可读时出现
         settings === null
           ? null
           : createElement(
             'div',
-            { style: { display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginTop: 6 } },
-            createElement('span', { style: mutedStyle }, copy['panel.fadeSettings']),
+            { className: 'dsh-spirit-row' },
+            createElement('span', { className: 'dsh-spirit-muted' }, copy['panel.fadeSettings']),
             createElement(
               'label',
-              { style: { display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 } },
+              { className: 'dsh-spirit-label' },
               createElement('input', { type: 'checkbox', checked: settings.fadeEnabled, onChange: (e: { target: { checked: boolean } }) => saveSettings({ fadeEnabled: e.target.checked }) }),
               copy['panel.fadeOn'],
             ),
-            createElement('span', { style: mutedStyle }, copy['panel.fadeHalfLife']),
+            createElement('span', { className: 'dsh-spirit-muted' }, copy['panel.fadeHalfLife']),
             createElement('input', {
-              type: 'number', min: 0, value: halfLifeDraft, style: { width: 72 },
+              type: 'number', min: 0, value: halfLifeDraft, className: 'dsh-spirit-input', style: { width: 72 },
               onChange: (e: { target: { value: string } }) => setHalfLifeDraft(e.target.value),
               onBlur: () => {
                 const minutes = Number.parseFloat(halfLifeDraft);
@@ -310,14 +333,14 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
               },
             }),
             // v19 台阶四键（0-7-30）：边界天 + 两级千分位权重（均在 RPC 侧有区间钳制）
-            createElement('span', { style: mutedStyle }, copy['panel.fadeLadder']),
+            createElement('span', { className: 'dsh-spirit-muted' }, copy['panel.fadeLadder']),
             ladderInput('hot', copy['panel.fadeHotDays'], settings.fadeHotDays, (v) => saveSettings({ fadeHotDays: v }), 0),
             ladderInput('cold', copy['panel.fadeColdDays'], settings.fadeColdDays, (v) => saveSettings({ fadeColdDays: v }), 1),
             ladderInput('warm', copy['panel.fadeWarmWeight'], settings.fadeWarmWeight, (v) => saveSettings({ fadeWarmWeight: v }), 500),
             ladderInput('coldW', copy['panel.fadeColdWeight'], settings.fadeColdWeight, (v) => saveSettings({ fadeColdWeight: v }), 500),
             settings.hotUpdatable
               ? null
-              : createElement('span', { style: mutedStyle }, copy['panel.settingsCold']),
+              : createElement('span', { className: 'dsh-spirit-muted' }, copy['panel.settingsCold']),
           ),
       ),
     // 记忆总闸 + 三态启动挡位（v0.11）：本会话手动开关永远有效，挡位只管下次启动初值。
@@ -325,11 +348,11 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
       ? null
       : createElement(
         'div',
-        { style: { display: 'grid', gap: 4, marginTop: 10 } },
-        createElement('h4', { style: { ...hStyle, margin: 0 } }, copy['panel.memoryMaster']),
+        { className: 'dsh-spirit-block' },
+        createElement('h4', { className: 'dsh-spirit-h4' }, copy['panel.memoryMaster']),
         createElement(
           'label',
-          { style: { display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 } },
+          { className: 'dsh-spirit-label' },
           createElement('input', {
             type: 'checkbox',
             checked: settings.enabled,
@@ -339,7 +362,7 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
         ),
         createElement(
           'label',
-          { style: { display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12 } },
+          { className: 'dsh-spirit-label' },
           createElement('span', null, copy['panel.bootMode']),
           createElement(
             'select',
@@ -355,7 +378,7 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
             createElement('option', { value: 'off' }, copy['panel.bootOff']),
           ),
         ),
-        createElement('span', { style: mutedStyle }, copy['panel.bootHint']),
+        createElement('span', { className: 'dsh-spirit-muted' }, copy['panel.bootHint']),
       ),
     // 检视段（条目流+这条重要）已迁星海「翻阅」tab：这里不再养第二份列表。
     // 睡眠块（v0.3.4 设置面可见性）：自动做梦开关（live 热更）+ 上次梦境读数 + 回响导航行。
@@ -363,47 +386,47 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
       ? null
       : createElement(
         'div',
-        { style: { display: 'grid', gap: 4, marginTop: 10 } },
-        createElement('h4', { style: { ...hStyle, margin: 0 } }, copy['panel.dreamSettings']),
+        { className: 'dsh-spirit-block' },
+        createElement('h4', { className: 'dsh-spirit-h4' }, copy['panel.dreamSettings']),
         createElement(
           'label',
-          { style: { display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 } },
+          { className: 'dsh-spirit-label' },
           createElement('input', { type: 'checkbox', checked: settings.dreamEnabled, onChange: (e: { target: { checked: boolean } }) => saveSettings({ dreamEnabled: e.target.checked }) }),
           copy['panel.dreamOn'],
         ),
         // 长觉热更开关（v0.3.5）：面板一键开；部署面总闸关着时开了也不跑（双闸，面板说真话）
         createElement(
           'label',
-          { style: { display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 } },
+          { className: 'dsh-spirit-label' },
           createElement('input', { type: 'checkbox', checked: settings.distillEnabled, onChange: (e: { target: { checked: boolean } }) => saveSettings({ distillEnabled: e.target.checked }) }),
           copy['sleep.on'],
         ),
         // 本体层热更开关（v0.5）：面板「本体」真实控制线；关 ⇒ 采集/抽取全停（零落库）
         createElement(
           'label',
-          { style: { display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12 } },
+          { className: 'dsh-spirit-label' },
           createElement('input', { type: 'checkbox', checked: settings.ontologyEnabled, onChange: (e: { target: { checked: boolean } }) => saveSettings({ ontologyEnabled: e.target.checked }) }),
           copy['panel.ontologyOn'],
         ),
         settings.hotUpdatable
           ? null
-          : createElement('span', { style: mutedStyle }, copy['panel.settingsCold']),
+          : createElement('span', { className: 'dsh-spirit-muted' }, copy['panel.settingsCold']),
         createElement(
           'p',
-          { style: mutedStyle },
+          { className: 'dsh-spirit-muted' },
           dreamReport === null
             ? copy['panel.dreamNever']
             : `${copy['panel.dreamLast']}：${formatTime(dreamReport.dreamedAt)} · ${copy['dream.merged']} ${dreamReport.mergedPairs} · ${copy['dream.active']} ${dreamReport.active}`,
         ),
-        createElement('p', { style: mutedStyle }, copy['panel.echoNav']),
+        createElement('p', { className: 'dsh-spirit-muted' }, copy['panel.echoNav']),
       ),
     createElement(
       'div',
-      { style: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 } },
-      createElement('button', { type: 'button', style: mutedStyle, onClick: () => void load() }, copy['panel.retry']),
-      createElement('button', { type: 'button', style: mutedStyle, onClick: () => doExport('md') }, copy['panel.exportMd']),
-      createElement('button', { type: 'button', style: mutedStyle, onClick: () => doExport('jsonl') }, copy['panel.exportJsonl']),
-      exportNote !== null ? createElement('span', { style: mutedStyle }, exportNote) : null,
+      { className: 'dsh-spirit-row' },
+      createElement('button', { type: 'button', className: 'dsh-spirit-btn', onClick: () => void load() }, copy['panel.retry']),
+      createElement('button', { type: 'button', className: 'dsh-spirit-btn', onClick: () => doExport('md') }, copy['panel.exportMd']),
+      createElement('button', { type: 'button', className: 'dsh-spirit-btn', onClick: () => doExport('jsonl') }, copy['panel.exportJsonl']),
+      exportNote !== null ? createElement('span', { className: 'dsh-spirit-muted' }, exportNote) : null,
     ),
   );
 }

@@ -70,7 +70,11 @@ describe('历史检索路（路 B）不受淡出影响', () => {
 });
 
 describe('settings-get/set 写腿（volatile 六腿的 rpc 腿）', () => {
-  function makeDeps(live: SpiritLiveSettings, opts: { updatable?: boolean; onApply?: (patch: Partial<SpiritLiveSettings>) => void } = {}): RpcDeps {
+  function makeDeps(live: SpiritLiveSettings, opts: {
+    updatable?: boolean;
+    onApply?: (patch: Partial<SpiritLiveSettings>) => void;
+    settingsWrite?: (patch: Partial<SpiritLiveSettings>) => Promise<{ ok: boolean; error?: string }>;
+  } = {}): RpcDeps {
     const cfg: SpiritConfig = structuredClone(SPIRIT_DEFAULTS);
     cfg.live = live;
     const ref: { get(): SpiritLiveSettings; update?: (patch: Partial<SpiritLiveSettings>) => unknown } = { get: () => live };
@@ -91,6 +95,7 @@ describe('settings-get/set 写腿（volatile 六腿的 rpc 腿）', () => {
       cfg: () => cfg,
       eff: () => cfg,
       liveRaw: () => ref,
+      ...(opts.settingsWrite !== undefined ? { settingsWrite: opts.settingsWrite } : {}),
       drscVerdict: () => 'skipped',
       logger,
     };
@@ -114,6 +119,46 @@ describe('settings-get/set 写腿（volatile 六腿的 rpc 腿）', () => {
     const r = await handleEndpoint('dsh-spirit/settings-set', { fadeEnabled: true }, deps);
     expect(!r.ok && r.error.code).toBe('no-volatile');
     expect(live.fadeEnabled).toBe(false);
+  });
+
+  it('仅 settingsWrite 可用（桌面宿主：无 .update()）：走 settings.mutate 兜底腿并回显', async () => {
+    const live: SpiritLiveSettings = { ...SPIRIT_DEFAULTS.live, fadeEnabled: false };
+    let called = 0;
+    // 模拟宿主：mutate 后 volatile ref 原地更新（loader/volatile-update）⇒ eff()().live 反映新值
+    const deps = makeDeps(live, {
+      settingsWrite: async (patch) => { called++; Object.assign(live, patch); return { ok: true }; },
+    });
+    const r = await handleEndpoint('dsh-spirit/settings-set', { fadeEnabled: true }, deps);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toMatchObject({ fadeEnabled: true, hotUpdatable: true });
+    expect(called).toBe(1);
+    expect(live.fadeEnabled).toBe(true);
+    const g = await handleEndpoint('dsh-spirit/settings-get', {}, deps);
+    expect(g.ok && g.value).toMatchObject({ hotUpdatable: true });
+  });
+
+  it('settingsWrite 读回校验失败（read-back-mismatch）：如实报错、不谎报成功', async () => {
+    const live: SpiritLiveSettings = { ...SPIRIT_DEFAULTS.live, fadeEnabled: false };
+    const deps = makeDeps(live, {
+      settingsWrite: async () => ({ ok: false, error: 'read-back-mismatch: fadeEnabled 未落地' }),
+    });
+    const r = await handleEndpoint('dsh-spirit/settings-set', { fadeEnabled: true }, deps);
+    expect(!r.ok && r.error.code).toBe('update-failed');
+    if (!r.ok) expect(r.error.message).toContain('read-back-mismatch');
+    expect(live.fadeEnabled).toBe(false);
+  });
+
+  it('两写通道都在时优先走 .update()，settingsWrite 不被调用', async () => {
+    const live: SpiritLiveSettings = { ...SPIRIT_DEFAULTS.live, fadeEnabled: false };
+    let writeCalls = 0;
+    const deps = makeDeps(live, {
+      updatable: true,
+      settingsWrite: async (patch) => { writeCalls++; Object.assign(live, patch); return { ok: true }; },
+    });
+    const r = await handleEndpoint('dsh-spirit/settings-set', { fadeEnabled: true }, deps);
+    expect(r.ok).toBe(true);
+    expect(writeCalls).toBe(0);
+    expect(live.fadeEnabled).toBe(true);
   });
 
   it('越界半衰期被拒（区间单源 SPIRIT_RANGES）', async () => {

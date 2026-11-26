@@ -147,6 +147,11 @@ export interface RpcDeps {
   eff?: () => SpiritConfig;
   /** volatile 写通道（面板六腿的 rpc 腿）：index 传入宿主给的真 ref；缺席 ⇒ settings-set 报不可热更。 */
   liveRaw?: () => { get(): SpiritConfig['live']; update?: (patch: Partial<SpiritConfig['live']>) => unknown } | undefined;
+  /**
+   * 宿主 settings.mutate 兜底写腿（v0.13.2）：宿主只给 volatile ref 的 `.get()` 而不给 `.update()` 时，
+   * 用它把 patch 合进 live 节并落盘。返回 ok=false 时 rpc 如实报错，不谎报成功。index 经 ctx.inject(['settings']) 装配。
+   */
+  settingsWrite?: (patch: Partial<SpiritConfig['live']>) => Promise<{ ok: boolean; error?: string }>;
   /** DRSC 探测结论（面板要如实显示 skipped/warn，不当故障也不当正常）。 */
   drscVerdict: () => SpiritVerdict;
   /**
@@ -1218,13 +1223,16 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         dreamEnabled: live.dreamEnabled,
         distillEnabled: live.distillEnabled,
         ontologyEnabled: live.ontologyEnabled,
-        hotUpdatable: typeof deps.liveRaw?.()?.update === 'function',
+        hotUpdatable: typeof deps.liveRaw?.()?.update === 'function' || typeof deps.settingsWrite === 'function',
       } satisfies SpiritSettingsView);
     }
     case 'settings-set': {
       // 只收面板可调的四键；区间单源 SPIRIT_RANGES（与 schema 同一张表，不抄第二份）
+      // 写通道二选一：老宿主走 volatile ref.update()；桌面宿主只给 .get() ⇒ 走 settings.mutate 兜底腿。
+      // 两条都没有才报 no-volatile（检查下沉到 patch 校验之后，保持 bad-request 优先语义）。
       const ref = deps.liveRaw?.();
-      if (ref === undefined || typeof ref.update !== 'function') return err('no-volatile', '宿主 volatile 写通道不可用，改值需重启');
+      const canUpdate = typeof ref?.update === 'function';
+      const canWrite = typeof deps.settingsWrite === 'function';
       const patch: Partial<SpiritConfig['live']> = {};
       if (typeof payload['enabled'] === 'boolean') patch.enabled = payload['enabled'];
       if (payload['bootMode'] === 'on' || payload['bootMode'] === 'off' || payload['bootMode'] === 'last') {
@@ -1257,10 +1265,21 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         patch[key] = v;
       }
       if (Object.keys(patch).length === 0) return err('bad-request', '没有可应用的合法键（只收 fadeEnabled/fadeHalfLifeMs/fadeHotDays/fadeColdDays/fadeWarmWeight/fadeColdWeight/feedbackEnabled/dreamEnabled/distillEnabled/ontologyEnabled）');
-      try {
-        await Promise.resolve(ref.update(patch));
-      } catch (err2) {
-        return err('update-failed', err2 instanceof Error ? err2.message : String(err2));
+      if (!canUpdate && !canWrite) return err('no-volatile', '宿主 volatile 写通道不可用，改值需重启');
+      if (canUpdate) {
+        try {
+          await Promise.resolve(ref!.update!(patch));
+        } catch (err2) {
+          return err('update-failed', err2 instanceof Error ? err2.message : String(err2));
+        }
+      } else {
+        // 兜底腿：宿主只给 .get() 时经 settings.mutate 落盘。它自带读回校验，失败如实上报。
+        try {
+          const written = await deps.settingsWrite!(patch);
+          if (!written.ok) return err('update-failed', written.error ?? 'settings.mutate 写入失败');
+        } catch (err2) {
+          return err('update-failed', err2 instanceof Error ? err2.message : String(err2));
+        }
       }
       const live: SpiritLiveSettings = (deps.eff ?? deps.cfg)().live;
       return ok({

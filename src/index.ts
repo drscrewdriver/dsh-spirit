@@ -253,6 +253,62 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
   let llmChannel: LlmChannel | undefined;
   /** 宿主 llm 运行时引用（供面板枚举供应商/模型；与 llmChannel 分开，stream 缺席时枚举面仍可用）。 */
   let llmRuntime: LlmRuntimeLike | undefined;
+  /**
+   * 宿主 settings 服务引用（域注入晚到，v0.13.2）：桌面宿主只给 volatile ref 的 `.get()`，
+   * 配置写回走这里的 `settings.mutate`。缺席时 settingsWrite 返回 ok:false，rpc 如实报错。
+   * 不进顶层 inject——没这服务的宿主线（tui/headless）不能因此挂死。
+   */
+  type SettingsRow = { ns?: unknown; value?: unknown };
+  type SettingsServiceLike = {
+    describe(): SettingsRow[];
+    mutate(ns: string, ops: Array<{ op: string; path: string[]; value: unknown }>, fiber?: unknown): Promise<unknown>;
+  };
+  let settingsSvc: SettingsServiceLike | undefined;
+  ;(ctx as unknown as { inject?: (deps: string[], cb: (scope: Context) => void) => void }).inject?.(['settings'], (scope) => {
+    const svc = scope.get?.('settings') as SettingsServiceLike | undefined;
+    if (svc !== undefined && typeof svc.mutate === 'function' && typeof svc.describe === 'function') settingsSvc = svc;
+  });
+  const settingsWrite = async (patch: Partial<SpiritLiveSettings>): Promise<{ ok: boolean; error?: string }> => {
+    const svc = settingsSvc;
+    if (svc === undefined) return { ok: false, error: '宿主 settings 服务不可用（改值需重启）' };
+    const unwrap = (v: unknown): unknown => (
+      v !== null && typeof v === 'object' && typeof (v as { get?: unknown }).get === 'function'
+        ? (v as { get: () => unknown }).get()
+        : v
+    );
+    const liveOf = (row: SettingsRow | undefined): unknown => {
+      const value = row?.value;
+      if (value === null || typeof value !== 'object') return undefined;
+      return unwrap((value as Record<string, unknown>)['live']);
+    };
+    const rows = svc.describe();
+    // 自己的 row 用「value 里带 live 节」识别最可靠（live 是本插件独有的 volatile 节）；
+    // 精确 ns 仅作回退（loader 改过 namespace 时不至于找不到）。
+    const row = rows.find((r) => {
+      const v = liveOf(r);
+      return v !== null && typeof v === 'object';
+    }) ?? rows.find((r) => String(r.ns) === SPIRIT_PLUGIN_NAME);
+    if (row === undefined) return { ok: false, error: 'settings.describe() 找不到 dsh-spirit 的 live 节' };
+    const ns = String(row.ns);
+    const rawLive = liveOf(row);
+    const merged = {
+      ...(rawLive !== null && typeof rawLive === 'object' ? rawLive as Record<string, unknown> : {}),
+      ...patch,
+    };
+    try {
+      await svc.mutate(ns, [{ op: 'set', path: ['live'], value: merged }], undefined);
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    // 读回校验：只比对本次 patch 的键（mutate resolves 不是落地的证据，照宿主先例验一次）
+    const after = svc.describe().find((r) => String(r.ns) === ns);
+    const afterLive = liveOf(after);
+    if (afterLive === null || typeof afterLive !== 'object') return { ok: false, error: 'read-back-mismatch: live 节读回为空' };
+    for (const [k, v] of Object.entries(patch)) {
+      if ((afterLive as Record<string, unknown>)[k] !== v) return { ok: false, error: `read-back-mismatch: ${k} 未落地` };
+    }
+    return { ok: true };
+  };
   const readHostDefault = (): DistillRoute | undefined => {
     // agentDefaultModel 是可选服务，缺失时不得抛错（fail-closed 会拒蒸，不隐式猜模型）
     const svc = getService(ctx, 'agentDefaultModel') as { model?: { provider?: unknown; id?: unknown } } | undefined;
@@ -661,6 +717,8 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     logger,
     // config.live 就是 volatile ref（带 .get()，新宿主还带 .update()）；原样递出去，不预先解包
     liveRaw: () => config.live as unknown as { get(): SpiritLiveSettings; update?: (patch: Partial<SpiritLiveSettings>) => unknown },
+    // 兜底写腿（v0.13.2）：宿主 volatile ref 无 .update() 时经 settings.mutate 落盘
+    settingsWrite,
     onWebServerReady: (port) => {
       webPort = port;
     },

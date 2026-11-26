@@ -2,6 +2,15 @@
 
 本项目的所有值得记录的变更都写在这里。版本号遵循语义化版本。
 
+## 0.13.2 (2026-11-26)
+
+**设置保存修复 + 设置面板 CSS 追平姊妹仓库。**
+
+- **配置保存失败修复**：桌面宿主只给 volatile ref 的 `.get()`、不给 `.update()`，导致 `settings-set` 报 `no-volatile`（面板显示「宿主 volatile 写通道不可用，改值需重启」）。新增 `settings.mutate` 兜底写腿（经 `ctx.inject(['settings'])` 获取服务，以「value 含 live 节」定位自身命名空间，整体 `path:['live']` 写入 + 逐键读回校验，未落地如实报错不谎报成功）；旧宿主 `.update()` 仍优先。`settings-get` 的 `hotUpdatable` 同步反映新通道。
+- **设置面板令牌 CSS**：新增 `client/src/theme.ts`（dsw 真实令牌 + 浅/暗双主题 + 幂等注入样式表）与 `client/src/skin.ts`（light/dark/auto 三态，偏好存 localStorage 不进 config）；设置面板与内嵌 LLM 费用提示块的裸内联样式全部改为令牌类，新增皮肤选择器。范围限设置面板，pill/星海不动。
+- `tests/fade-legs.test.ts`：新增兜底写腿、读回失败、双通道优先级、hotUpdatable 用例；全量 969 测试通过。
+- 三处版本（package.json / dsh.plugin.json / SPIRIT_VERSION）同串 0.13.2。
+
 ## 0.12.0 (2026-11-24)
 
 **记忆总闸 + 三态启动挡位 —— 与 prime-memory 同构；出厂默认「关闭」。**

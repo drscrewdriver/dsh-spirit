@@ -10,30 +10,12 @@
  * 状态存**专门 flag**（独立键，不与引导跳过标记混用），跨两个挂载点经 window 事件同步。
  * 颜色全部走继承/中性值，浅色设置面与深色星海都成立。
  */
-import { createElement, useEffect, useState, type CSSProperties } from 'react';
+import { createElement, useEffect, useState } from 'react';
 
 import type { SpiritDistillRouteView } from '../../src/contract.js';
 import { copyOf, type CopyKey } from './copy.js';
 
-const BOX: CSSProperties = {
-  margin: '0 0 12px',
-  padding: '10px 12px',
-  borderRadius: 8,
-  border: '1px solid rgba(127,127,127,.35)',
-  borderLeft: '4px solid #d08a2e',
-  background: 'rgba(208,138,46,.08)',
-  display: 'grid',
-  gap: 6,
-  color: 'inherit',
-};
-const HEAD: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' };
-const TITLE: CSSProperties = { margin: 0, fontSize: 13.5, fontWeight: 650, color: 'inherit' };
-const NOTE: CSSProperties = { margin: 0, fontSize: 12, opacity: 0.78, lineHeight: 1.55 };
-const WARN: CSSProperties = { margin: 0, fontSize: 12, color: '#c07a10', lineHeight: 1.55 };
-const BTN: CSSProperties = {
-  appearance: 'none', font: 'inherit', fontSize: 11, padding: '2px 8px', borderRadius: 999,
-  border: '1px solid rgba(127,127,127,.45)', background: 'transparent', cursor: 'pointer', color: 'inherit',
-};
+// 样式走 theme.ts 令牌类（.dsh-spirit-notice*），浅/暗双主题均由令牌驱动。
 
 const HIDDEN_FLAG = 'dsh.llm-notice.spirit.hidden.v1';
 const SYNC_EVENT = 'dsh-llm-notice-spirit';
@@ -66,10 +48,10 @@ export function LlmNotice(props: { route: SpiritDistillRouteView | null }): Retu
   if (hidden) {
     return createElement(
       'div',
-      { style: { fontSize: 11, opacity: 0.5, padding: '2px 0' } },
+      { className: 'dsh-spirit-notice-restore' },
       createElement('button', {
         type: 'button',
-        style: { background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', textDecoration: 'underline', fontSize: 11 },
+        className: 'dsh-spirit-link',
         onClick: () => {
           try { localStorage.removeItem(HIDDEN_FLAG); window.dispatchEvent(new Event(SYNC_EVENT)); } catch { /* noop */ }
           setHidden(false);
@@ -85,14 +67,14 @@ export function LlmNotice(props: { route: SpiritDistillRouteView | null }): Retu
 
   const head = createElement(
     'div',
-    { style: HEAD },
-    createElement('h4', { style: TITLE }, copy['llm.title']),
+    { className: 'dsh-spirit-notice-head' },
+    createElement('h4', { className: 'dsh-spirit-notice-title' }, copy['llm.title']),
     createElement(
       'span',
-      { style: { marginLeft: 'auto', display: 'inline-flex', gap: 6 } },
+      { className: 'dsh-spirit-skin-picker' },
       createElement('button', {
         type: 'button',
-        style: BTN,
+        className: 'dsh-spirit-notice-ack',
         onClick: () => {
           // 两步：先确认（弹窗），确定后才写专门 flag 隐藏
           let ok: boolean;
@@ -110,13 +92,13 @@ export function LlmNotice(props: { route: SpiritDistillRouteView | null }): Retu
 
   return createElement(
     'section',
-    { style: BOX, 'aria-label': copy['llm.title'] },
+    { className: 'dsh-spirit-notice', 'aria-label': copy['llm.title'] },
     head,
-    createElement('p', { style: NOTE }, copy['llm.recommend']),
-    createElement('p', { style: NOTE }, `${copy['llm.route']}${routeLine}`),
+    createElement('p', { className: 'dsh-spirit-notice-note' }, copy['llm.recommend']),
+    createElement('p', { className: 'dsh-spirit-notice-note' }, `${copy['llm.route']}${routeLine}`),
     effective !== null && effective.source === 'hostDefault'
-      ? createElement('p', { style: WARN, role: 'note' }, copy['llm.hostWarn'])
+      ? createElement('p', { className: 'dsh-spirit-notice-warn', role: 'note' }, copy['llm.hostWarn'])
       : null,
-    createElement('p', { style: NOTE }, copy['llm.hint']),
+    createElement('p', { className: 'dsh-spirit-notice-note' }, copy['llm.hint']),
   );
 }

@@ -439,6 +439,10 @@ export const zh = {
   'llm.ack': '我已知晓',
   'llm.confirmHide': '确定隐藏「LLM 使用提示」？确认后两处（做梦/设置）都不再展示；需要时可点击下方“恢复”链接找回。',
   'llm.restore': '恢复 LLM 费用提示',
+  // ── 设置面板皮肤三态（v0.13.2）──
+  'panel.skinAuto': '跟随',
+  'panel.skinLight': '浅',
+  'panel.skinDark': '暗',
 } as const;
 
 export type CopyKey = keyof typeof zh;
@@ -860,6 +864,9 @@ export const en: Record<CopyKey, string> = {
   'llm.ack': 'Got it',
   'llm.confirmHide': 'Hide the “LLM usage notice”? Both places (Dream / Settings) will stop showing it; use the “Restore” link below to bring it back.',
   'llm.restore': 'Restore LLM cost notice',
+  'panel.skinAuto': 'Auto',
+  'panel.skinLight': 'Light',
+  'panel.skinDark': 'Dark',
 };
 
 export const DICTS: Record<'zh' | 'en', Record<CopyKey, string>> = { zh, en };

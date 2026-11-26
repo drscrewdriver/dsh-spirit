@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. Versioning is semantic.
 
+## 0.13.2 (2026-11-26)
+
+**Settings-save fix + settings panel CSS brought in line with sister repos.**
+
+- **Fixed settings not saving**: the desktop host hands the volatile ref a `.get()` but no `.update()`, so `settings-set` reported `no-volatile` ("host volatile write channel unavailable, restart to apply"). Added a `settings.mutate` fallback write leg (service obtained via `ctx.inject(['settings'])`, namespace located by "value carries a live section", whole `path:['live']` write with per-key read-back verification; reports failure honestly instead of falsely claiming success). Older hosts with `.update()` still take priority. `settings-get.hotUpdatable` now reflects the new channel.
+- **Settings panel token CSS**: added `client/src/theme.ts` (real dsw tokens + light/dark themes + idempotent style injection) and `client/src/skin.ts` (light/dark/auto, preference in localStorage, not in config); the panel and its embedded LLM cost notice dropped all bare inline styles for token classes, plus a skin picker. Scope limited to the settings panel; pill/sea untouched.
+- `tests/fade-legs.test.ts`: new cases for the fallback leg, read-back failure, dual-channel priority, and hotUpdatable; full 969 tests pass.
+- All three version sources (package.json / dsh.plugin.json / SPIRIT_VERSION) aligned at 0.13.2.
+
 ## Unreleased
 
 ### Fixed
