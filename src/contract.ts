@@ -2008,7 +2008,7 @@ export interface SpiritChronicleResult {
 }
 
 /** 插件版本（与 package.json / dsh.plugin.json 同串，由门禁核对）。 */
-export const SPIRIT_VERSION = '0.13.0';
+export const SPIRIT_VERSION = '0.13.1';
 
 
 
