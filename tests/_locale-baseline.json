@@ -121,6 +121,10 @@
         "file": "client/src/sea/sea-render-webgl.ts",
         "text": "// 光晕通道",
         "reason": "代码注释被当文本"
+      },
+      {
+        "file": "client/src/star-row-copy.ts",
+        "reason": "star-row 生成副本，10 语文案自含（非插件字典，同 guide.tsx 口径）"
       }
     ]
   }

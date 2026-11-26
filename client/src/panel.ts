@@ -20,6 +20,7 @@ import { LlmNotice } from './llm-notice.js';
 import { sessionIdOf, type SeatProps } from './env.js';
 import { ensureThemeStyle } from './theme.js';
 import { getSkin, setSkin, type Skin } from './skin.js';
+import { mountStarRow } from './star-row-copy.js'
 
 // 样式走 theme.ts 的令牌类（.dsh-spirit-*）；这里不再留裸 inline 样式。
 const SKIN_OPTS: ReadonlyArray<[Skin, 'panel.skinAuto' | 'panel.skinLight' | 'panel.skinDark']> = [
@@ -428,5 +429,6 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
       createElement('button', { type: 'button', className: 'dsh-spirit-btn', onClick: () => doExport('jsonl') }, copy['panel.exportJsonl']),
       exportNote !== null ? createElement('span', { className: 'dsh-spirit-muted' }, exportNote) : null,
     ),
+    createElement('span', { ref: (node: HTMLElement | null) => { if (node && !node.firstChild) node.appendChild(mountStarRow()) } }),
   );
 }
