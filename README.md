@@ -50,6 +50,27 @@ spirit 只持有"我什么时候知道这件事、它在我这儿多暖"。
 （`user_info/user_hobby/user_communication/user_behavior`）——`instruction` 是用户指令，
 当回忆重放等于陈旧指令自己复现，硬排除。细节见 [docs/positioning.md](docs/positioning.md) §3.5。
 
+## 人格区与回忆卡共用同一套闸门
+
+两条注入面（尾部回忆卡、系统提示人格区）**读同一组开关**，v0.13.7 起逐一对齐：
+
+| 门 | 回忆卡（`spirit.ts`） | 人格区（`persona-section.ts`） |
+|---|---|---|
+| 部署总闸 `enabled` | ✅ | ✅ |
+| 运行时主闸 `live.enabled` / `live.personaEnabled` | ✅ | ✅ |
+| 子代理 `isSubagent` | ✅ | ✅（v0.13.7 补） |
+| 会话 off `modes.isOff(ownerId)` | ✅ | ✅（v0.13.7 补） |
+| 会话旁路 `modes.isBypass(ownerId)` | ✅ | ✅（v0.13.7 补） |
+
+`ownerId` 走 `ownerSessionIdOfAgent` 上溯——**子代理会话的档位跟父会话走**。
+门在缓存键计算之前 `return ''`：关闸不进缓存，所以关掉立刻生效、打开立刻回来，不需要重启。
+
+`tests/gates.test.ts` 钉住这条不变式（源码里少任一门即红），`tests/persona-section-gates.test.ts`
+用四臂（on / off / bypass / subagent）钉住行为。
+
+`[昵称]` 行自 v0.13.7 渲染为 `[昵称] 主人这样叫我：大肥鱼、鱼鱼、鱼、宝`——
+裸列表会被模型反向读成「我可以这样喊主人」，归属主语必须写在行内。
+
 ## 为什么"记录点滴"而不是"每天一本日记""
 
 如果体验是一篇 markdown 日记，模型每轮就得"先读日记、再回想"——慢、耗 token，而且一旦它不主动去读，

@@ -2,6 +2,18 @@
 
 本项目的所有值得记录的变更都写在这里。版本号遵循语义化版本。
 
+## 0.13.7 (2026-11-28)
+
+**人格区放出闸：与回忆卡共用同一套闸门（修 103 个 off 会话里 97 个仍带人格块的事故）。**
+
+- 根因：回忆卡有 5 道门（cfg-off / live-off / subagent / session-off / bypass），人格区只有 3 道（cfg-off / live-off / personaEnabled），面板关、输入栏「情绪·关」、子代理三态人格块全都照吐。
+- `src/hooks/persona-section.ts`：`PersonaSectionDeps` 新增 `modes?` 与 `isSubagent?`；`text()` 在 cfg 三门之后、取 `personas.current()` 之前插入三道门——子代理、会话 off、会话 bypass。off/bypass 用 `ownerSessionIdOfAgent(agent)` 上溯（子代理会话跟父会话走，与 `spirit.ts` 的 `input.ownerId` 同源）。
+- **门在 cacheKey 计算之前 return `''`**：关闸不进缓存，才不会出现「关了还吐旧文本」；恢复时 key 不变命中旧文本是正确行为。
+- `src/index.ts` 调用点补 `modes` 与 `isSubagent: isSubagentAgent`（与 spirit.js 同一函数，两条注入面不分叉）。
+- `[昵称]` 行去歧义：渲染为 `[昵称] 主人这样叫我：大肥鱼、鱼鱼、鱼、宝`。裸列表实测被模型反向理解成「我可以这样喊主人」（assistant 输出里出现「宝」18 次）。不增加行数、不占预算。
+- 测试：新增 `tests/persona-section-gates.test.ts`（四臂 on/off/bypass/subagent + ownerId 上溯 + 关闸恢复 + 省略 deps 退化，7 例）；`tests/gates.test.ts` 增门存在性断言（删任一门即红，并钉住「门在 cacheKey 之前」）。
+- 门禁：typecheck 三工程干净 / lint 0 / 101 文件 989 测试全绿。
+
 ## 0.13.6 (2026-11-27)
 
 **设置改值不生效修复：ns 对齐 + volatile 逐键回退 + 消除假成功。**
@@ -12,7 +24,6 @@
 - 服务晚到兜底：补 internal/service 重挂取 settings 服务；loader/volatile-update 仅作诊断日志（ref 原地更新，非生效依赖）。
 - 抽出 src/settings-write.ts 纯模块；新增 tests/settings-write.test.ts（11 例）与 contract-keys.test.ts volatile 标记门禁；全量 981 测试通过。
 - 三处版本同串 0.13.6；不改 entry id / 座位 / pill / 星海 / CSS。
-
 ## 0.13.3 (2026-11-26)
 
 **设置卡底栏 Star 快车道：★ 直接打开仓库页（不再只静默收起），隐藏独立成 ×。**

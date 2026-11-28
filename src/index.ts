@@ -501,7 +501,8 @@ export async function apply(ctx: Context, config: SpiritConfig): Promise<void> {
     return undefined;
   });
 
-  registerPersonaSection(ctx, { personas, presets: personaPresets, owner: ownerStore, eff, caps, logger,
+  // v0.13.7 放出闸：modes 与 isSubagent 与回忆卡同源同函数（index.ts:205 已构造 modes，此处在其后，顺序安全）
+  registerPersonaSection(ctx, { personas, presets: personaPresets, owner: ownerStore, eff, caps, logger, modes, isSubagent: isSubagentAgent,
     // 生涯账：pinned 的心理话/约定进人格区（全局，不按工作区分账）
     lifeMemory: () => {
       const rows = modelMemory.pinnedLife(3);

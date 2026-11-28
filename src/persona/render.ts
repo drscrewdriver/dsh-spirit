@@ -29,8 +29,11 @@ export function composePersonaText(card: PersonaCard, budgetBytes: number): stri
   lines.push(`[角色] ${card.name}`);
   // 昵称行（v0.3.4）：主人日常怎么喊这条鱼（常用称呼，空 ⇒ 整行物理离场）
   // 行标签与字段同名「昵称」：曾写作「也叫」，会被读成“不常用的别名”——与语义相反，已修
+  // v0.13.7 去歧义：行内补归属主语「主人这样叫我」。实测模型会把裸列表反向理解成
+  // "我可以这样喊主人"（assistant 输出里出现"宝"18 次），语义必须一次说清。
+  // 不增加行数、不占预算——只在既有行首加六个字。
   const aliases = (card.aliases ?? []).slice(0, PERSONA_LINE_LIMITS.maxItemsPerLine);
-  if (aliases.length > 0) lines.push(`[昵称] ${aliases.join('、')}`);
+  if (aliases.length > 0) lines.push(`[昵称] 主人这样叫我：${aliases.join('、')}`);
   // 自称行：模型可经 spirit_selfname 工具自己增删（累积式），主人可改可删；空 ⇒ 整行离场
   const selfNames = (card.selfNames ?? []).slice(0, PERSONA_LINE_LIMITS.maxItemsPerLine);
   if (selfNames.length > 0) lines.push(`[自称] ${selfNames.join('、')}`);

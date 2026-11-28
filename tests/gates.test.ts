@@ -143,6 +143,27 @@ describe('task_7.2 语义诚实闸', () => {
     expect(entry).toMatch(/registerPersonaSection\(ctx,\s*\{[^}]*eff[,}]/u);
   });
 
+  it('人格区门集必须含 isOff / isBypass / isSubagent（v0.13.7：与回忆卡五道门对齐，漏一个就是老 bug 复发）', () => {
+    /**
+     * 复发防线。v0.13.6 的实测事故：回忆卡有 5 道门（cfg-off / live-off / subagent /
+     * session-off / bypass），人格区只有 3 道（cfg-off / live-off / personaEnabled），
+     * 结果 103 个 off 会话里 97 个仍带人格块、17 个子代理 17 个都带。
+     * 这里守的是**门的存在性**（不是文本规则）：删任一门 ⇒ 本断言红。
+     */
+    const code = stripComments(readFileSync(fileURLToPath(new URL('../src/hooks/persona-section.ts', import.meta.url)), 'utf8'));
+    for (const gate of ['isSubagent', 'isOff', 'isBypass']) {
+      expect(code, `人格区缺门：${gate}`).toContain(gate);
+    }
+    // off/bypass 必须走 ownerId 上溯（子代理会话跟父会话走），不是裸 sessionId
+    expect(code).toMatch(/ownerSessionIdOfAgent/u);
+    // 三道门必须在 cacheKey 计算之前 return：关闸不进缓存，才不会有"关闸后仍吐旧文本"
+    const gateAt = code.indexOf('deps.modes?.isOff');
+    const keyAt = code.indexOf('const key =');
+    expect(gateAt).toBeGreaterThan(-1);
+    expect(keyAt).toBeGreaterThan(-1);
+    expect(gateAt).toBeLessThan(keyAt);
+  });
+
   it('spirit 自己产的细节绝不携带目录路径（只留 basename）', () => {
     // 卡体可以引用 DRSC 脱敏片段（那段本来就在上下文里），真正必须守住的是
     // **本插件自己写进 cues / fact 的细节不带目录**——那才是持久化层的意外泄露面。

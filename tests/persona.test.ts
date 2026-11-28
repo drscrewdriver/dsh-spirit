@@ -109,7 +109,8 @@ describe('人格区文本（同态与预算）', () => {
 
   it('昵称行（v0.3.4）：在场时进稳定区（名字后、语气前）；空 ⇒ 整行物理离场', () => {
     const withAlias = composePersonaText({ ...card, aliases: ['阿鱼', '鱼鱼'] }, 700);
-    expect(withAlias).toContain('[昵称] 阿鱼、鱼鱼');
+    // v0.13.7 去歧义：行内带归属主语「主人这样叫我」——裸列表会被模型反向理解成"我可以这样喊主人"
+    expect(withAlias).toContain('[昵称] 主人这样叫我：阿鱼、鱼鱼');
     expect(withAlias.indexOf('[昵称]')).toBeGreaterThan(withAlias.indexOf('[角色]'));
     expect(withAlias.indexOf('[昵称]')).toBeLessThan(withAlias.indexOf('[语气]'));
     // 空数组 ⇒ 与无此字段时代逐字节一致（老卡不因此变样，稳定区不被新行抖动）

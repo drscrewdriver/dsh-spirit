@@ -22,7 +22,7 @@ import type { PersonaPresetStore } from '../persona/presets.js';
 import { composeOwnerText, composePersonaText } from '../persona/render.js';
 import type { OwnerProfileStore } from '../store/owner.js';
 import { getService, type HostCapabilities } from '../capability.js';
-import { sessionIdOfSession, workspaceIdOfAgent } from '../util/host-shape.js';
+import { ownerSessionIdOfAgent, sessionIdOfSession, workspaceIdOfAgent } from '../util/host-shape.js';
 
 export interface PersonaSectionDeps {
   personas: PersonaStore;
@@ -47,6 +47,17 @@ export interface PersonaSectionDeps {
   eff: () => SpiritConfig;
   caps: HostCapabilities;
   logger: { warn(message: string): void; info(message: string): void };
+  /**
+   * 会话级档位（v0.13.7）：`off`/`bypass` 时人格区必须**物理离场**（返回空串），
+   * 与 `spirit.js` 回忆卡的五道门逐一对齐。
+   *
+   * 不一致本身就是 bug 源：v0.13.6 实测 103 个 off 会话里 97 个仍带完整人格块
+   * （面板关了、输入栏"情绪·关"也关了，人格区照吐），因为人格区只读 `live.personaEnabled`。
+   * 省略 ⇒ 不判（老宿主/测试代理形态），门集退化但不抛。
+   */
+  modes?: { isOff(sessionId: string): boolean; isBypass(sessionId: string): boolean };
+  /** 子代理判定：**必须是 spirit.js 同一个函数**（`isSubagentAgent`），否则两条注入面会分叉。 */
+  isSubagent?: (agent: unknown) => boolean;
 }
 
 export function registerPersonaSection(ctx: Context, deps: PersonaSectionDeps): void {
@@ -73,6 +84,17 @@ export function registerPersonaSection(ctx: Context, deps: PersonaSectionDeps): 
     const text = (): string => {
       const cfg = deps.eff();
       if (!cfg.enabled || !cfg.persona.enabled || !cfg.live.personaEnabled) return '';
+      // ── v0.13.7 放出闸：与 spirit.js 的五道门逐一对齐 ──
+      // 门 3：子代理不注入（人格传染；spirit.js 同一函数、同一理由）
+      if (deps.isSubagent?.(agent) === true) return '';
+      // 门 4/5：会话级 off 与旁路。**off 用 ownerId 上溯**——子代理会话的档位要跟父会话走
+      // （与 spirit.js:226 的 `input.ownerId` 同源），否则"父会话关了、子代理照吐"。
+      // 注意 sessionId 仍是注册时闭包值（作用域解析坐标不变），实时态只来自 modes。
+      const ownerId = ownerSessionIdOfAgent(agent) || sessionId;
+      if (deps.modes?.isOff(ownerId) === true) return '';
+      if (deps.modes?.isBypass(ownerId) === true) return '';
+      // ⚠️ 三道门必须在 cacheKey 计算**之前** return ''：不进 cache，就不会出现
+      // "关闸后仍吐旧文本"；恢复时 key 不变命中旧文本才是正确行为。
       const current = deps.personas.current();
       const resolved = deps.presets === undefined
         ? { card: current, presetId: '' }
