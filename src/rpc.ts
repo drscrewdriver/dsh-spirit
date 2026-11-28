@@ -1281,7 +1281,13 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
           return err('update-failed', err2 instanceof Error ? err2.message : String(err2));
         }
       }
+      // 返回前用 eff() 现读 volatile ref 校验本次 patch 真落地（mutate resolves 不算证据）
       const live: SpiritLiveSettings = (deps.eff ?? deps.cfg)().live;
+      for (const [k, v] of Object.entries(patch)) {
+        if ((live as unknown as Record<string, unknown>)[k] !== v) {
+          return err('update-failed', `read-back-mismatch: ${k} 未落地`);
+        }
+      }
       return ok({
         enabled: live.enabled,
         bootMode: live.bootMode,
@@ -1295,7 +1301,7 @@ export async function handleEndpoint(endpoint: string, payload: Record<string, u
         dreamEnabled: live.dreamEnabled,
         distillEnabled: live.distillEnabled,
         ontologyEnabled: live.ontologyEnabled,
-        hotUpdatable: true,
+        hotUpdatable: typeof deps.liveRaw?.()?.update === 'function' || typeof deps.settingsWrite === 'function',
       } satisfies SpiritSettingsView);
     }
     case 'sea-graph': {

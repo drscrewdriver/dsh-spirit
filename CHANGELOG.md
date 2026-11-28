@@ -2,6 +2,17 @@
 
 本项目的所有值得记录的变更都写在这里。版本号遵循语义化版本。
 
+## 0.13.6 (2026-11-27)
+
+**设置改值不生效修复：ns 对齐 + volatile 逐键回退 + 消除假成功。**
+
+- ns 错配（首因）：settingsWrite 原回退 dsh-spirit-plugin（cordis 插件名），而宿主 describe/mutate 按 entry.options.id=dsh-spirit 精确匹配，回退常量永不命中，抛 No configurable plugin entry。现改为从 ctx.fiber.entry.options.id 取真实 ns 精确找行；value 的 live 节降为兼容回退；错误信息带 entryId 与已知 ns 列表。
+- volatile 形状守卫：整对象 path:[live] 写若被宿主拒（not volatile）自动逐键 path:[live,key] 回退；两种形状都读回校验，失败如实 ok:false。
+- 消除假成功：settings-set 的 hotUpdatable 改由真实写通道判定，返回前用 eff() 读回本次 patch，不一致按 update-failed 报；面板写失败回滚旧值，不再先报已保存再被轮询纠正。
+- 服务晚到兜底：补 internal/service 重挂取 settings 服务；loader/volatile-update 仅作诊断日志（ref 原地更新，非生效依赖）。
+- 抽出 src/settings-write.ts 纯模块；新增 tests/settings-write.test.ts（11 例）与 contract-keys.test.ts volatile 标记门禁；全量 981 测试通过。
+- 三处版本同串 0.13.6；不改 entry id / 座位 / pill / 星海 / CSS。
+
 ## 0.13.3 (2026-11-26)
 
 **设置卡底栏 Star 快车道：★ 直接打开仓库页（不再只静默收起），隐藏独立成 ×。**

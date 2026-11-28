@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 import { checkCompat } from '../scripts/compat-precheck.mjs';
 
 import { SPIRIT_DEFAULTS, SPIRIT_RANGES, SPIRIT_VERSION } from '../src/contract.js';
-import { RANGE_KEYS, SCHEMA_FIELD_KEYS } from '../src/config.js';
+import { RANGE_KEYS, SCHEMA_FIELD_KEYS, spiritSchema } from '../src/config.js';
 import { NOTICE_WORDS_ZH, TRIGGER_WORDS_ZH, VOICE_WORDS } from '../src/words.js';
 import { VOICE_TIERS } from '../src/types.js';
 import { zh } from '../client/src/copy.js';
@@ -29,6 +29,13 @@ describe('contract ⇄ schema 键集对齐', () => {
     const fromDefaults = flatten(SPIRIT_DEFAULTS).sort();
     const fromSchema = [...SCHEMA_FIELD_KEYS].sort();
     expect(fromDefaults).toEqual(fromSchema);
+  });
+
+  it('live 节在当前 schemastery 下确为 volatile（防止键集对但标记丢的门禁缺口）', () => {
+    const dict = (spiritSchema as unknown as { dict: Record<string, { meta?: { volatile?: boolean } }> }).dict;
+    expect(dict).toBeDefined();
+    expect(dict.live).toBeDefined();
+    expect(dict.live?.meta?.volatile).toBe(true);
   });
 
   it('live 节键都在 defaults 里（volatile 节的默认值不得有孤儿键）', () => {

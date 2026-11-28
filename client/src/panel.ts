@@ -200,16 +200,22 @@ export function SpiritPanel(props: { rpc?: RpcFn } & SeatProps) {
   }) => {
     if (rpc === undefined) return;
     setExportNote(null);
+    // 乐观回显失败回滚（skill §2.3）：写前留旧值，写失败即回填 + 错误，绝不先报「已保存」。
+    const prev = settings;
     void rpc('settings-set', patch)
       .then((result) => {
         if (!result.ok) {
+          if (prev !== null) setSettings(prev);
           setExportNote(`${copy['panel.settingsFailed']}: ${result.error.message}`);
           return;
         }
         setSettings(result.value);
         setExportNote(result.value.hotUpdatable ? copy['panel.settingsSaved'] : copy['panel.settingsCold']);
       })
-      .catch(() => setExportNote(copy['panel.settingsFailed']));
+      .catch(() => {
+        if (prev !== null) setSettings(prev);
+        setExportNote(copy['panel.settingsFailed']);
+      });
   };
   /** 台阶输入（失焦提交）：min 为下限，提交前与当前回显值比较，不重复写 volatile。 */
   const ladderInput = (
